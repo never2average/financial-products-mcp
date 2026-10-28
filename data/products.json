@@ -1,0 +1,665 @@
+[
+  {
+    "id": "savings-account",
+    "name": "Savings Account",
+    "category": "deposits",
+    "region": "global",
+    "risk_level": "low",
+    "liquidity": "high",
+    "typical_horizon": "short",
+    "return_type": "fixed_interest",
+    "regulator": "Banking regulator (e.g. RBI, FDIC-insured in US)",
+    "description": "Interest-bearing bank account for everyday savings with instant access to funds.",
+    "key_features": [
+      "Withdraw any time",
+      "Deposit insurance up to a statutory limit",
+      "Variable interest rate"
+    ]
+  },
+  {
+    "id": "fixed-deposit",
+    "name": "Fixed Deposit / Term Deposit",
+    "category": "deposits",
+    "region": "global",
+    "risk_level": "low",
+    "liquidity": "low",
+    "typical_horizon": "short_to_medium",
+    "return_type": "fixed_interest",
+    "regulator": "Banking regulator",
+    "description": "Lump sum deposited for a fixed tenure at a rate locked in at booking.",
+    "key_features": [
+      "Rate locked for the tenure",
+      "Penalty on premature withdrawal",
+      "Cumulative or periodic payout options"
+    ]
+  },
+  {
+    "id": "recurring-deposit",
+    "name": "Recurring Deposit",
+    "category": "deposits",
+    "region": "IN",
+    "risk_level": "low",
+    "liquidity": "low",
+    "typical_horizon": "short_to_medium",
+    "return_type": "fixed_interest",
+    "regulator": "RBI",
+    "description": "Fixed monthly deposits for a set tenure earning a fixed interest rate.",
+    "key_features": [
+      "Monthly instalments",
+      "Builds savings discipline",
+      "Rate fixed at opening"
+    ]
+  },
+  {
+    "id": "certificate-of-deposit",
+    "name": "Certificate of Deposit (CD)",
+    "category": "deposits",
+    "region": "US",
+    "risk_level": "low",
+    "liquidity": "low",
+    "typical_horizon": "short_to_medium",
+    "return_type": "fixed_interest",
+    "regulator": "FDIC / NCUA",
+    "description": "US time deposit with a fixed rate and maturity; early withdrawal usually incurs a penalty.",
+    "key_features": [
+      "FDIC/NCUA insured up to limits",
+      "Terms from months to years",
+      "Fixed APY"
+    ]
+  },
+  {
+    "id": "money-market-account",
+    "name": "Money Market Account",
+    "category": "deposits",
+    "region": "US",
+    "risk_level": "low",
+    "liquidity": "high",
+    "typical_horizon": "short",
+    "return_type": "variable_interest",
+    "regulator": "FDIC / NCUA",
+    "description": "Bank deposit account typically paying higher rates than savings with limited cheque-writing.",
+    "key_features": [
+      "Deposit insured",
+      "Often tiered rates",
+      "Limited transactions"
+    ]
+  },
+  {
+    "id": "ppf",
+    "name": "Public Provident Fund (PPF)",
+    "category": "government_savings",
+    "region": "IN",
+    "risk_level": "low",
+    "liquidity": "low",
+    "typical_horizon": "long",
+    "return_type": "fixed_interest",
+    "regulator": "Ministry of Finance, Govt of India",
+    "description": "Government-backed 15-year savings scheme with rates set quarterly by the government.",
+    "key_features": [
+      "15-year lock-in with partial withdrawals after year 5",
+      "Section 80C deduction (old regime)",
+      "Tax-free interest and maturity (EEE)"
+    ]
+  },
+  {
+    "id": "nps",
+    "name": "National Pension System (NPS)",
+    "category": "retirement",
+    "region": "IN",
+    "risk_level": "moderate",
+    "liquidity": "low",
+    "typical_horizon": "long",
+    "return_type": "market_linked",
+    "regulator": "PFRDA",
+    "description": "Voluntary defined-contribution pension scheme investing in equity, corporate debt and government securities.",
+    "key_features": [
+      "Choice of fund manager and asset mix",
+      "Partial annuitisation required at exit",
+      "Additional deduction under 80CCD(1B) (old regime)"
+    ]
+  },
+  {
+    "id": "epf",
+    "name": "Employees' Provident Fund (EPF)",
+    "category": "retirement",
+    "region": "IN",
+    "risk_level": "low",
+    "liquidity": "low",
+    "typical_horizon": "long",
+    "return_type": "fixed_interest",
+    "regulator": "EPFO",
+    "description": "Mandatory retirement savings for salaried employees funded by employee and employer contributions.",
+    "key_features": [
+      "Employer matching contribution",
+      "Interest rate declared annually",
+      "Portable via UAN"
+    ]
+  },
+  {
+    "id": "sukanya-samriddhi",
+    "name": "Sukanya Samriddhi Yojana",
+    "category": "government_savings",
+    "region": "IN",
+    "risk_level": "low",
+    "liquidity": "low",
+    "typical_horizon": "long",
+    "return_type": "fixed_interest",
+    "regulator": "Ministry of Finance, Govt of India",
+    "description": "Government savings scheme for a girl child's education and marriage expenses.",
+    "key_features": [
+      "Account for girls under 10",
+      "Tax-free returns (EEE)",
+      "Matures 21 years from opening"
+    ]
+  },
+  {
+    "id": "nsc",
+    "name": "National Savings Certificate (NSC)",
+    "category": "government_savings",
+    "region": "IN",
+    "risk_level": "low",
+    "liquidity": "low",
+    "typical_horizon": "medium",
+    "return_type": "fixed_interest",
+    "regulator": "Ministry of Finance, Govt of India",
+    "description": "Fixed-income post office savings certificate with a 5-year tenure.",
+    "key_features": [
+      "5-year lock-in",
+      "Interest compounded annually, paid at maturity",
+      "Eligible for 80C (old regime)"
+    ]
+  },
+  {
+    "id": "scss",
+    "name": "Senior Citizens' Savings Scheme (SCSS)",
+    "category": "government_savings",
+    "region": "IN",
+    "risk_level": "low",
+    "liquidity": "low",
+    "typical_horizon": "medium",
+    "return_type": "fixed_interest",
+    "regulator": "Ministry of Finance, Govt of India",
+    "description": "Government-backed scheme for individuals 60+ paying quarterly interest.",
+    "key_features": [
+      "Quarterly interest payouts",
+      "5-year tenure, extendable",
+      "Investment cap per individual"
+    ]
+  },
+  {
+    "id": "401k",
+    "name": "401(k) Plan",
+    "category": "retirement",
+    "region": "US",
+    "risk_level": "moderate",
+    "liquidity": "low",
+    "typical_horizon": "long",
+    "return_type": "market_linked",
+    "regulator": "IRS / Department of Labor",
+    "description": "Employer-sponsored US retirement plan with pre-tax (traditional) or Roth contributions.",
+    "key_features": [
+      "Employer match common",
+      "Annual contribution limits",
+      "Penalties on early withdrawal (with exceptions)"
+    ]
+  },
+  {
+    "id": "ira",
+    "name": "Individual Retirement Account (IRA)",
+    "category": "retirement",
+    "region": "US",
+    "risk_level": "moderate",
+    "liquidity": "low",
+    "typical_horizon": "long",
+    "return_type": "market_linked",
+    "regulator": "IRS",
+    "description": "Personal tax-advantaged retirement account in Traditional or Roth form.",
+    "key_features": [
+      "Wide investment choice",
+      "Annual contribution limits",
+      "Roth: tax-free qualified withdrawals"
+    ]
+  },
+  {
+    "id": "equity-mutual-fund",
+    "name": "Equity Mutual Fund",
+    "category": "mutual_funds",
+    "region": "global",
+    "risk_level": "high",
+    "liquidity": "high",
+    "typical_horizon": "long",
+    "return_type": "market_linked",
+    "regulator": "SEBI / SEC",
+    "description": "Actively or passively managed pooled fund investing primarily in stocks.",
+    "key_features": [
+      "Professional management",
+      "SIP or lump sum",
+      "Expense ratio applies"
+    ]
+  },
+  {
+    "id": "debt-mutual-fund",
+    "name": "Debt Mutual Fund",
+    "category": "mutual_funds",
+    "region": "global",
+    "risk_level": "moderate",
+    "liquidity": "high",
+    "typical_horizon": "short_to_medium",
+    "return_type": "market_linked",
+    "regulator": "SEBI / SEC",
+    "description": "Pooled fund investing in bonds, treasury bills and money market instruments.",
+    "key_features": [
+      "Interest-rate and credit risk",
+      "Various duration categories",
+      "Generally more stable than equity funds"
+    ]
+  },
+  {
+    "id": "hybrid-mutual-fund",
+    "name": "Hybrid / Balanced Fund",
+    "category": "mutual_funds",
+    "region": "global",
+    "risk_level": "moderate",
+    "liquidity": "high",
+    "typical_horizon": "medium",
+    "return_type": "market_linked",
+    "regulator": "SEBI / SEC",
+    "description": "Fund combining equity and debt in a defined or dynamic allocation.",
+    "key_features": [
+      "Built-in diversification",
+      "Some rebalance automatically",
+      "Range from conservative to aggressive"
+    ]
+  },
+  {
+    "id": "elss",
+    "name": "Equity Linked Savings Scheme (ELSS)",
+    "category": "mutual_funds",
+    "region": "IN",
+    "risk_level": "high",
+    "liquidity": "low",
+    "typical_horizon": "long",
+    "return_type": "market_linked",
+    "regulator": "SEBI",
+    "description": "Equity mutual fund with a 3-year lock-in that qualifies for Section 80C deduction (old regime).",
+    "key_features": [
+      "3-year lock-in, shortest among 80C options",
+      "Equity exposure",
+      "Tax deduction under old regime"
+    ]
+  },
+  {
+    "id": "index-fund",
+    "name": "Index Fund",
+    "category": "mutual_funds",
+    "region": "global",
+    "risk_level": "high",
+    "liquidity": "high",
+    "typical_horizon": "long",
+    "return_type": "market_linked",
+    "regulator": "SEBI / SEC",
+    "description": "Passive fund that tracks a market index such as the Nifty 50 or S&P 500.",
+    "key_features": [
+      "Low cost",
+      "Tracks index performance",
+      "Minimal manager risk"
+    ]
+  },
+  {
+    "id": "liquid-fund",
+    "name": "Liquid Fund",
+    "category": "mutual_funds",
+    "region": "IN",
+    "risk_level": "low",
+    "liquidity": "high",
+    "typical_horizon": "short",
+    "return_type": "market_linked",
+    "regulator": "SEBI",
+    "description": "Debt fund investing in instruments maturing within 91 days; used for parking surplus cash.",
+    "key_features": [
+      "Low volatility",
+      "Quick redemption",
+      "Alternative to savings balances"
+    ]
+  },
+  {
+    "id": "money-market-fund",
+    "name": "Money Market Fund",
+    "category": "mutual_funds",
+    "region": "US",
+    "risk_level": "low",
+    "liquidity": "high",
+    "typical_horizon": "short",
+    "return_type": "market_linked",
+    "regulator": "SEC",
+    "description": "Fund investing in short-term high-quality debt, aiming to keep a stable value.",
+    "key_features": [
+      "High liquidity",
+      "Low risk, not deposit-insured",
+      "Yield tracks short-term rates"
+    ]
+  },
+  {
+    "id": "etf",
+    "name": "Exchange-Traded Fund (ETF)",
+    "category": "exchange_traded",
+    "region": "global",
+    "risk_level": "high",
+    "liquidity": "high",
+    "typical_horizon": "long",
+    "return_type": "market_linked",
+    "regulator": "SEBI / SEC",
+    "description": "Fund traded on an exchange like a stock, usually tracking an index, sector or commodity.",
+    "key_features": [
+      "Intraday trading",
+      "Typically low expense ratios",
+      "Requires a demat/brokerage account"
+    ]
+  },
+  {
+    "id": "reit",
+    "name": "Real Estate Investment Trust (REIT)",
+    "category": "exchange_traded",
+    "region": "global",
+    "risk_level": "moderate",
+    "liquidity": "high",
+    "typical_horizon": "long",
+    "return_type": "market_linked",
+    "regulator": "SEBI / SEC",
+    "description": "Listed trust owning income-producing real estate and distributing most of its income.",
+    "key_features": [
+      "Real estate exposure without owning property",
+      "Regular distributions",
+      "Traded on exchanges"
+    ]
+  },
+  {
+    "id": "invit",
+    "name": "Infrastructure Investment Trust (InvIT)",
+    "category": "exchange_traded",
+    "region": "IN",
+    "risk_level": "moderate",
+    "liquidity": "moderate",
+    "typical_horizon": "long",
+    "return_type": "market_linked",
+    "regulator": "SEBI",
+    "description": "Listed trust owning infrastructure assets such as roads or power transmission lines.",
+    "key_features": [
+      "Distribution-focused",
+      "Infrastructure exposure",
+      "Exchange-listed units"
+    ]
+  },
+  {
+    "id": "equity-shares",
+    "name": "Equity Shares (Stocks)",
+    "category": "securities",
+    "region": "global",
+    "risk_level": "very_high",
+    "liquidity": "high",
+    "typical_horizon": "long",
+    "return_type": "market_linked",
+    "regulator": "SEBI / SEC",
+    "description": "Direct ownership in a listed company with returns from price appreciation and dividends.",
+    "key_features": [
+      "Ownership and voting rights",
+      "High volatility",
+      "Requires brokerage/demat account"
+    ]
+  },
+  {
+    "id": "government-bonds",
+    "name": "Government Bonds / Treasuries",
+    "category": "bonds",
+    "region": "global",
+    "risk_level": "low",
+    "liquidity": "moderate",
+    "typical_horizon": "medium_to_long",
+    "return_type": "fixed_interest",
+    "regulator": "RBI / US Treasury",
+    "description": "Debt securities issued by a sovereign government, considered low credit risk.",
+    "key_features": [
+      "Sovereign backing",
+      "Coupon payments",
+      "Price sensitive to interest rates"
+    ]
+  },
+  {
+    "id": "corporate-bonds",
+    "name": "Corporate Bonds",
+    "category": "bonds",
+    "region": "global",
+    "risk_level": "moderate",
+    "liquidity": "moderate",
+    "typical_horizon": "medium",
+    "return_type": "fixed_interest",
+    "regulator": "SEBI / SEC",
+    "description": "Debt issued by companies paying a coupon; yield varies with credit rating.",
+    "key_features": [
+      "Higher yield than government bonds",
+      "Credit risk",
+      "Rated by credit agencies"
+    ]
+  },
+  {
+    "id": "sovereign-gold-bond",
+    "name": "Sovereign Gold Bond (SGB)",
+    "category": "bonds",
+    "region": "IN",
+    "risk_level": "moderate",
+    "liquidity": "low",
+    "typical_horizon": "long",
+    "return_type": "market_linked",
+    "regulator": "RBI",
+    "description": "Government bond denominated in grams of gold with an additional fixed annual interest.",
+    "key_features": [
+      "Linked to gold price",
+      "Fixed annual interest on issue price",
+      "Capital gains tax-exempt if held to maturity"
+    ]
+  },
+  {
+    "id": "tips",
+    "name": "Treasury Inflation-Protected Securities (TIPS)",
+    "category": "bonds",
+    "region": "US",
+    "risk_level": "low",
+    "liquidity": "moderate",
+    "typical_horizon": "medium_to_long",
+    "return_type": "inflation_linked",
+    "regulator": "US Treasury",
+    "description": "US Treasury bonds whose principal adjusts with CPI inflation.",
+    "key_features": [
+      "Inflation protection",
+      "Government backed",
+      "Semi-annual interest"
+    ]
+  },
+  {
+    "id": "futures-options",
+    "name": "Futures & Options (Derivatives)",
+    "category": "derivatives",
+    "region": "global",
+    "risk_level": "very_high",
+    "liquidity": "high",
+    "typical_horizon": "short",
+    "return_type": "market_linked",
+    "regulator": "SEBI / CFTC / SEC",
+    "description": "Contracts deriving value from an underlying asset, used for hedging or speculation.",
+    "key_features": [
+      "Leverage",
+      "Expiry dates",
+      "Can lose more than the margin posted (futures/short options)"
+    ]
+  },
+  {
+    "id": "term-life-insurance",
+    "name": "Term Life Insurance",
+    "category": "insurance",
+    "region": "global",
+    "risk_level": "low",
+    "liquidity": "none",
+    "typical_horizon": "long",
+    "return_type": "protection",
+    "regulator": "IRDAI / State insurance regulators",
+    "description": "Pure life cover paying a death benefit during the policy term; no maturity value.",
+    "key_features": [
+      "Low premiums for high cover",
+      "Riders available",
+      "No payout if outlived (unless return-of-premium variant)"
+    ]
+  },
+  {
+    "id": "whole-life-insurance",
+    "name": "Whole Life Insurance",
+    "category": "insurance",
+    "region": "global",
+    "risk_level": "low",
+    "liquidity": "low",
+    "typical_horizon": "long",
+    "return_type": "guaranteed_plus_bonus",
+    "regulator": "IRDAI / State insurance regulators",
+    "description": "Permanent life cover with a cash-value savings component.",
+    "key_features": [
+      "Lifelong cover",
+      "Cash value accumulation",
+      "Higher premiums than term"
+    ]
+  },
+  {
+    "id": "ulip",
+    "name": "Unit Linked Insurance Plan (ULIP)",
+    "category": "insurance",
+    "region": "IN",
+    "risk_level": "high",
+    "liquidity": "low",
+    "typical_horizon": "long",
+    "return_type": "market_linked",
+    "regulator": "IRDAI",
+    "description": "Combination of life insurance and market-linked investment funds.",
+    "key_features": [
+      "5-year lock-in",
+      "Fund switching",
+      "Mortality and other charges apply"
+    ]
+  },
+  {
+    "id": "health-insurance",
+    "name": "Health Insurance",
+    "category": "insurance",
+    "region": "global",
+    "risk_level": "low",
+    "liquidity": "none",
+    "typical_horizon": "short",
+    "return_type": "protection",
+    "regulator": "IRDAI / State insurance regulators",
+    "description": "Covers hospitalisation and medical expenses up to the sum insured.",
+    "key_features": [
+      "Cashless network hospitals",
+      "Annual renewal",
+      "Section 80D deduction in India (old regime)"
+    ]
+  },
+  {
+    "id": "annuity",
+    "name": "Annuity",
+    "category": "insurance",
+    "region": "global",
+    "risk_level": "low",
+    "liquidity": "none",
+    "typical_horizon": "long",
+    "return_type": "guaranteed_income",
+    "regulator": "IRDAI / State insurance regulators",
+    "description": "Contract that converts a lump sum into a stream of regular income, often for life.",
+    "key_features": [
+      "Guaranteed income",
+      "Immediate or deferred",
+      "Generally illiquid once purchased"
+    ]
+  },
+  {
+    "id": "credit-card",
+    "name": "Credit Card",
+    "category": "credit",
+    "region": "global",
+    "risk_level": "not_applicable",
+    "liquidity": "not_applicable",
+    "typical_horizon": "short",
+    "return_type": "cost_of_credit",
+    "regulator": "RBI / CFPB",
+    "description": "Revolving credit line for purchases with an interest-free grace period if paid in full.",
+    "key_features": [
+      "Rewards and cashback",
+      "High interest on revolving balances",
+      "Impacts credit score"
+    ]
+  },
+  {
+    "id": "personal-loan",
+    "name": "Personal Loan",
+    "category": "credit",
+    "region": "global",
+    "risk_level": "not_applicable",
+    "liquidity": "not_applicable",
+    "typical_horizon": "short_to_medium",
+    "return_type": "cost_of_credit",
+    "regulator": "RBI / CFPB",
+    "description": "Unsecured instalment loan for general purposes.",
+    "key_features": [
+      "No collateral",
+      "Fixed EMIs",
+      "Rate depends on credit profile"
+    ]
+  },
+  {
+    "id": "home-loan",
+    "name": "Home Loan / Mortgage",
+    "category": "credit",
+    "region": "global",
+    "risk_level": "not_applicable",
+    "liquidity": "not_applicable",
+    "typical_horizon": "long",
+    "return_type": "cost_of_credit",
+    "regulator": "RBI / NHB / CFPB",
+    "description": "Secured loan to purchase or build residential property.",
+    "key_features": [
+      "Long tenure",
+      "Fixed or floating rates",
+      "Tax benefits in some jurisdictions"
+    ]
+  },
+  {
+    "id": "gold-loan",
+    "name": "Gold Loan",
+    "category": "credit",
+    "region": "IN",
+    "risk_level": "not_applicable",
+    "liquidity": "not_applicable",
+    "typical_horizon": "short",
+    "return_type": "cost_of_credit",
+    "regulator": "RBI",
+    "description": "Secured loan against pledged gold jewellery.",
+    "key_features": [
+      "Quick disbursal",
+      "Loan-to-value cap set by RBI",
+      "Lower rates than unsecured loans"
+    ]
+  },
+  {
+    "id": "bnpl",
+    "name": "Buy Now, Pay Later (BNPL)",
+    "category": "credit",
+    "region": "global",
+    "risk_level": "not_applicable",
+    "liquidity": "not_applicable",
+    "typical_horizon": "short",
+    "return_type": "cost_of_credit",
+    "regulator": "RBI / CFPB",
+    "description": "Point-of-sale credit splitting a purchase into instalments.",
+    "key_features": [
+      "Often interest-free if paid on time",
+      "Late fees",
+      "May affect credit score"
+    ]
+  }
+]

@@ -1,7 +1,7 @@
 {
   "name": "financial-products-mcp",
-  "version": "0.1.0",
-  "description": "MCP server that returns a searchable catalog of financial products",
+  "version": "0.2.0",
+  "description": "MCP server for credit, wealth, insurance and treasury products with consumer, developer and innovator roles",
   "type": "module",
   "license": "MIT",
   "bin": {
@@ -12,7 +12,7 @@
     "data"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "scripts": {
     "build": "tsc",

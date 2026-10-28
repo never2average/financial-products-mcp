@@ -1,0 +1,30 @@
+# MCP server + Caddy (automatic HTTPS). The MCP joins Supabase's network to reach its Postgres
+# at db:5432; only Caddy publishes ports.
+name: financial-products-mcp
+
+services:
+  mcp:
+    build: ..
+    restart: unless-stopped
+    env_file: .env
+    networks: [default, supabase]
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    env_file: .env
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [mcp]
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+networks:
+  supabase:
+    external: true
+    name: supabase_default

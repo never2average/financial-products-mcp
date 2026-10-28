@@ -1,0 +1,17 @@
+# financial-products MCP server. Installed by deploy/host/install-host.sh into /etc/caddy/sites.d/.
+@DOMAIN@ {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	handle /mcp* {
+		reverse_proxy 127.0.0.1:@PORT@
+	}
+	handle /healthz {
+		reverse_proxy 127.0.0.1:@PORT@
+	}
+	handle {
+		respond "financial-products MCP server. Connect an MCP client to https://@DOMAIN@/mcp" 200
+	}
+}

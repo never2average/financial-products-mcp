@@ -1,0 +1,12 @@
+{$MCP_DOMAIN} {
+	encode gzip
+	handle /mcp* {
+		reverse_proxy mcp:3000
+	}
+	handle /healthz {
+		reverse_proxy mcp:3000
+	}
+	handle {
+		respond "financial-products MCP server. Connect an MCP client to https://{$MCP_DOMAIN}/mcp" 200
+	}
+}

@@ -36,7 +36,7 @@ Bundled catalog products are read-only and pass the same checks.
 
 ## Install & build
 
-Requires Node.js 22.13+ (uses the built-in `node:sqlite`).
+Requires Node.js 22.13+ and a Postgres database. [Supabase](https://supabase.com) (self-hosted or cloud) is the intended backend; any Postgres 15+ works.
 
 ```bash
 git clone https://github.com/never2average/financial-products-mcp.git
@@ -47,9 +47,12 @@ npm run build
 
 ## Users and tokens
 
-Users, roles, products, enrollments and apps are stored in SQLite (`~/.financial-products-mcp/db.sqlite`, override with `FINANCIAL_PRODUCTS_DB`). Create users with the CLI. Each command prints a token once; only its hash is stored.
+Users, roles, products, enrollments and apps are stored in Postgres (Supabase), in a dedicated `financial_products` schema. Supabase's auto-generated REST API only exposes `public`, so this data isn't reachable through it. Set `DATABASE_URL` to the connection string; the schema is created on first start. If the schema already exists and is owned by the app's role (as the deploy script sets it up), the role needs no database-level privileges.
+
+Create users with the CLI. Each command prints a token once; only its hash is stored.
 
 ```bash
+export DATABASE_URL=postgres://user:password@host:5432/postgres
 node dist/index.js users add --name "Asha" --role consumer
 node dist/index.js users add --name "Dev"  --role developer
 node dist/index.js users add --name "Ines" --role innovator
@@ -66,7 +69,7 @@ Pass the user's token in `FINANCIAL_PRODUCTS_TOKEN`. Without it, the server runs
 Claude Code:
 
 ```bash
-claude mcp add financial-products -e FINANCIAL_PRODUCTS_TOKEN=fpm_... -- node /absolute/path/to/financial-products-mcp/dist/index.js
+claude mcp add financial-products -e DATABASE_URL=postgres://... -e FINANCIAL_PRODUCTS_TOKEN=fpm_... -- node /absolute/path/to/financial-products-mcp/dist/index.js
 ```
 
 Claude Desktop / other clients:
@@ -77,7 +80,7 @@ Claude Desktop / other clients:
     "financial-products": {
       "command": "node",
       "args": ["/absolute/path/to/financial-products-mcp/dist/index.js"],
-      "env": { "FINANCIAL_PRODUCTS_TOKEN": "fpm_..." }
+      "env": { "DATABASE_URL": "postgres://...", "FINANCIAL_PRODUCTS_TOKEN": "fpm_..." }
     }
   }
 }
@@ -97,14 +100,39 @@ Clients connect to `http://host:3000/mcp` (Streamable HTTP) with `Authorization:
 claude mcp add --transport http financial-products https://your-host/mcp --header "Authorization: Bearer fpm_..."
 ```
 
+## Deploying to a VM with self-hosted Supabase
+
+[`deploy/setup-vm.sh`](deploy/setup-vm.sh) sets up an Ubuntu VM end to end and is safe to re-run for updates:
+
+```bash
+# as root on the VM, with the domain's A record pointing at it
+curl -fsSL https://raw.githubusercontent.com/never2average/financial-products-mcp/main/deploy/setup-vm.sh -o setup-vm.sh
+bash setup-vm.sh mcp.example.com [git-ref]
+```
+
+What it does:
+
+- Installs Docker and opens only SSH, 80 and 443 in `ufw`.
+- Runs Supabase's official Docker stack in `/opt/supabase` with freshly generated secrets. Studio, the API gateway and the pooler are bound to localhost; reach Studio with `ssh -L 8000:127.0.0.1:8000 root@<vm>`.
+- Creates a least-privilege Postgres role `financial_products_app` that owns only the `financial_products` schema.
+- Builds the MCP image and runs it with Caddy, which gets the TLS certificate automatically, serving `https://<domain>/mcp`.
+
+Create users on the VM:
+
+```bash
+docker compose -f /opt/financial-products-mcp/src/deploy/docker-compose.yml exec mcp \
+  node dist/index.js users add --name "Ines" --role innovator
+```
+
 ## Seeding your own catalog
 
-Set `FINANCIAL_PRODUCTS_FILE` to a JSON array with the same fields as [`data/products.json`](data/products.json). These products are inserted as published, read-only products when the database is opened.
+Set `FINANCIAL_PRODUCTS_FILE` to a JSON array with the same fields as [`data/products.json`](data/products.json). On every start, products whose `id` isn't in the database yet are inserted as published, read-only products.
 
 ## Development
 
 ```bash
-npm test   # builds, then tests roles, the innovator workflow, ownership, HTTP auth and the CLI
+npm test   # builds, then tests roles, the innovator workflow, ownership and HTTP auth on in-process Postgres (PGlite)
+TEST_DATABASE_URL=postgres://postgres:pw@localhost:5432/postgres npm test   # also runs the CLI/stdio test against a real Postgres
 ```
 
 ## Disclaimer

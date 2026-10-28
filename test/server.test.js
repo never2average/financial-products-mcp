@@ -1,9 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { PGlite } from "@electric-sql/pglite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -32,15 +30,22 @@ const call = async (client, name, args = {}) => {
 };
 const toolNames = async (client) => (await client.listTools()).tools.map((t) => t.name).sort();
 
-function setup() {
-  const store = new Store(":memory:");
-  const as = (name, roles) => store.createUser(name, roles).user;
+// In-process Postgres, so tests exercise the same SQL as Supabase without a database server.
+async function openStore() {
+  const pg = new PGlite();
+  return Store.open({ query: (sql, params) => pg.query(sql, params), exec: (sql) => pg.exec(sql), close: () => pg.close() });
+}
+
+async function setup() {
+  const store = await openStore();
+  const as = async (name, roles) => (await store.createUser(name, roles)).user;
   return {
     store,
-    consumer: as("Asha", ["consumer"]),
-    developer: as("Dev", ["developer"]),
-    innovator: as("Ines", ["innovator"]),
-    rival: as("Ravi", ["innovator"]),
+    as,
+    consumer: await as("Asha", ["consumer"]),
+    developer: await as("Dev", ["developer"]),
+    innovator: await as("Ines", ["innovator"]),
+    rival: await as("Ravi", ["innovator"]),
   };
 }
 
@@ -60,17 +65,17 @@ const greenFd = {
 };
 
 test("each role sees only its own tools", async () => {
-  const { store, consumer, developer, innovator } = setup();
+  const { store, as, consumer, developer, innovator } = await setup();
   assert.deepEqual(await toolNames(await connect(store)), CATALOG_TOOLS);
   assert.deepEqual(await toolNames(await connect(store, consumer)), [...CATALOG_TOOLS, ...CONSUMER_TOOLS].sort());
   assert.deepEqual(await toolNames(await connect(store, developer)), [...CATALOG_TOOLS, ...DEVELOPER_TOOLS].sort());
   assert.deepEqual(await toolNames(await connect(store, innovator)), [...CATALOG_TOOLS, ...INNOVATOR_TOOLS].sort());
-  const multi = store.createUser("Max", ["consumer", "innovator"]).user;
+  const multi = await as("Max", ["consumer", "innovator"]);
   assert.deepEqual(await toolNames(await connect(store, multi)), [...CATALOG_TOOLS, ...CONSUMER_TOOLS, ...INNOVATOR_TOOLS].sort());
 });
 
 test("catalog covers credit, wealth, insurance and treasury", async () => {
-  const client = await connect(setup().store);
+  const client = await connect((await setup()).store);
   const { data } = await call(client, "list_categories");
   for (const line of ["credit", "wealth", "insurance", "treasury"]) assert.ok(data.product_lines[line] >= 5, line);
   const treasury = (await call(client, "list_products", { product_line: "treasury", limit: 100 })).data;
@@ -87,7 +92,7 @@ test("every bundled product passes the product test suite", () => {
 });
 
 test("list_products filters and paginates", async () => {
-  const client = await connect(setup().store);
+  const client = await connect((await setup()).store);
   const us = (await call(client, "list_products", { region: "US" })).data;
   assert.ok(us.products.every((p) => p.region === "US" || p.region === "global"));
   const gold = (await call(client, "list_products", { query: "gold" })).data;
@@ -97,7 +102,7 @@ test("list_products filters and paginates", async () => {
 });
 
 test("innovator creates, tests and publishes; consumer and developer then use it", async () => {
-  const { store, consumer, developer, innovator } = setup();
+  const { store, as, consumer, developer, innovator } = await setup();
   const inno = await connect(store, innovator);
   const guest = await connect(store);
 
@@ -143,7 +148,7 @@ test("innovator creates, tests and publishes; consumer and developer then use it
 });
 
 test("product tests enforce product-line rules and catch misleading claims", async () => {
-  const { store, innovator } = setup();
+  const { store, innovator } = await setup();
   const inno = await connect(store, innovator);
   await call(inno, "create_product", {
     ...greenFd,
@@ -168,7 +173,7 @@ test("product tests enforce product-line rules and catch misleading claims", asy
 });
 
 test("users cannot touch other users' products, apps or enrollments", async () => {
-  const { store, consumer, developer, innovator, rival } = setup();
+  const { store, as, consumer, developer, innovator, rival } = await setup();
   await call(await connect(store, innovator), "create_product", greenFd);
   const rivalClient = await connect(store, rival);
   assert.equal((await call(rivalClient, "test_product", { id: "green-fd" })).isError, true);
@@ -179,17 +184,17 @@ test("users cannot touch other users' products, apps or enrollments", async () =
   const app = (await call(await connect(store, developer), "create_app", {
     name: "A", description: "B", audience: "C", product_ids: ["ppf"],
   })).data;
-  const otherDev = await connect(store, store.createUser("Dee", ["developer"]).user);
+  const otherDev = await connect(store, await as("Dee", ["developer"]));
   assert.equal((await call(otherDev, "preview_app", { app_id: app.id })).isError, true);
 
   const e = (await call(await connect(store, consumer), "enroll_in_product", { product_id: "ppf" })).data;
-  const otherConsumer = await connect(store, store.createUser("Cy", ["consumer"]).user);
+  const otherConsumer = await connect(store, await as("Cy", ["consumer"]));
   assert.equal((await call(otherConsumer, "cancel_enrollment", { enrollment_id: e.id })).isError, true);
 });
 
 test("HTTP transport authenticates bearer tokens", async () => {
-  const store = new Store(":memory:");
-  const { token } = store.createUser("Ines", ["innovator"]);
+  const store = await openStore();
+  const { token } = await store.createUser("Ines", ["innovator"]);
   const http = createMcpHttpServer(store).listen(0, "127.0.0.1");
   await new Promise((r) => http.once("listening", r));
   const url = new URL(`http://127.0.0.1:${http.address().port}/mcp`);
@@ -210,8 +215,9 @@ test("HTTP transport authenticates bearer tokens", async () => {
   }
 });
 
-test("CLI issues tokens that work over stdio", async () => {
-  const env = { ...process.env, FINANCIAL_PRODUCTS_DB: join(mkdtempSync(join(tmpdir(), "fpm-")), "db.sqlite") };
+// Child processes need a real Postgres; CI provides one, locally set TEST_DATABASE_URL.
+test("CLI issues tokens that work over stdio against Postgres", { skip: !process.env.TEST_DATABASE_URL }, async () => {
+  const env = { ...process.env, DATABASE_URL: process.env.TEST_DATABASE_URL };
   const out = execFileSync(process.execPath, ["dist/index.js", "users", "add", "--name", "Asha", "--role", "consumer"], {
     env,
     stdio: ["ignore", "pipe", "ignore"],

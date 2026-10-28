@@ -1,9 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { loadCatalog, type FinancialProduct } from "./catalog.js";
+import type { Db } from "./db.js";
 import type { TestReport } from "./product-tests.js";
 
 export const ROLES = ["consumer", "developer", "innovator"] as const;
@@ -48,198 +45,261 @@ export interface App {
   updated_at: string;
 }
 
-export const DEFAULT_DB_PATH = join(homedir(), ".financial-products-mcp", "db.sqlite");
+export class DuplicateError extends Error {}
 
-const now = () => new Date().toISOString();
+// Kept out of `public` so Supabase's auto-generated REST API never exposes these tables.
+const TABLES = `
+  CREATE TABLE IF NOT EXISTS financial_products.users (
+    id uuid PRIMARY KEY,
+    name text NOT NULL,
+    roles text[] NOT NULL,
+    token_hash text NOT NULL UNIQUE,
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE TABLE IF NOT EXISTS financial_products.products (
+    id text PRIMARY KEY,
+    owner_id uuid REFERENCES financial_products.users(id),
+    status text NOT NULL CHECK (status IN ('draft', 'published', 'unpublished')),
+    data jsonb NOT NULL,
+    last_test jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    published_at timestamptz
+  );
+  CREATE INDEX IF NOT EXISTS products_owner_idx ON financial_products.products (owner_id);
+  CREATE TABLE IF NOT EXISTS financial_products.enrollments (
+    id uuid PRIMARY KEY,
+    user_id uuid NOT NULL REFERENCES financial_products.users(id),
+    product_id text NOT NULL REFERENCES financial_products.products(id),
+    amount numeric,
+    status text NOT NULL CHECK (status IN ('active', 'cancelled')),
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS enrollments_one_active_idx
+    ON financial_products.enrollments (user_id, product_id) WHERE status = 'active';
+  CREATE TABLE IF NOT EXISTS financial_products.apps (
+    id uuid PRIMARY KEY,
+    owner_id uuid NOT NULL REFERENCES financial_products.users(id),
+    name text NOT NULL,
+    description text NOT NULL,
+    audience text NOT NULL,
+    product_ids text[] NOT NULL,
+    status text NOT NULL CHECK (status IN ('draft', 'published')),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS apps_owner_idx ON financial_products.apps (owner_id);
+`;
+
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
+const iso = (v: unknown) => (v == null ? null : new Date(v as string).toISOString());
+const isUniqueViolation = (e: unknown) => (e as { code?: string })?.code === "23505";
 
 type Row = Record<string, unknown>;
 
+const toUser = (r: Row): User => ({ id: r.id as string, name: r.name as string, roles: r.roles as Role[], created_at: iso(r.created_at)! });
+
 const toProductRecord = (r: Row): ProductRecord => ({
-  product: JSON.parse(r.data as string),
+  product: r.data as FinancialProduct,
   owner_id: r.owner_id as string | null,
   status: r.status as ProductStatus,
-  last_test: r.last_test ? JSON.parse(r.last_test as string) : null,
-  created_at: r.created_at as string,
-  updated_at: r.updated_at as string,
-  published_at: r.published_at as string | null,
+  last_test: (r.last_test as TestReport | null) ?? null,
+  created_at: iso(r.created_at)!,
+  updated_at: iso(r.updated_at)!,
+  published_at: iso(r.published_at),
 });
 
-const toApp = (r: Row): App => ({ ...(r as unknown as App), product_ids: JSON.parse(r.product_ids as string) });
+const toEnrollment = (r: Row): Enrollment => ({
+  id: r.id as string,
+  user_id: r.user_id as string,
+  product_id: r.product_id as string,
+  amount: r.amount == null ? null : Number(r.amount),
+  status: r.status as Enrollment["status"],
+  created_at: iso(r.created_at)!,
+});
+
+const toApp = (r: Row): App => ({
+  id: r.id as string,
+  owner_id: r.owner_id as string,
+  name: r.name as string,
+  description: r.description as string,
+  audience: r.audience as string,
+  product_ids: r.product_ids as string[],
+  status: r.status as App["status"],
+  created_at: iso(r.created_at)!,
+  updated_at: iso(r.updated_at)!,
+});
 
 export class Store {
-  readonly db: DatabaseSync;
+  private constructor(private readonly db: Db) {}
 
-  constructor(path = process.env.FINANCIAL_PRODUCTS_DB ?? DEFAULT_DB_PATH, seed: FinancialProduct[] = loadCatalog()) {
-    if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
-    this.db = new DatabaseSync(path);
-    this.db.exec(`
-      PRAGMA journal_mode = WAL;
-      PRAGMA foreign_keys = ON;
-      CREATE TABLE IF NOT EXISTS users (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        roles TEXT NOT NULL,
-        token_hash TEXT NOT NULL UNIQUE,
-        created_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS products (
-        id TEXT PRIMARY KEY,
-        owner_id TEXT REFERENCES users(id),
-        status TEXT NOT NULL,
-        data TEXT NOT NULL,
-        last_test TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        published_at TEXT
-      );
-      CREATE TABLE IF NOT EXISTS enrollments (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL REFERENCES users(id),
-        product_id TEXT NOT NULL REFERENCES products(id),
-        amount REAL,
-        status TEXT NOT NULL,
-        created_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS apps (
-        id TEXT PRIMARY KEY,
-        owner_id TEXT NOT NULL REFERENCES users(id),
-        name TEXT NOT NULL,
-        description TEXT NOT NULL,
-        audience TEXT NOT NULL,
-        product_ids TEXT NOT NULL,
-        status TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-    `);
-    const insert = this.db.prepare(
-      "INSERT OR IGNORE INTO products (id, owner_id, status, data, created_at, updated_at, published_at) VALUES (?, NULL, 'published', ?, ?, ?, ?)",
+  // Creates the schema if needed and seeds the bundled catalog as published, read-only products.
+  // A least-privilege role can own a pre-created schema without database-level CREATE rights,
+  // and CREATE SCHEMA IF NOT EXISTS would still demand them, so only create it when missing.
+  static async open(db: Db, seed: FinancialProduct[] = loadCatalog()): Promise<Store> {
+    const { rows } = await db.query("SELECT 1 FROM pg_namespace WHERE nspname = 'financial_products'");
+    if (rows.length === 0) await db.exec("CREATE SCHEMA financial_products");
+    await db.exec(TABLES);
+    await db.query(
+      `INSERT INTO financial_products.products (id, owner_id, status, data, published_at)
+       SELECT p->>'id', NULL, 'published', p, now() FROM jsonb_array_elements($1::jsonb) AS p
+       ON CONFLICT (id) DO NOTHING`,
+      [JSON.stringify(seed)],
     );
-    const ts = now();
-    for (const p of seed) insert.run(p.id, JSON.stringify(p), ts, ts, ts);
+    return new Store(db);
+  }
+
+  close(): Promise<void> {
+    return this.db.close();
+  }
+
+  async ping(): Promise<void> {
+    await this.db.query("SELECT 1");
+  }
+
+  private async one(sql: string, params: unknown[]): Promise<Row | undefined> {
+    return (await this.db.query(sql, params)).rows[0];
+  }
+
+  private async all(sql: string, params: unknown[] = []): Promise<Row[]> {
+    return (await this.db.query(sql, params)).rows;
   }
 
   // Users
 
-  createUser(name: string, roles: Role[]): { user: User; token: string } {
+  async createUser(name: string, roles: Role[]): Promise<{ user: User; token: string }> {
     const token = `fpm_${randomBytes(24).toString("base64url")}`;
-    const user: User = { id: randomUUID(), name, roles, created_at: now() };
-    this.db
-      .prepare("INSERT INTO users (id, name, roles, token_hash, created_at) VALUES (?, ?, ?, ?, ?)")
-      .run(user.id, name, JSON.stringify(roles), hashToken(token), user.created_at);
-    return { user, token };
+    const r = await this.one(
+      "INSERT INTO financial_products.users (id, name, roles, token_hash) VALUES ($1, $2, $3, $4) RETURNING *",
+      [randomUUID(), name, roles, hashToken(token)],
+    );
+    return { user: toUser(r!), token };
   }
 
-  userByToken(token: string): User | undefined {
-    const r = this.db.prepare("SELECT id, name, roles, created_at FROM users WHERE token_hash = ?").get(hashToken(token)) as Row | undefined;
-    return r && { ...(r as unknown as User), roles: JSON.parse(r.roles as string) };
+  async userByToken(token: string): Promise<User | undefined> {
+    const r = await this.one("SELECT * FROM financial_products.users WHERE token_hash = $1", [hashToken(token)]);
+    return r && toUser(r);
   }
 
-  listUsers(): User[] {
-    return (this.db.prepare("SELECT id, name, roles, created_at FROM users ORDER BY created_at").all() as Row[]).map((r) => ({
-      ...(r as unknown as User),
-      roles: JSON.parse(r.roles as string),
-    }));
+  async listUsers(): Promise<User[]> {
+    return (await this.all("SELECT * FROM financial_products.users ORDER BY created_at")).map(toUser);
   }
 
   // Products
 
-  getProduct(id: string): ProductRecord | undefined {
-    const r = this.db.prepare("SELECT * FROM products WHERE id = ?").get(id) as Row | undefined;
+  async getProduct(id: string): Promise<ProductRecord | undefined> {
+    const r = await this.one("SELECT * FROM financial_products.products WHERE id = $1", [id]);
     return r && toProductRecord(r);
   }
 
-  publishedProducts(): FinancialProduct[] {
-    return (this.db.prepare("SELECT * FROM products WHERE status = 'published' ORDER BY rowid").all() as Row[]).map(
-      (r) => toProductRecord(r).product,
+  async publishedProducts(): Promise<FinancialProduct[]> {
+    const rows = await this.all("SELECT * FROM financial_products.products WHERE status = 'published' ORDER BY published_at, id");
+    return rows.map((r) => toProductRecord(r).product);
+  }
+
+  async productsByOwner(ownerId: string): Promise<ProductRecord[]> {
+    return (await this.all("SELECT * FROM financial_products.products WHERE owner_id = $1 ORDER BY created_at", [ownerId])).map(
+      toProductRecord,
     );
   }
 
-  productsByOwner(ownerId: string): ProductRecord[] {
-    return (this.db.prepare("SELECT * FROM products WHERE owner_id = ? ORDER BY created_at").all(ownerId) as Row[]).map(toProductRecord);
+  async insertDraft(ownerId: string, p: FinancialProduct): Promise<ProductRecord> {
+    try {
+      const r = await this.one(
+        "INSERT INTO financial_products.products (id, owner_id, status, data) VALUES ($1, $2, 'draft', $3) RETURNING *",
+        [p.id, ownerId, JSON.stringify(p)],
+      );
+      return toProductRecord(r!);
+    } catch (e) {
+      if (isUniqueViolation(e)) throw new DuplicateError(`Product id '${p.id}' is taken`);
+      throw e;
+    }
   }
 
-  insertDraft(ownerId: string, p: FinancialProduct): ProductRecord {
-    const ts = now();
-    this.db
-      .prepare("INSERT INTO products (id, owner_id, status, data, created_at, updated_at) VALUES (?, ?, 'draft', ?, ?, ?)")
-      .run(p.id, ownerId, JSON.stringify(p), ts, ts);
-    return this.getProduct(p.id)!;
+  async saveProduct(p: FinancialProduct, status: ProductStatus): Promise<ProductRecord> {
+    const r = await this.one(
+      "UPDATE financial_products.products SET data = $1, status = $2, updated_at = now() WHERE id = $3 RETURNING *",
+      [JSON.stringify(p), status, p.id],
+    );
+    return toProductRecord(r!);
   }
 
-  saveProduct(p: FinancialProduct, status: ProductStatus): ProductRecord {
-    this.db.prepare("UPDATE products SET data = ?, status = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(p), status, now(), p.id);
-    return this.getProduct(p.id)!;
+  async saveTestReport(id: string, report: TestReport): Promise<void> {
+    await this.db.query("UPDATE financial_products.products SET last_test = $1 WHERE id = $2", [JSON.stringify(report), id]);
   }
 
-  saveTestReport(id: string, report: TestReport): void {
-    this.db.prepare("UPDATE products SET last_test = ? WHERE id = ?").run(JSON.stringify(report), id);
-  }
-
-  setProductStatus(id: string, status: ProductStatus): ProductRecord {
-    const ts = now();
-    this.db
-      .prepare("UPDATE products SET status = ?, updated_at = ?, published_at = CASE WHEN ? = 'published' THEN ? ELSE published_at END WHERE id = ?")
-      .run(status, ts, status, ts, id);
-    return this.getProduct(id)!;
+  async setProductStatus(id: string, status: ProductStatus): Promise<ProductRecord> {
+    const r = await this.one(
+      `UPDATE financial_products.products
+       SET status = $1, updated_at = now(), published_at = CASE WHEN $1 = 'published' THEN now() ELSE published_at END
+       WHERE id = $2 RETURNING *`,
+      [status, id],
+    );
+    return toProductRecord(r!);
   }
 
   // Enrollments
 
-  createEnrollment(userId: string, productId: string, amount: number | null): Enrollment {
-    const e: Enrollment = { id: randomUUID(), user_id: userId, product_id: productId, amount, status: "active", created_at: now() };
-    this.db
-      .prepare("INSERT INTO enrollments (id, user_id, product_id, amount, status, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(e.id, userId, productId, amount, e.status, e.created_at);
-    return e;
+  async createEnrollment(userId: string, productId: string, amount: number | null): Promise<Enrollment> {
+    try {
+      const r = await this.one(
+        "INSERT INTO financial_products.enrollments (id, user_id, product_id, amount, status) VALUES ($1, $2, $3, $4, 'active') RETURNING *",
+        [randomUUID(), userId, productId, amount],
+      );
+      return toEnrollment(r!);
+    } catch (e) {
+      if (isUniqueViolation(e)) throw new DuplicateError(`Already enrolled in '${productId}'`);
+      throw e;
+    }
   }
 
-  enrollmentsByUser(userId: string): Enrollment[] {
-    return this.db.prepare("SELECT * FROM enrollments WHERE user_id = ? ORDER BY created_at").all(userId) as unknown as Enrollment[];
+  async enrollmentsByUser(userId: string): Promise<Enrollment[]> {
+    return (await this.all("SELECT * FROM financial_products.enrollments WHERE user_id = $1 ORDER BY created_at", [userId])).map(
+      toEnrollment,
+    );
   }
 
-  getEnrollment(id: string): Enrollment | undefined {
-    return this.db.prepare("SELECT * FROM enrollments WHERE id = ?").get(id) as unknown as Enrollment | undefined;
+  async getEnrollment(id: string): Promise<Enrollment | undefined> {
+    const r = await this.one("SELECT * FROM financial_products.enrollments WHERE id::text = $1", [id]);
+    return r && toEnrollment(r);
   }
 
-  cancelEnrollment(id: string): Enrollment {
-    this.db.prepare("UPDATE enrollments SET status = 'cancelled' WHERE id = ?").run(id);
-    return this.getEnrollment(id)!;
+  async cancelEnrollment(id: string): Promise<Enrollment> {
+    const r = await this.one("UPDATE financial_products.enrollments SET status = 'cancelled' WHERE id::text = $1 RETURNING *", [id]);
+    return toEnrollment(r!);
   }
 
   // Apps
 
-  createApp(ownerId: string, fields: Pick<App, "name" | "description" | "audience" | "product_ids">): App {
-    const ts = now();
-    const app: App = { id: randomUUID(), owner_id: ownerId, ...fields, status: "draft", created_at: ts, updated_at: ts };
-    this.db
-      .prepare("INSERT INTO apps (id, owner_id, name, description, audience, product_ids, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(app.id, ownerId, app.name, app.description, app.audience, JSON.stringify(app.product_ids), app.status, ts, ts);
-    return app;
+  async createApp(ownerId: string, fields: Pick<App, "name" | "description" | "audience" | "product_ids">): Promise<App> {
+    const r = await this.one(
+      `INSERT INTO financial_products.apps (id, owner_id, name, description, audience, product_ids, status)
+       VALUES ($1, $2, $3, $4, $5, $6, 'draft') RETURNING *`,
+      [randomUUID(), ownerId, fields.name, fields.description, fields.audience, fields.product_ids],
+    );
+    return toApp(r!);
   }
 
-  getApp(id: string): App | undefined {
-    const r = this.db.prepare("SELECT * FROM apps WHERE id = ?").get(id) as Row | undefined;
+  async getApp(id: string): Promise<App | undefined> {
+    const r = await this.one("SELECT * FROM financial_products.apps WHERE id::text = $1", [id]);
     return r && toApp(r);
   }
 
-  saveApp(app: App): App {
-    this.db
-      .prepare("UPDATE apps SET name = ?, description = ?, audience = ?, product_ids = ?, status = ?, updated_at = ? WHERE id = ?")
-      .run(app.name, app.description, app.audience, JSON.stringify(app.product_ids), app.status, now(), app.id);
-    return this.getApp(app.id)!;
+  async saveApp(app: App): Promise<App> {
+    const r = await this.one(
+      `UPDATE financial_products.apps
+       SET name = $1, description = $2, audience = $3, product_ids = $4, status = $5, updated_at = now()
+       WHERE id = $6 RETURNING *`,
+      [app.name, app.description, app.audience, app.product_ids, app.status, app.id],
+    );
+    return toApp(r!);
   }
 
-  appsByOwner(ownerId: string): App[] {
-    return (this.db.prepare("SELECT * FROM apps WHERE owner_id = ? ORDER BY created_at").all(ownerId) as Row[]).map(toApp);
+  async appsByOwner(ownerId: string): Promise<App[]> {
+    return (await this.all("SELECT * FROM financial_products.apps WHERE owner_id = $1 ORDER BY created_at", [ownerId])).map(toApp);
   }
 
-  publishedApps(): App[] {
-    return (this.db.prepare("SELECT * FROM apps WHERE status = 'published' ORDER BY created_at").all() as Row[]).map(toApp);
-  }
-
-  close(): void {
-    this.db.close();
+  async publishedApps(): Promise<App[]> {
+    return (await this.all("SELECT * FROM financial_products.apps WHERE status = 'published' ORDER BY created_at")).map(toApp);
   }
 }

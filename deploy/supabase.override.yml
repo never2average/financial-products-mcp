@@ -1,0 +1,11 @@
+# Copied to the Supabase docker directory as docker-compose.override.yml.
+# Keeps Supabase private: the API gateway (Studio) and the pooler listen on localhost only.
+# Reach Studio with an SSH tunnel: ssh -L 8000:127.0.0.1:8000 root@<vm>
+services:
+  api-gw:
+    ports: !override
+      - 127.0.0.1:${KONG_HTTP_PORT:-8000}:8000/tcp
+  supavisor:
+    ports: !override
+      - 127.0.0.1:${POSTGRES_PORT}:5432
+      - 127.0.0.1:${POOLER_PROXY_PORT_TRANSACTION}:6543

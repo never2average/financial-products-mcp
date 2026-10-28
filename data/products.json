@@ -2,6 +2,7 @@
   {
     "id": "savings-account",
     "name": "Savings Account",
+    "product_line": "treasury",
     "category": "deposits",
     "region": "global",
     "risk_level": "low",
@@ -19,6 +20,7 @@
   {
     "id": "fixed-deposit",
     "name": "Fixed Deposit / Term Deposit",
+    "product_line": "treasury",
     "category": "deposits",
     "region": "global",
     "risk_level": "low",
@@ -36,6 +38,7 @@
   {
     "id": "recurring-deposit",
     "name": "Recurring Deposit",
+    "product_line": "treasury",
     "category": "deposits",
     "region": "IN",
     "risk_level": "low",
@@ -53,6 +56,7 @@
   {
     "id": "certificate-of-deposit",
     "name": "Certificate of Deposit (CD)",
+    "product_line": "treasury",
     "category": "deposits",
     "region": "US",
     "risk_level": "low",
@@ -70,6 +74,7 @@
   {
     "id": "money-market-account",
     "name": "Money Market Account",
+    "product_line": "treasury",
     "category": "deposits",
     "region": "US",
     "risk_level": "low",
@@ -87,6 +92,7 @@
   {
     "id": "ppf",
     "name": "Public Provident Fund (PPF)",
+    "product_line": "wealth",
     "category": "government_savings",
     "region": "IN",
     "risk_level": "low",
@@ -104,6 +110,7 @@
   {
     "id": "nps",
     "name": "National Pension System (NPS)",
+    "product_line": "wealth",
     "category": "retirement",
     "region": "IN",
     "risk_level": "moderate",
@@ -121,6 +128,7 @@
   {
     "id": "epf",
     "name": "Employees' Provident Fund (EPF)",
+    "product_line": "wealth",
     "category": "retirement",
     "region": "IN",
     "risk_level": "low",
@@ -138,6 +146,7 @@
   {
     "id": "sukanya-samriddhi",
     "name": "Sukanya Samriddhi Yojana",
+    "product_line": "wealth",
     "category": "government_savings",
     "region": "IN",
     "risk_level": "low",
@@ -155,6 +164,7 @@
   {
     "id": "nsc",
     "name": "National Savings Certificate (NSC)",
+    "product_line": "wealth",
     "category": "government_savings",
     "region": "IN",
     "risk_level": "low",
@@ -172,6 +182,7 @@
   {
     "id": "scss",
     "name": "Senior Citizens' Savings Scheme (SCSS)",
+    "product_line": "wealth",
     "category": "government_savings",
     "region": "IN",
     "risk_level": "low",
@@ -189,6 +200,7 @@
   {
     "id": "401k",
     "name": "401(k) Plan",
+    "product_line": "wealth",
     "category": "retirement",
     "region": "US",
     "risk_level": "moderate",
@@ -206,6 +218,7 @@
   {
     "id": "ira",
     "name": "Individual Retirement Account (IRA)",
+    "product_line": "wealth",
     "category": "retirement",
     "region": "US",
     "risk_level": "moderate",
@@ -223,6 +236,7 @@
   {
     "id": "equity-mutual-fund",
     "name": "Equity Mutual Fund",
+    "product_line": "wealth",
     "category": "mutual_funds",
     "region": "global",
     "risk_level": "high",
@@ -240,6 +254,7 @@
   {
     "id": "debt-mutual-fund",
     "name": "Debt Mutual Fund",
+    "product_line": "wealth",
     "category": "mutual_funds",
     "region": "global",
     "risk_level": "moderate",
@@ -257,6 +272,7 @@
   {
     "id": "hybrid-mutual-fund",
     "name": "Hybrid / Balanced Fund",
+    "product_line": "wealth",
     "category": "mutual_funds",
     "region": "global",
     "risk_level": "moderate",
@@ -274,6 +290,7 @@
   {
     "id": "elss",
     "name": "Equity Linked Savings Scheme (ELSS)",
+    "product_line": "wealth",
     "category": "mutual_funds",
     "region": "IN",
     "risk_level": "high",
@@ -291,6 +308,7 @@
   {
     "id": "index-fund",
     "name": "Index Fund",
+    "product_line": "wealth",
     "category": "mutual_funds",
     "region": "global",
     "risk_level": "high",
@@ -308,6 +326,7 @@
   {
     "id": "liquid-fund",
     "name": "Liquid Fund",
+    "product_line": "treasury",
     "category": "mutual_funds",
     "region": "IN",
     "risk_level": "low",
@@ -325,6 +344,7 @@
   {
     "id": "money-market-fund",
     "name": "Money Market Fund",
+    "product_line": "treasury",
     "category": "mutual_funds",
     "region": "US",
     "risk_level": "low",
@@ -342,6 +362,7 @@
   {
     "id": "etf",
     "name": "Exchange-Traded Fund (ETF)",
+    "product_line": "wealth",
     "category": "exchange_traded",
     "region": "global",
     "risk_level": "high",
@@ -359,6 +380,7 @@
   {
     "id": "reit",
     "name": "Real Estate Investment Trust (REIT)",
+    "product_line": "wealth",
     "category": "exchange_traded",
     "region": "global",
     "risk_level": "moderate",
@@ -376,6 +398,7 @@
   {
     "id": "invit",
     "name": "Infrastructure Investment Trust (InvIT)",
+    "product_line": "wealth",
     "category": "exchange_traded",
     "region": "IN",
     "risk_level": "moderate",
@@ -393,6 +416,7 @@
   {
     "id": "equity-shares",
     "name": "Equity Shares (Stocks)",
+    "product_line": "wealth",
     "category": "securities",
     "region": "global",
     "risk_level": "very_high",
@@ -410,6 +434,7 @@
   {
     "id": "government-bonds",
     "name": "Government Bonds / Treasuries",
+    "product_line": "treasury",
     "category": "bonds",
     "region": "global",
     "risk_level": "low",
@@ -427,6 +452,7 @@
   {
     "id": "corporate-bonds",
     "name": "Corporate Bonds",
+    "product_line": "treasury",
     "category": "bonds",
     "region": "global",
     "risk_level": "moderate",
@@ -444,6 +470,7 @@
   {
     "id": "sovereign-gold-bond",
     "name": "Sovereign Gold Bond (SGB)",
+    "product_line": "treasury",
     "category": "bonds",
     "region": "IN",
     "risk_level": "moderate",
@@ -461,6 +488,7 @@
   {
     "id": "tips",
     "name": "Treasury Inflation-Protected Securities (TIPS)",
+    "product_line": "treasury",
     "category": "bonds",
     "region": "US",
     "risk_level": "low",
@@ -478,6 +506,7 @@
   {
     "id": "futures-options",
     "name": "Futures & Options (Derivatives)",
+    "product_line": "treasury",
     "category": "derivatives",
     "region": "global",
     "risk_level": "very_high",
@@ -495,6 +524,7 @@
   {
     "id": "term-life-insurance",
     "name": "Term Life Insurance",
+    "product_line": "insurance",
     "category": "insurance",
     "region": "global",
     "risk_level": "low",
@@ -512,6 +542,7 @@
   {
     "id": "whole-life-insurance",
     "name": "Whole Life Insurance",
+    "product_line": "insurance",
     "category": "insurance",
     "region": "global",
     "risk_level": "low",
@@ -529,6 +560,7 @@
   {
     "id": "ulip",
     "name": "Unit Linked Insurance Plan (ULIP)",
+    "product_line": "insurance",
     "category": "insurance",
     "region": "IN",
     "risk_level": "high",
@@ -546,6 +578,7 @@
   {
     "id": "health-insurance",
     "name": "Health Insurance",
+    "product_line": "insurance",
     "category": "insurance",
     "region": "global",
     "risk_level": "low",
@@ -563,6 +596,7 @@
   {
     "id": "annuity",
     "name": "Annuity",
+    "product_line": "insurance",
     "category": "insurance",
     "region": "global",
     "risk_level": "low",
@@ -580,6 +614,7 @@
   {
     "id": "credit-card",
     "name": "Credit Card",
+    "product_line": "credit",
     "category": "credit",
     "region": "global",
     "risk_level": "not_applicable",
@@ -597,6 +632,7 @@
   {
     "id": "personal-loan",
     "name": "Personal Loan",
+    "product_line": "credit",
     "category": "credit",
     "region": "global",
     "risk_level": "not_applicable",
@@ -614,6 +650,7 @@
   {
     "id": "home-loan",
     "name": "Home Loan / Mortgage",
+    "product_line": "credit",
     "category": "credit",
     "region": "global",
     "risk_level": "not_applicable",
@@ -631,6 +668,7 @@
   {
     "id": "gold-loan",
     "name": "Gold Loan",
+    "product_line": "credit",
     "category": "credit",
     "region": "IN",
     "risk_level": "not_applicable",
@@ -648,6 +686,7 @@
   {
     "id": "bnpl",
     "name": "Buy Now, Pay Later (BNPL)",
+    "product_line": "credit",
     "category": "credit",
     "region": "global",
     "risk_level": "not_applicable",
@@ -660,6 +699,204 @@
       "Often interest-free if paid on time",
       "Late fees",
       "May affect credit score"
+    ]
+  },
+  {
+    "id": "treasury-bills",
+    "name": "Treasury Bills (T-Bills)",
+    "product_line": "treasury",
+    "category": "money_market",
+    "region": "global",
+    "risk_level": "low",
+    "liquidity": "high",
+    "typical_horizon": "short",
+    "return_type": "fixed_interest",
+    "regulator": "RBI / US Treasury",
+    "description": "Short-term sovereign debt issued at a discount and redeemed at face value, maturing within a year.",
+    "key_features": [
+      "Maturities up to 364 days",
+      "Sovereign credit risk",
+      "Return is the discount to face value"
+    ]
+  },
+  {
+    "id": "commercial-paper",
+    "name": "Commercial Paper",
+    "product_line": "treasury",
+    "category": "money_market",
+    "region": "IN",
+    "risk_level": "moderate",
+    "liquidity": "moderate",
+    "typical_horizon": "short",
+    "return_type": "fixed_interest",
+    "regulator": "RBI",
+    "description": "Unsecured short-term promissory note issued by highly rated companies to fund working capital.",
+    "key_features": [
+      "Tenor of 7 days to 1 year",
+      "Issued at a discount",
+      "Requires a credit rating"
+    ]
+  },
+  {
+    "id": "fx-forward",
+    "name": "Foreign Exchange Forward Contract",
+    "product_line": "treasury",
+    "category": "derivatives",
+    "region": "global",
+    "risk_level": "high",
+    "liquidity": "low",
+    "typical_horizon": "short_to_medium",
+    "return_type": "market_linked",
+    "regulator": "RBI (FEMA) / CFTC",
+    "description": "Contract to exchange currencies at a fixed rate on a future date, mainly used to hedge currency risk.",
+    "key_features": [
+      "Locks in an exchange rate",
+      "Customisable amount and date",
+      "Often requires an underlying exposure in India"
+    ]
+  },
+  {
+    "id": "interest-rate-swap",
+    "name": "Interest Rate Swap",
+    "product_line": "treasury",
+    "category": "derivatives",
+    "region": "global",
+    "risk_level": "high",
+    "liquidity": "low",
+    "typical_horizon": "medium_to_long",
+    "return_type": "market_linked",
+    "regulator": "RBI / CFTC",
+    "description": "Agreement to exchange fixed-rate interest payments for floating-rate ones on a notional amount.",
+    "key_features": [
+      "Hedges interest-rate exposure",
+      "No exchange of principal",
+      "Counterparty risk"
+    ]
+  },
+  {
+    "id": "sweep-account",
+    "name": "Sweep-in / Auto-Sweep Account",
+    "product_line": "treasury",
+    "category": "deposits",
+    "region": "global",
+    "risk_level": "low",
+    "liquidity": "high",
+    "typical_horizon": "short",
+    "return_type": "variable_interest",
+    "regulator": "Banking regulator",
+    "description": "Current or savings account that automatically moves surplus balances into higher-yielding deposits and back as needed.",
+    "key_features": [
+      "Automatic cash optimisation",
+      "Liquidity maintained",
+      "Deposit insurance up to statutory limits"
+    ]
+  },
+  {
+    "id": "working-capital-loan",
+    "name": "Working Capital Loan",
+    "product_line": "credit",
+    "category": "credit",
+    "region": "global",
+    "risk_level": "not_applicable",
+    "liquidity": "not_applicable",
+    "typical_horizon": "short",
+    "return_type": "cost_of_credit",
+    "regulator": "RBI / Banking regulator",
+    "description": "Short-term business financing for day-to-day operations such as inventory and receivables.",
+    "key_features": [
+      "Cash credit or overdraft facility",
+      "Interest on amount used",
+      "Usually secured by current assets"
+    ]
+  },
+  {
+    "id": "motor-insurance",
+    "name": "Motor Insurance",
+    "product_line": "insurance",
+    "category": "insurance",
+    "region": "global",
+    "risk_level": "low",
+    "liquidity": "none",
+    "typical_horizon": "short",
+    "return_type": "protection",
+    "regulator": "IRDAI / State insurance regulators",
+    "description": "Covers damage to your vehicle and liability to third parties; third-party cover is mandatory in many countries.",
+    "key_features": [
+      "Third-party liability cover",
+      "Own-damage cover optional",
+      "No-claim bonus on renewal"
+    ]
+  },
+  {
+    "id": "home-insurance",
+    "name": "Home / Property Insurance",
+    "product_line": "insurance",
+    "category": "insurance",
+    "region": "global",
+    "risk_level": "low",
+    "liquidity": "none",
+    "typical_horizon": "short",
+    "return_type": "protection",
+    "regulator": "IRDAI / State insurance regulators",
+    "description": "Protects a home's structure and contents against fire, natural disasters, theft and similar risks.",
+    "key_features": [
+      "Structure and contents cover",
+      "Annual renewal",
+      "Often required by mortgage lenders"
+    ]
+  },
+  {
+    "id": "travel-insurance",
+    "name": "Travel Insurance",
+    "product_line": "insurance",
+    "category": "insurance",
+    "region": "global",
+    "risk_level": "low",
+    "liquidity": "none",
+    "typical_horizon": "short",
+    "return_type": "protection",
+    "regulator": "IRDAI / State insurance regulators",
+    "description": "Covers medical emergencies, trip cancellation, lost baggage and delays while travelling.",
+    "key_features": [
+      "Single-trip or multi-trip plans",
+      "Emergency medical cover abroad",
+      "Some visas require it"
+    ]
+  },
+  {
+    "id": "auto-loan",
+    "name": "Auto Loan",
+    "product_line": "credit",
+    "category": "credit",
+    "region": "global",
+    "risk_level": "not_applicable",
+    "liquidity": "not_applicable",
+    "typical_horizon": "short_to_medium",
+    "return_type": "cost_of_credit",
+    "regulator": "RBI / CFPB",
+    "description": "Secured loan to buy a vehicle, with the vehicle as collateral.",
+    "key_features": [
+      "Vehicle is hypothecated to the lender",
+      "Fixed EMIs",
+      "New and used vehicle options"
+    ]
+  },
+  {
+    "id": "education-loan",
+    "name": "Education Loan",
+    "product_line": "credit",
+    "category": "credit",
+    "region": "global",
+    "risk_level": "not_applicable",
+    "liquidity": "not_applicable",
+    "typical_horizon": "medium_to_long",
+    "return_type": "cost_of_credit",
+    "regulator": "RBI / US Department of Education / CFPB",
+    "description": "Loan to fund tuition and related study costs, often with repayment starting after the course.",
+    "key_features": [
+      "Moratorium during study period",
+      "Covers tuition and living costs",
+      "Interest deduction under Section 80E in India"
     ]
   }
 ]

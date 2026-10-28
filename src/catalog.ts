@@ -1,9 +1,27 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+export const PRODUCT_LINES = ["credit", "wealth", "insurance", "treasury"] as const;
+export type ProductLine = (typeof PRODUCT_LINES)[number];
+
+export const RISK_LEVELS =["low", "moderate", "high", "very_high", "not_applicable"] as const;
+export const LIQUIDITY = ["high", "moderate", "low", "none", "not_applicable"] as const;
+export const HORIZONS = ["short", "short_to_medium", "medium", "medium_to_long", "long"] as const;
+export const RETURN_TYPES = [
+  "fixed_interest",
+  "variable_interest",
+  "market_linked",
+  "inflation_linked",
+  "guaranteed_income",
+  "guaranteed_plus_bonus",
+  "protection",
+  "cost_of_credit",
+] as const;
+
 export interface FinancialProduct {
   id: string;
   name: string;
+  product_line: ProductLine;
   category: string;
   region: string;
   risk_level: string;
@@ -16,6 +34,7 @@ export interface FinancialProduct {
 }
 
 export interface ProductFilter {
+  product_line?: string;
   category?: string;
   region?: string;
   risk_level?: string;
@@ -24,7 +43,7 @@ export interface ProductFilter {
 
 const DEFAULT_CATALOG = fileURLToPath(new URL("../data/products.json", import.meta.url));
 
-// FINANCIAL_PRODUCTS_FILE lets you serve your own catalog with the same schema.
+// FINANCIAL_PRODUCTS_FILE lets you seed your own catalog with the same schema.
 export function loadCatalog(path = process.env.FINANCIAL_PRODUCTS_FILE ?? DEFAULT_CATALOG): FinancialProduct[] {
   const data = JSON.parse(readFileSync(path, "utf8"));
   if (!Array.isArray(data)) throw new Error(`Catalog at ${path} must be a JSON array`);
@@ -36,6 +55,7 @@ export function filterProducts(products: FinancialProduct[], f: ProductFilter): 
   const q = f.query?.toLowerCase();
   return products.filter(
     (p) =>
+      eq(p.product_line, f.product_line) &&
       eq(p.category, f.category) &&
       // "global" products apply in every region
       (!f.region || eq(p.region, f.region) || p.region === "global") &&

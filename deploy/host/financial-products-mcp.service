@@ -1,0 +1,32 @@
+[Unit]
+Description=financial-products MCP server (loopback only, behind Caddy)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fpmcp
+Group=fpmcp
+EnvironmentFile=/etc/financial-products-mcp/env
+Environment=NODE_ENV=production HOST=127.0.0.1
+WorkingDirectory=/opt/financial-products-mcp/current
+ExecStart=/usr/bin/node dist/index.js serve-http
+Restart=on-failure
+RestartSec=5
+MemoryMax=512M
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

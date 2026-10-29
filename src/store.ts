@@ -10,13 +10,29 @@ export type Role = (typeof ROLES)[number];
 const IMPLIES: Record<Role, Role[]> = { consumer: [], developer: ["consumer"], innovator: ["developer"], admin: ["innovator"] };
 
 // Reference data admins manage: where products may be offered and what kinds of product exist.
+// How a product line is legally brought to market in a region: licences, approvals, filings.
+export interface LaunchProcedure {
+  product_line: string;
+  name: string; // e.g. "Mutual fund scheme launch"
+  regulator: string;
+  steps: string[];
+  typical_timeline?: string;
+  notes?: string;
+}
+
 export interface Region {
   code: string; // ISO 3166-1 alpha-2, or "global"
   name: string;
   regulators: string[];
+  ecosystem: string; // how the regulators, key laws and bodies fit together
+  procedures: LaunchProcedure[];
+  sources: string[]; // official pages the above is drawn from
   active: boolean;
   updated_at: string;
 }
+
+// Fields left out keep their current value, so a partial update never wipes researched content.
+export type RegionUpdate = Pick<Region, "code"> & Partial<Omit<Region, "code" | "updated_at">>;
 
 export interface ProductCategory {
   id: string;
@@ -276,6 +292,9 @@ const TABLES = `
     active boolean NOT NULL DEFAULT true,
     updated_at timestamptz NOT NULL DEFAULT now()
   );
+  ALTER TABLE financial_products.regions ADD COLUMN IF NOT EXISTS ecosystem text NOT NULL DEFAULT '';
+  ALTER TABLE financial_products.regions ADD COLUMN IF NOT EXISTS procedures jsonb NOT NULL DEFAULT '[]';
+  ALTER TABLE financial_products.regions ADD COLUMN IF NOT EXISTS sources text[] NOT NULL DEFAULT '{}';
   CREATE TABLE IF NOT EXISTS financial_products.product_categories (
     id text PRIMARY KEY CHECK (id ~ '^[a-z][a-z0-9_]*$'),
     name text NOT NULL,
@@ -427,12 +446,25 @@ export class Store {
     };
   }
 
-  async upsertRegion(r: Omit<Region, "updated_at">): Promise<Region> {
+  async upsertRegion(r: RegionUpdate): Promise<Region> {
     const row = await this.one(
-      `INSERT INTO financial_products.regions (code, name, regulators, active) VALUES ($1, $2, $3, $4)
-       ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, regulators = EXCLUDED.regulators, active = EXCLUDED.active, updated_at = now()
+      `INSERT INTO financial_products.regions (code, name, regulators, ecosystem, procedures, sources, active)
+       VALUES ($1, COALESCE($2::text, $1), COALESCE($3::text[], '{}'::text[]), COALESCE($4::text, ''), COALESCE($5::jsonb, '[]'::jsonb),
+               COALESCE($6::text[], '{}'::text[]), COALESCE($7::boolean, true))
+       ON CONFLICT (code) DO UPDATE SET
+         name = COALESCE($2::text, regions.name), regulators = COALESCE($3::text[], regions.regulators),
+         ecosystem = COALESCE($4::text, regions.ecosystem), procedures = COALESCE($5::jsonb, regions.procedures),
+         sources = COALESCE($6::text[], regions.sources), active = COALESCE($7::boolean, regions.active), updated_at = now()
        RETURNING *`,
-      [r.code, r.name, r.regulators, r.active],
+      [
+        r.code,
+        r.name ?? null,
+        r.regulators ?? null,
+        r.ecosystem ?? null,
+        r.procedures ? JSON.stringify(r.procedures) : null,
+        r.sources ?? null,
+        r.active ?? null,
+      ],
     );
     return { ...(row as unknown as Region), updated_at: iso(row!.updated_at)! };
   }

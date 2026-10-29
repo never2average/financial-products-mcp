@@ -23,12 +23,33 @@ export function registerAdminTools(server: McpServer, store: Store, user: User, 
     {
       title: "Define a region",
       description:
-        "Admin: add or change a geography products may be offered in, with its regulators. Set active=false to stop new products using it (live products stay).",
+        "Admin: add or change a geography products may be offered in: its regulators, regulatory ecosystem, the legal procedure to launch each product line there, and the official sources. Fields you leave out keep their current value. Set active=false to stop new products using it (live products stay).",
       inputSchema: {
         code: z.string().regex(/^(global|[A-Z]{2})$/, "Use 'global' or an ISO country code like IN, US, GB"),
-        name: z.string().min(1),
-        regulators: z.array(z.string().min(1)).default([]).describe("Regulators products in this region answer to, e.g. RBI, SEBI"),
-        active: z.boolean().default(true),
+        name: z.string().min(1).optional(),
+        regulators: z
+          .array(z.string().min(1))
+          .optional()
+          .describe("Short names of the regulators products here answer to, e.g. RBI, SEBI, IRDAI. test_product checks a product's regulator against these."),
+        ecosystem: z
+          .string()
+          .optional()
+          .describe("Markdown overview: each regulator's remit, the key laws and regulations, self-regulatory bodies, and how they interact"),
+        procedures: z
+          .array(
+            z.object({
+              product_line: z.enum(PRODUCT_LINES),
+              name: z.string().min(1).describe("e.g. 'Mutual fund scheme launch'"),
+              regulator: z.string().min(1),
+              steps: z.array(z.string().min(1)).min(1).describe("Licences, registrations, approvals and filings, in order"),
+              typical_timeline: z.string().optional(),
+              notes: z.string().optional().describe("Thresholds, exemptions, ongoing obligations, caveats"),
+            }),
+          )
+          .optional()
+          .describe("How each product line is legally brought to market here. Replaces the region's whole list when given."),
+        sources: z.array(z.string().url()).optional().describe("Official regulator or statute pages the content is drawn from"),
+        active: z.boolean().optional(),
       },
     },
     async (region) => {

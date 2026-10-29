@@ -11,6 +11,10 @@
 	handle /healthz {
 		reverse_proxy 127.0.0.1:@PORT@
 	}
+	# OAuth discovery for MCP clients (sign-in is with Clerk).
+	handle /.well-known/oauth-* {
+		reverse_proxy 127.0.0.1:@PORT@
+	}
 	handle {
 		respond "financial-products MCP server. Connect an MCP client to https://@DOMAIN@/mcp" 200
 	}

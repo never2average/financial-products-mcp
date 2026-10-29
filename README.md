@@ -100,6 +100,28 @@ Clients connect to `http://host:3000/mcp` (Streamable HTTP) with `Authorization:
 claude mcp add --transport http financial-products https://your-host/mcp --header "Authorization: Bearer fpm_..."
 ```
 
+## Whitelist sign-in with Clerk
+
+Set `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY` and `PUBLIC_URL` (e.g. `https://mcp.example.com`) and the HTTP server accepts only whitelisted people signed in with [Clerk](https://clerk.com):
+
+- The server is an OAuth-protected resource with Clerk as its authorization server. MCP clients (Claude, Claude Code and others) discover this from `/.well-known/oauth-protected-resource/mcp`, register themselves with Clerk and open Clerk's sign-in page.
+- Each request's Clerk access token is verified, and must be issued for this server's `/mcp` resource. The caller's **verified** email must be on the whitelist. The whitelist entry also decides the caller's roles, and removing it cuts them off on their next request.
+- Local `fpm_` tokens and guests are refused over HTTP. They still work over stdio.
+
+```bash
+node dist/index.js clerk setup                                          # once: allowlist, client registration, PKCE, audience claims
+node dist/index.js users invite --email ines@example.com --role innovator
+node dist/index.js users invite --email asha@example.com --role consumer --role developer
+node dist/index.js users revoke --email asha@example.com
+node dist/index.js users list
+```
+
+`users invite` and `users revoke` also update Clerk's allowlist, so people who aren't invited can't sign up at all. Connect a client with just the URL; it will open Clerk's sign-in page:
+
+```bash
+claude mcp add --transport http financial-products https://mcp.example.com/mcp
+```
+
 ## Deploying to a VM with self-hosted Supabase
 
 [`deploy/setup-vm.sh`](deploy/setup-vm.sh) sets up an Ubuntu VM end to end and is safe to re-run for updates:

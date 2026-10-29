@@ -109,6 +109,9 @@ unset PGPASSWORD
   echo "DB_PASSWORD=$DB_PASSWORD"
   echo "PORT=$APP_PORT"
   echo "DATABASE_URL=postgres://financial_products_app:$DB_PASSWORD@127.0.0.1:$DB_PORT/postgres"
+  echo "PUBLIC_URL=https://$DOMAIN"
+  # Clerk keys are placed in this file separately and kept across runs.
+  grep -E '^(CLERK_SECRET_KEY|CLERK_PUBLISHABLE_KEY|MCP_REQUIRE_AUDIENCE)=' "$ENV_DIR/env" || true
 } >"$ENV_DIR/env.new"
 install -m 640 -o root -g fpmcp "$ENV_DIR/env.new" "$ENV_DIR/env"
 rm -f "$ENV_DIR/env.new"
@@ -117,6 +120,10 @@ unset DB_PASSWORD
 # --- MCP service ---------------------------------------------------------------------------------
 ln -sfn "$REL" "$BASE/current.new"
 mv -T "$BASE/current.new" "$BASE/current"
+if grep -q '^CLERK_SECRET_KEY=' "$ENV_DIR/env"; then
+  # Allowlist, MCP client registration, PKCE and audience claims on the Clerk instance (idempotent).
+  (set -a; . "$ENV_DIR/env"; set +a; cd "$REL" && node dist/index.js clerk setup)
+fi
 install -m 644 "$REL/deploy/host/financial-products-mcp.service" /etc/systemd/system/financial-products-mcp.service
 systemctl daemon-reload
 systemctl enable -q financial-products-mcp

@@ -108,8 +108,19 @@ if (values.help) {
 } else if (command === "clerk" && sub === "setup") {
   const admin = clerkAdmin() ?? die("CLERK_SECRET_KEY is required");
   const warnings = await admin.setup();
+  // Keep Clerk's allowlist in step with the whitelist (e.g. on a new production instance).
+  const store = await openStore();
+  const invites = await store.listInvites();
+  await store.close();
+  for (const invite of invites) {
+    const w = await admin.allow(invite.email);
+    if (w) warnings.push(`${invite.email} ${w}`);
+  }
   for (const w of warnings) console.error(`warning: ${w}`);
-  console.log(`Clerk: ${warnings.length ? "" : "allowlist on, "}dynamic client registration on, PKCE required, audience claims on`);
+  console.log(
+    `Clerk: ${warnings.length ? "" : "allowlist on, "}dynamic client registration on, PKCE required, audience claims on; ` +
+      `${invites.length} whitelisted email(s) synced to the allowlist`,
+  );
 } else {
   die(USAGE);
 }

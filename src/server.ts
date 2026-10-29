@@ -13,7 +13,7 @@ import {
 import { attributionFor, offersFor, registerGtmTools } from "./gtm.js";
 import { registerAdminTools, type AdminContext } from "./admin.js";
 import { runProductTests } from "./product-tests.js";
-import { EMPTY_MODEL, findLicenses, LEGAL_KINDS, PRODUCT_ACTIONS, summarizeModel } from "./regulatory.js";
+import { COURT_LEVELS, findLicenses, LEGISLATIVE_KINDS, normalizeModel, PRODUCT_ACTIONS, summarizeModel } from "./regulatory.js";
 import { DuplicateError, effectiveRoles, type App, type Role, type Store, type User } from "./store.js";
 import { registerVersioningTools } from "./versions.js";
 
@@ -97,14 +97,16 @@ function registerCatalogTools(server: McpServer, store: Store, user: User | null
       if (!region) return fail(`No region '${code}'; see list_regions`);
       return json({
         ...region,
-        regulatory: summarizeModel(region.regulatory ?? EMPTY_MODEL),
+        regulatory: summarizeModel(normalizeModel(region.regulatory)),
         procedures: region.procedures.filter((p) => !product_line || p.product_line === product_line),
       });
     },
   );
 
-  const modelFor = async (code: string) =>
-    (await store.referenceData(user?.roles.includes("admin"))).regions.find((r) => r.code === code.trim())?.regulatory;
+  const modelFor = async (code: string) => {
+    const region = (await store.referenceData(user?.roles.includes("admin"))).regions.find((r) => r.code === code.trim());
+    return region && normalizeModel(region.regulatory);
+  };
 
   server.registerTool(
     "get_regulator",
@@ -126,25 +128,37 @@ function registerCatalogTools(server: McpServer, store: Store, user: User | null
   server.registerTool(
     "list_legal_instruments",
     {
-      title: "Laws and rules in a region",
-      description: "The acts, rules, regulations, directions, circulars, guidelines and judgments recorded for a region, optionally narrowed by kind or by what they apply to.",
+      title: "Law in a region",
+      description:
+        "A region's law in two branches: legislative (acts, ordinances, rules, regulations, master directions, circulars, guidelines, notifications, orders) and judiciary (court and tribunal decisions). Narrow by branch, legislative kind, court level, or what an item applies to or interprets.",
       inputSchema: {
         region: z.string(),
-        kind: z.enum(LEGAL_KINDS).optional(),
-        applies_to: z.string().optional().describe("Only those applying to this regulator, licence, product type or persona id"),
+        branch: z.enum(["legislative", "judiciary"]).optional(),
+        kind: z.enum(LEGISLATIVE_KINDS).optional().describe("Legislative items of this kind"),
+        court_level: z.enum(COURT_LEVELS).optional().describe("Judgments from this level of court"),
+        applies_to: z
+          .string()
+          .optional()
+          .describe("Only items applying to this regulator, licence, product type or persona id (or legislation a judgment interprets)"),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ region, kind, applies_to }) => {
+    async ({ region, branch, kind, court_level, applies_to }) => {
       const model = await modelFor(region);
       if (!model) return fail(`No region '${region}'; see list_regions`);
-      return json(
-        model.legal.filter(
-          (l) =>
-            (!kind || l.kind === kind) &&
-            (!applies_to || l.issued_by === applies_to || Object.values(l.applies_to).some((ids) => ids.includes(applies_to))),
-        ),
-      );
+      const touches = (item: { applies_to: Record<string, string[]> }) => Object.values(item.applies_to).some((ids) => ids.includes(applies_to!));
+      return json({
+        legislative:
+          branch === "judiciary" || court_level
+            ? []
+            : model.legal.legislative.filter((l) => (!kind || l.kind === kind) && (!applies_to || l.issued_by === applies_to || touches(l))),
+        judiciary:
+          branch === "legislative" || kind
+            ? []
+            : model.legal.judiciary.filter(
+                (j) => (!court_level || j.court_level === court_level) && (!applies_to || j.interprets.includes(applies_to) || touches(j)),
+              ),
+      });
     },
   );
 

@@ -298,6 +298,20 @@ const TABLES = `
   ALTER TABLE financial_products.regions ADD COLUMN IF NOT EXISTS procedures jsonb NOT NULL DEFAULT '[]';
   ALTER TABLE financial_products.regions ADD COLUMN IF NOT EXISTS sources text[] NOT NULL DEFAULT '{}';
   ALTER TABLE financial_products.regions ADD COLUMN IF NOT EXISTS regulatory jsonb NOT NULL DEFAULT '{"regulators": [], "legal": []}';
+  -- Legal is split into legislative and judiciary branches; convert the earlier flat list once.
+  ALTER TABLE financial_products.regions ALTER COLUMN regulatory
+    SET DEFAULT '{"regulators": [], "legal": {"legislative": [], "judiciary": []}}';
+  UPDATE financial_products.regions SET regulatory = jsonb_set(regulatory, '{legal}', jsonb_build_object(
+    'legislative', COALESCE((SELECT jsonb_agg(l) FROM jsonb_array_elements(regulatory->'legal') l
+                             WHERE l->>'kind' IS DISTINCT FROM 'judgment'), '[]'::jsonb),
+    'judiciary', COALESCE((SELECT jsonb_agg(jsonb_strip_nulls(jsonb_build_object(
+                             'id', l->'id', 'title', l->'title',
+                             'court', COALESCE(l->'issued_by', to_jsonb('Verify: court not recorded'::text)),
+                             'court_level', 'other', 'citation', l->'citation', 'decided_on', l->'effective_from',
+                             'bench', '[]'::jsonb, 'holding', '', 'summary', COALESCE(l->'summary', to_jsonb(''::text)),
+                             'interprets', '[]'::jsonb, 'status', 'good_law', 'url', l->'url', 'applies_to', l->'applies_to')))
+                           FROM jsonb_array_elements(regulatory->'legal') l WHERE l->>'kind' = 'judgment'), '[]'::jsonb)))
+  WHERE jsonb_typeof(regulatory->'legal') = 'array';
   CREATE TABLE IF NOT EXISTS financial_products.product_categories (
     id text PRIMARY KEY CHECK (id ~ '^[a-z][a-z0-9_]*$'),
     name text NOT NULL,

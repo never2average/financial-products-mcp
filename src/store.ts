@@ -231,12 +231,21 @@ export class Store {
   }
 
   // Creates or refreshes the user linked to a Clerk account. Roles always come from the invite.
+  // A known verified email with a new Clerk id (e.g. after moving to a production Clerk instance)
+  // relinks the existing user, so they keep what they own.
   async upsertClerkUser(clerkUserId: string, email: string, name: string, roles: Role[]): Promise<User> {
-    const r = await this.one(
-      `INSERT INTO financial_products.users (id, name, roles, clerk_user_id, email) VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (clerk_user_id) DO UPDATE SET roles = EXCLUDED.roles, email = EXCLUDED.email
+    const lower = email.toLowerCase();
+    const updated = await this.one(
+      `UPDATE financial_products.users SET clerk_user_id = $1, email = $2, roles = $3
+       WHERE id = (SELECT id FROM financial_products.users WHERE clerk_user_id = $1 OR email = $2
+                   ORDER BY (clerk_user_id = $1) DESC NULLS LAST LIMIT 1)
        RETURNING *`,
-      [randomUUID(), name, roles, clerkUserId, email.toLowerCase()],
+      [clerkUserId, lower, roles],
+    );
+    if (updated) return toUser(updated);
+    const r = await this.one(
+      "INSERT INTO financial_products.users (id, name, roles, clerk_user_id, email) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+      [randomUUID(), name, roles, clerkUserId, lower],
     );
     return toUser(r!);
   }

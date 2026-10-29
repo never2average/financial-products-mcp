@@ -119,6 +119,30 @@ test("a signed-in user who is not whitelisted gets 403", async () => {
   }
 });
 
+test("a new Clerk account with the same verified email keeps the existing user (e.g. moving to production)", async () => {
+  const { store, clerk, rpc, tools, close } = await setup();
+  try {
+    await store.upsertInvite("priya@example.com", ["developer"]);
+    const devToken = clerk.addUser("dev_user", "priya@example.com");
+    await tools(devToken);
+    const [before] = (await store.listUsers()).filter((u) => u.email === "priya@example.com");
+    const created = await rpc("tools/call", { name: "create_app", arguments: { name: "A", description: "B", audience: "C", product_ids: ["ppf"] } }, devToken);
+    assert.equal(created.status, 200);
+
+    const prodToken = clerk.addUser("prod_user", "priya@example.com");
+    const res = await rpc("tools/call", { name: "list_my_apps", arguments: {} }, prodToken);
+    const text = await res.text();
+    const apps = JSON.parse(JSON.parse(text.match(/^data: (.*)$/m)?.[1] ?? text).result.content[0].text);
+    assert.equal(apps.length, 1, "the app is still theirs");
+    const after = (await store.listUsers()).filter((u) => u.email === "priya@example.com");
+    assert.equal(after.length, 1);
+    assert.equal(after[0].id, before.id);
+    assert.ok(await store.userByClerkId("prod_user"));
+  } finally {
+    close();
+  }
+});
+
 test("an unverified email does not match the whitelist", async () => {
   const { store, clerk, rpc, close } = await setup();
   try {

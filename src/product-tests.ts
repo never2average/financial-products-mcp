@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { HORIZONS, LIQUIDITY, PRODUCT_LINES, RETURN_TYPES, RISK_LEVELS, type FinancialProduct } from "./catalog.js";
+import type { ReferenceData } from "./store.js";
 
 export type CheckStatus = "pass" | "warn" | "fail";
 export interface Check {
@@ -27,7 +28,38 @@ const check = (name: string, ok: boolean, pass: string, fail: string, failStatus
 const oneOf = (name: string, value: string, allowed: readonly string[]): Check =>
   check(name, allowed.includes(value), `${value} is valid`, `'${value}' must be one of: ${allowed.join(", ")}`);
 
-export function runProductTests(p: FinancialProduct): TestReport {
+// With reference data, region and category must be ones an admin has defined (and left active).
+function referenceChecks(p: FinancialProduct, ref: ReferenceData): Check[] {
+  const region = ref.regions.find((r) => r.code === p.region);
+  const category = ref.categories.find((c) => c.id === p.category);
+  const regulatorKnown =
+    !region || region.regulators.length === 0 || region.regulators.some((r) => p.regulator.toLowerCase().includes(r.toLowerCase()));
+  return [
+    check(
+      "region",
+      Boolean(region),
+      `${p.region} (${region?.name}) is an offered region`,
+      `Region '${p.region}' isn't offered; choose one of: ${ref.regions.map((r) => r.code).join(", ")}`,
+    ),
+    check(
+      "category",
+      Boolean(category?.product_lines.includes(p.product_line)),
+      `${p.category} is a ${p.product_line} category`,
+      category
+        ? `Category '${p.category}' isn't used for ${p.product_line}; it is for: ${category.product_lines.join(", ")}`
+        : `Category '${p.category}' isn't defined; choose one of: ${ref.categories.filter((c) => c.product_lines.includes(p.product_line)).map((c) => c.id).join(", ")}`,
+    ),
+    check(
+      "regulator_for_region",
+      regulatorKnown,
+      "Regulator matches the region",
+      `Regulator '${p.regulator}' isn't one listed for ${p.region} (${region?.regulators.join(", ")})`,
+      "warn",
+    ),
+  ];
+}
+
+export function runProductTests(p: FinancialProduct, ref?: ReferenceData): TestReport {
   const text = `${p.name} ${p.description} ${p.key_features.join(" ")}`.toLowerCase();
   const isCredit = p.product_line === "credit";
   const insuranceReturns = ["protection", "guaranteed_income", "guaranteed_plus_bonus", "market_linked"];
@@ -42,7 +74,9 @@ export function runProductTests(p: FinancialProduct): TestReport {
     ),
     check("key_features", p.key_features.length >= 2, `${p.key_features.length} features listed`, "List at least 2 key features"),
     check("regulator", p.regulator.trim().length > 0, "Regulator disclosed", "Regulator must be disclosed"),
-    check("region", /^(global|[A-Z]{2})$/.test(p.region), `${p.region} is valid`, "Region must be 'global' or an ISO country code like IN or US"),
+    ...(ref
+      ? referenceChecks(p, ref)
+      : [check("region", /^(global|[A-Z]{2})$/.test(p.region), `${p.region} is valid`, "Region must be 'global' or an ISO country code like IN or US")]),
     oneOf("risk_level", p.risk_level, RISK_LEVELS),
     oneOf("liquidity", p.liquidity, LIQUIDITY),
     oneOf("typical_horizon", p.typical_horizon, HORIZONS),

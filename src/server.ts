@@ -11,6 +11,7 @@ import {
   type FinancialProduct,
 } from "./catalog.js";
 import { attributionFor, offersFor, registerGtmTools } from "./gtm.js";
+import { registerAdminTools, type AdminContext } from "./admin.js";
 import { runProductTests } from "./product-tests.js";
 import { DuplicateError, effectiveRoles, type App, type Role, type Store, type User } from "./store.js";
 import { registerVersioningTools } from "./versions.js";
@@ -26,8 +27,8 @@ const fail = (error: string) => ({ ...json({ error }), isError: true });
 const productFields = {
   name: z.string().min(1),
   product_line: z.enum(PRODUCT_LINES),
-  category: z.string().min(1).describe("e.g. deposits, mutual_funds, bonds, insurance, credit"),
-  region: z.string().describe("'global' or an ISO country code such as IN or US"),
+  category: z.string().min(1).describe("A category admins have defined for this product line (see list_product_categories)"),
+  region: z.string().describe("A region admins have defined: 'global' or a country code such as IN (see list_regions)"),
   risk_level: z.enum(RISK_LEVELS),
   liquidity: z.enum(LIQUIDITY),
   typical_horizon: z.enum(HORIZONS),
@@ -38,9 +39,9 @@ const productFields = {
 };
 
 // Tools are registered per user, so each role only sees what it is allowed to call. Roles nest
-// (innovator > developer > consumer). Guests (no token) get the read-only catalog tools.
-export function createServer(store: Store, user: User | null = null): McpServer {
-  const server = new McpServer({ name: SERVER_NAME, title: "Mynt: financial products", version: "0.5.0" });
+// (admin > innovator > developer > consumer). Guests (no token) get the read-only catalog tools.
+export function createServer(store: Store, user: User | null = null, ctx: AdminContext = {}): McpServer {
+  const server = new McpServer({ name: SERVER_NAME, title: "Mynt: financial products", version: "0.6.0" });
   const roles = effectiveRoles(user?.roles ?? []);
   const has = (role: Role) => roles.includes(role);
 
@@ -54,11 +55,42 @@ export function createServer(store: Store, user: User | null = null): McpServer 
     registerInnovatorTools(server, store, user!);
     registerVersioningTools(server, store, user!, productFields);
   }
+  if (has("admin")) registerAdminTools(server, store, user!, ctx);
 
   return server;
 }
 
 function registerCatalogTools(server: McpServer, store: Store, user: User | null) {
+  server.registerTool(
+    "list_regions",
+    {
+      title: "Regions",
+      description: "The geographies products can be offered in, with their regulators (defined by admins).",
+      inputSchema: { include_inactive: z.boolean().default(false).describe("Admins: include retired regions") },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ include_inactive }) => json((await store.referenceData(include_inactive && user?.roles.includes("admin"))).regions),
+  );
+
+  server.registerTool(
+    "list_product_categories",
+    {
+      title: "Product categories",
+      description: "The product types products can have, and the product lines each is used in (defined by admins).",
+      inputSchema: {
+        product_line: z.enum(PRODUCT_LINES).optional(),
+        include_inactive: z.boolean().default(false).describe("Admins: include retired categories"),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ product_line, include_inactive }) =>
+      json(
+        (await store.referenceData(include_inactive && user?.roles.includes("admin"))).categories.filter(
+          (c) => !product_line || c.product_lines.includes(product_line),
+        ),
+      ),
+  );
+
   server.registerTool(
     "whoami",
     {
@@ -413,7 +445,7 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User) {
       if (!record) return fail(`No product of yours with id '${id}'`);
       // A pending draft version is what gets tested; otherwise the product itself.
       const draft = await store.draftVersion(id);
-      const report = runProductTests(draft?.data ?? record.product);
+      const report = runProductTests(draft?.data ?? record.product, await store.referenceData());
       if (draft) await store.saveDraftVersionTest(id, report);
       else await store.saveTestReport(id, report);
       return json(draft ? { version: draft.version, ...report } : report);

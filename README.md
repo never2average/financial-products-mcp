@@ -1,14 +1,26 @@
 # financial-products-mcp
 
-**Mynt** is an [MCP](https://modelcontextprotocol.io) server for **credit, wealth, insurance and treasury** products. MCP clients show it as `mynt`. It has three kinds of user:
+**Mynt** is an [MCP](https://modelcontextprotocol.io) server for **credit, wealth, insurance and treasury** products. MCP clients show it as `mynt`. It has four kinds of user:
 
 | User type | Can | Tools (in addition to the catalog tools) |
 | --- | --- | --- |
 | **Consumer** | Use financial products and respond to offers | `enroll_in_product`, `list_my_enrollments`, `cancel_enrollment`, `list_offers`, `upgrade_enrollment` |
 | **Developer** | Build app experiences and do GTM engineering around financial products | Apps: `create_app`, `update_app`, `list_my_apps`, `preview_app`, `publish_app`. GTM: `create_segment`, `list_my_segments`, `create_campaign`, `update_campaign`, `lint_campaign`, `launch_campaign`, `pause_campaign`, `end_campaign`, `list_my_campaigns`, `get_campaign_metrics` |
 | **Innovator** | Create, test, publish, version and upgrade financial products | `create_product`, `update_product`, `test_product`, `publish_product`, `unpublish_product`, `list_my_products`, `create_product_version`, `update_product_version`, `list_product_versions`, `diff_product_versions`, `restore_product_version`, `upgrade_enrollments` |
+| **Admin** | Run Mynt: geographies, product types, the whitelist, and oversight, all from Mynt itself | `define_region`, `define_product_category`, `list_whitelist`, `invite_user`, `revoke_user`, `list_all_campaigns`, `admin_pause_campaign`, `admin_set_product_status`, `audit_log` |
 
-Everyone (including guests without a token) gets the catalog tools: `whoami`, `list_products`, `get_product`, `list_categories`, `list_apps`, plus the resource `mynt://catalog`.
+Everyone (including guests without a token) gets the catalog tools: `whoami`, `list_products`, `get_product`, `list_categories`, `list_regions`, `list_product_categories`, `list_apps`, plus the resource `mynt://catalog`.
+
+### Administration
+
+Admins own Mynt's reference data and access. **Every admin action is written to the audit log with who did it.**
+- **Geographies** (`define_region`): where products may be offered, and the regulators each region answers to.
+- **Product types** (`define_product_category`): the categories products may have, and which of the four product lines each may be used in.
+- **How products are checked against them:** `test_product` fails a product whose region or category isn't defined and active, or whose category doesn't allow its product line. It warns when the regulator isn't one listed for the region. Retiring a region or category (`active: false`) stops new products from using it; live products stay. Mynt seeds both lists from the bundled catalog the first time it starts.
+- **Whitelist** (`invite_user`, `revoke_user`, `list_whitelist`): kept in step with Clerk's allowlist. Mynt refuses any change that would remove the last admin.
+- **Oversight:** see every campaign and pause any of them. Unpublish any product, or republish one; republishing re-runs the tests first.
+
+The CLI (`users invite --role admin`) is only for creating the first admin.
 
 ### GTM engineering (developers)
 
@@ -25,7 +37,7 @@ A published product isn't edited in place:
 - `restore_product_version` drafts a rollback as a new version, so history stays linear.
 - Enrollments remember the version they joined on. `upgrade_enrollments` moves all of them to the live version, and a consumer can `upgrade_enrollment` their own.
 
-Roles nest: **every innovator is also a developer, and every developer is also a consumer**. An innovator gets all three tool sets, and a developer gets the developer and consumer tools. Tools are registered per user, so a client only *sees* the tools its roles allow. `whoami` shows both the granted and the effective roles.
+Roles nest: **every admin is also an innovator, every innovator a developer, and every developer a consumer**. Each role gets its own tools plus everything below it. Tools are registered per user, so a client only *sees* the tools its roles allow. `whoami` shows both the granted and the effective roles.
 
 ## Product lines
 

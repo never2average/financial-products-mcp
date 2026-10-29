@@ -156,8 +156,8 @@ export class ClerkAdmin {
       await this.call("POST", "/allowlist_identifiers", { identifier: email.toLowerCase(), notify: false });
       return null;
     } catch (e) {
-      const status = (e as { status?: number }).status;
-      if (status === 409 || (status === 422 && /exist|taken|duplicate/i.test((e as Error).message))) return null;
+      // Clerk reports an existing entry with varying status codes; the message is what's stable.
+      if ((e as { status?: number }).status === 409 || /already exists|taken|duplicate/i.test((e as Error).message)) return null;
       return `not added to Clerk's allowlist (${(e as Error).message})`;
     }
   }

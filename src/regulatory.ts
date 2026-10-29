@@ -1,4 +1,16 @@
 import { z } from "zod";
+import {
+  ControlTemplateSchema,
+  FilingSchema,
+  InspectionEventTemplateSchema,
+  InspectionRecordTemplateSchema,
+  ObligationSchema,
+  PolicyTemplateSchema,
+  RiskModelTemplateSchema,
+  RiskSchema,
+  fieldKeyDupes,
+  type FieldDef,
+} from "./grc.js";
 
 // A region's regulatory model: its regulators (what each supervises, the licences it grants and the
 // GRC each licence carries) and the legal instruments those rest on.
@@ -34,39 +46,7 @@ const Stakeholder = Persona.extend({
   obligations: z.array(z.string()).default([]).describe("Obligation ids from this licence's register, or short descriptions"),
 });
 
-const Obligation = z.object({
-  id: Id,
-  title: z.string().min(1),
-  description: z.string().default(""),
-  frequency: z.string().optional().describe("e.g. ongoing, annual, on_event"),
-  legal_ref: z.string().optional().describe("Id of the legal instrument this comes from"),
-});
-
-const Filing = z.object({
-  id: Id,
-  name: z.string().min(1),
-  description: z.string().default(""),
-  frequency: z.string().optional(),
-  due: z.string().optional().describe("e.g. 'within 30 days of quarter end'"),
-  form: z.string().optional(),
-  legal_ref: z.string().optional(),
-});
-
-const Risk = z.object({
-  id: Id,
-  title: z.string().min(1),
-  description: z.string().default(""),
-  severity: z.enum(["low", "medium", "high", "critical"]).optional(),
-});
-
-const Control = z.object({
-  id: Id,
-  title: z.string().min(1),
-  description: z.string().default(""),
-  mitigates: z.array(z.string()).default([]).describe("Risk ids in this register"),
-  owner: z.string().optional().describe("Stakeholder id responsible"),
-});
-
+// Data repositories: things the regulator has published or done.
 const RepoItem = z.object({
   title: z.string().min(1),
   date: z.string().optional(),
@@ -80,23 +60,35 @@ const LicenseType = z.object({
   scope: z.string().default(""),
   application_procedure: z.array(z.string().min(1)).default([]).describe("How to obtain the licence, in order"),
   grc: z.object({
+    // Obligations, filings and risks are data; controls and inspection events are templates.
     registers: z
       .object({
-        obligations: z.array(Obligation).default([]),
-        reporting_disclosure_filings: z.array(Filing).default([]),
-        risks: z.array(Risk).default([]),
-        controls: z.array(Control).default([]),
+        obligations: z.array(ObligationSchema).default([]),
+        reporting_disclosure_filings: z.array(FilingSchema).default([]),
+        risks: z.array(RiskSchema).default([]),
+        controls: z.array(ControlTemplateSchema).default([]),
+        inspection_events: z.array(InspectionEventTemplateSchema).default([]),
       })
-      .default({ obligations: [], reporting_disclosure_filings: [], risks: [], controls: [] }),
+      .default({ obligations: [], reporting_disclosure_filings: [], risks: [], controls: [], inspection_events: [] }),
+    // Communications, enforcement actions and press releases are data; policies, risk models and
+    // inspection history are templates.
     repositories: z
       .object({
         regulatory_communications: z.array(RepoItem).default([]),
         enforcement_actions: z.array(RepoItem).default([]),
         press_releases: z.array(RepoItem).default([]),
-        policies: z.array(RepoItem).default([]),
-        risk_models: z.array(RepoItem).default([]),
+        policies: z.array(PolicyTemplateSchema).default([]),
+        risk_models: z.array(RiskModelTemplateSchema).default([]),
+        inspection_history: z.array(InspectionRecordTemplateSchema).default([]),
       })
-      .default({ regulatory_communications: [], enforcement_actions: [], press_releases: [], policies: [], risk_models: [] }),
+      .default({
+        regulatory_communications: [],
+        enforcement_actions: [],
+        press_releases: [],
+        policies: [],
+        risk_models: [],
+        inspection_history: [],
+      }),
     allowed_product_types: z.array(z.string()).default([]).describe("Ids from this regulator's scope.product_types"),
     allowed_customer_segments: z.array(z.string()).default([]).describe("Ids from this regulator's scope.customer_personas"),
     mandatory_stakeholders: z
@@ -197,7 +189,7 @@ export function normalizeModel(raw: unknown): RegulatoryModel {
   if (Array.isArray(legal)) {
     const items = legal as (Omit<Legislation, "kind"> & { kind: string })[];
     return {
-      regulators: m.regulators ?? [],
+      regulators: liftRegulators(m.regulators),
       legal: {
         legislative: items.filter((l) => l.kind !== "judgment") as Legislation[],
         judiciary: items.filter((l) => l.kind === "judgment").map(legacyToJudgment),
@@ -205,7 +197,14 @@ export function normalizeModel(raw: unknown): RegulatoryModel {
     };
   }
   const l = (legal ?? {}) as Partial<LegalModel>;
-  return { regulators: m.regulators ?? [], legal: { legislative: l.legislative ?? [], judiciary: l.judiciary ?? [] } };
+  return { regulators: liftRegulators(m.regulators), legal: { legislative: l.legislative ?? [], judiciary: l.judiciary ?? [] } };
+}
+
+function liftRegulators(raw: unknown): Regulator[] {
+  return ((raw as unknown[]) ?? []).map((r) => {
+    const parsed = RegulatorSchema.safeParse(r);
+    return parsed.success ? parsed.data : (r as Regulator);
+  });
 }
 
 export function legacyToJudgment(l: { id: string; title: string; issued_by?: string; citation?: string; effective_from?: string; url?: string; summary?: string; applies_to?: Judgment["applies_to"] }): Judgment {
@@ -250,15 +249,55 @@ export function validateRegulator(
     for (const id of l.grc.allowed_product_types) if (!productIds.includes(id)) errors.push(`${where} allows product type '${id}', which ${r.id} doesn't define`);
     for (const id of l.grc.allowed_customer_segments) if (!personaIds.includes(id)) errors.push(`${where} allows segment '${id}', which ${r.id} doesn't define`);
     const reg = l.grc.registers;
+    const repo = l.grc.repositories;
     const riskIds = reg.risks.map((x) => x.id);
-    for (const c of reg.controls) for (const m of c.mitigates) if (!riskIds.includes(m)) errors.push(`${where} control '${c.id}' mitigates unknown risk '${m}'`);
+    const obligationIds = reg.obligations.map((x) => x.id);
     const stakeholderIds = [...l.grc.mandatory_stakeholders.internal, ...l.grc.mandatory_stakeholders.external].map((s) => s.id);
-    for (const c of reg.controls) if (c.owner && !stakeholderIds.includes(c.owner)) warnings.push(`${where} control '${c.id}' is owned by '${c.owner}', which isn't a mandatory stakeholder`);
-    for (const ref of [...reg.obligations, ...reg.reporting_disclosure_filings].map((x) => x.legal_ref).filter(Boolean) as string[]) {
-      if (!ctx.legalIds.includes(ref)) warnings.push(`${where} cites legal instrument '${ref}', which isn't recorded for this region yet`);
+    const notStakeholder = (what: string, id?: string) => {
+      if (id && !stakeholderIds.includes(id)) warnings.push(`${where} ${what} names '${id}', which isn't a mandatory stakeholder`);
+    };
+    const cites = (what: string, ref?: string) => {
+      if (ref && !ctx.legalIds.includes(ref)) warnings.push(`${where} ${what} cites '${ref}', which isn't recorded legislation or case law yet`);
+    };
+
+    for (const o of reg.obligations) {
+      if (o.risk_ref && !riskIds.includes(o.risk_ref)) errors.push(`${where} obligation '${o.id}' points at unknown risk '${o.risk_ref}'`);
+      notStakeholder(`obligation '${o.id}' owner`, o.owner);
+      cites(`obligation '${o.id}'`, o.legal_ref);
     }
-    for (const kind of ["obligations", "reporting_disclosure_filings", "risks", "controls"] as const) {
-      for (const d of dupes((reg[kind] as { id: string }[]).map((x) => x.id))) errors.push(`${where} has duplicate ${kind} id '${d}'`);
+    for (const x of reg.reporting_disclosure_filings) {
+      if (x.obligation_ref && !obligationIds.includes(x.obligation_ref)) errors.push(`${where} filing '${x.id}' points at unknown obligation '${x.obligation_ref}'`);
+      cites(`filing '${x.id}'`, x.legal_ref);
+    }
+    for (const c of reg.controls) {
+      for (const m of c.mitigates) if (!riskIds.includes(m)) errors.push(`${where} control '${c.id}' mitigates unknown risk '${m}'`);
+      notStakeholder(`control '${c.id}' owner`, c.owner);
+    }
+    for (const t of repo.policies) notStakeholder(`policy '${t.id}' approver`, t.approved_by);
+
+    const templates: [string, { id: string; legal_ref?: string; fields: FieldDef[] }[]][] = [
+      ["controls", reg.controls],
+      ["inspection_events", reg.inspection_events],
+      ["policies", repo.policies],
+      ["risk_models", repo.risk_models],
+      ["inspection_history", repo.inspection_history],
+    ];
+    for (const [kind, list] of templates) {
+      for (const t of list) {
+        cites(`${kind} template '${t.id}'`, t.legal_ref);
+        for (const k of fieldKeyDupes(t.fields)) errors.push(`${where} ${kind} template '${t.id}' repeats field '${k}'`);
+        for (const fd of t.fields) cites(`${kind} template '${t.id}' field '${fd.key}'`, fd.legal_ref);
+      }
+    }
+
+    const lists: [string, { id: string }[]][] = [
+      ["obligations", reg.obligations],
+      ["reporting_disclosure_filings", reg.reporting_disclosure_filings],
+      ["risks", reg.risks],
+      ...templates,
+    ];
+    for (const [kind, list] of lists) {
+      for (const d of dupes(list.map((x) => x.id))) errors.push(`${where} has duplicate ${kind} id '${d}'`);
     }
   }
   return { errors, warnings };

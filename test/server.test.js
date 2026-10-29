@@ -12,7 +12,7 @@ import { Store } from "../dist/store.js";
 import { loadCatalog } from "../dist/catalog.js";
 import { runProductTests } from "../dist/product-tests.js";
 
-const CATALOG_TOOLS = ["find_licenses", "get_product", "get_region", "get_regulator", "list_apps", "list_categories", "list_legal_instruments", "list_product_categories", "list_products", "list_regions", "whoami"];
+const CATALOG_TOOLS = ["find_licenses", "get_product", "get_region", "get_regulator", "get_template", "list_apps", "list_categories", "list_legal_instruments", "list_product_categories", "list_products", "list_regions", "list_template_defaults", "whoami"];
 const CONSUMER_TOOLS = ["cancel_enrollment", "enroll_in_product", "list_my_enrollments", "list_offers", "upgrade_enrollment"];
 const DEVELOPER_TOOLS = [
   "create_app", "list_my_apps", "preview_app", "publish_app", "update_app",

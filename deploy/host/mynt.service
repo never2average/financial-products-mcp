@@ -1,15 +1,15 @@
 [Unit]
-Description=financial-products MCP server (loopback only, behind Caddy)
+Description=Mynt MCP server (loopback only, behind Caddy)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=fpmcp
-Group=fpmcp
-EnvironmentFile=/etc/financial-products-mcp/env
+User=mynt
+Group=mynt
+EnvironmentFile=/etc/mynt/env
 Environment=NODE_ENV=production HOST=127.0.0.1
-WorkingDirectory=/opt/financial-products-mcp/current
+WorkingDirectory=/opt/mynt/current
 ExecStart=/usr/bin/node dist/index.js serve-http
 Restart=on-failure
 RestartSec=5

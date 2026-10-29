@@ -8,13 +8,13 @@ import { createServer } from "./server.js";
 import { ROLES, Store, type Role } from "./store.js";
 
 const USAGE = `Usage:
-  financial-products-mcp [serve]                         Run over stdio (token from FINANCIAL_PRODUCTS_TOKEN)
-  financial-products-mcp serve-http [--port 3000] [--host 127.0.0.1]
-  financial-products-mcp users invite --email <email> --role <${ROLES.join("|")}> [--role ...]   (bootstrap; admins then use Mynt)
-  financial-products-mcp users revoke --email <email>
-  financial-products-mcp users add --name <name> --role <role> [--role ...]   Local token (stdio, or HTTP without Clerk)
-  financial-products-mcp users list
-  financial-products-mcp clerk setup                     Turn on Clerk's allowlist and MCP client registration
+  mynt [serve]                         Run over stdio (token from FINANCIAL_PRODUCTS_TOKEN)
+  mynt serve-http [--port 3000] [--host 127.0.0.1]
+  mynt users invite --email <email> --role <${ROLES.join("|")}> [--role ...]   (bootstrap; admins then use Mynt)
+  mynt users revoke --email <email>
+  mynt users add --name <name> --role <role> [--role ...]   Local token (stdio, or HTTP without Clerk)
+  mynt users list
+  mynt clerk setup                     Turn on Clerk's allowlist and MCP client registration
 
 Environment:
   DATABASE_URL              Postgres connection string, e.g. your Supabase database (required)

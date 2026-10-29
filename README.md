@@ -1,4 +1,4 @@
-# financial-products-mcp
+# Mynt
 
 **Mynt** is an [MCP](https://modelcontextprotocol.io) server for **credit, wealth, insurance and treasury** products. MCP clients show it as `mynt`. It has four kinds of user:
 
@@ -66,8 +66,8 @@ Bundled catalog products are read-only and pass the same checks.
 Requires Node.js 22.13+ and a Postgres database. [Supabase](https://supabase.com) (self-hosted or cloud) is the intended backend; any Postgres 15+ works.
 
 ```bash
-git clone https://github.com/never2average/financial-products-mcp.git
-cd financial-products-mcp
+git clone https://github.com/never2average/mynt.git
+cd mynt
 npm install
 npm run build
 ```
@@ -96,7 +96,7 @@ Pass the user's token in `FINANCIAL_PRODUCTS_TOKEN`. Without it, the server runs
 Claude Code:
 
 ```bash
-claude mcp add mynt -e DATABASE_URL=postgres://... -e FINANCIAL_PRODUCTS_TOKEN=fpm_... -- node /absolute/path/to/financial-products-mcp/dist/index.js
+claude mcp add mynt -e DATABASE_URL=postgres://... -e FINANCIAL_PRODUCTS_TOKEN=fpm_... -- node /absolute/path/to/mynt/dist/index.js
 ```
 
 Claude Desktop / other clients:
@@ -106,14 +106,14 @@ Claude Desktop / other clients:
   "mcpServers": {
     "mynt": {
       "command": "node",
-      "args": ["/absolute/path/to/financial-products-mcp/dist/index.js"],
+      "args": ["/absolute/path/to/mynt/dist/index.js"],
       "env": { "DATABASE_URL": "postgres://...", "FINANCIAL_PRODUCTS_TOKEN": "fpm_..." }
     }
   }
 }
 ```
 
-Or run straight from GitHub: `npx -y github:never2average/financial-products-mcp`.
+Or run straight from GitHub: `npx -y github:never2average/mynt`.
 
 ### Shared server over HTTP (many users)
 
@@ -155,7 +155,7 @@ claude mcp add --transport http mynt https://mcp.example.com/mcp
 
 ```bash
 # as root on the VM, with the domain's A record pointing at it
-curl -fsSL https://raw.githubusercontent.com/never2average/financial-products-mcp/main/deploy/setup-vm.sh -o setup-vm.sh
+curl -fsSL https://raw.githubusercontent.com/never2average/mynt/main/deploy/setup-vm.sh -o setup-vm.sh
 bash setup-vm.sh mcp.example.com [git-ref]
 ```
 
@@ -169,7 +169,7 @@ What it does:
 Create users on the VM:
 
 ```bash
-docker compose -f /opt/financial-products-mcp/src/deploy/docker-compose.yml exec mcp \
+docker compose -f /opt/mynt/src/deploy/docker-compose.yml exec mcp \
   node dist/index.js users add --name "Ines" --role innovator
 ```
 

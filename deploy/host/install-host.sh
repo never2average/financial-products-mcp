@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
-# Installs the MCP server with its own self-hosted Supabase on a server that already runs Caddy as a
-# system service. Prints nothing on success; on failure prints one line naming the log. Secrets are
+# Installs Mynt with its own self-hosted Supabase on a server that already runs Caddy as a system
+# service. Prints nothing on success; on failure prints one line naming the log. Secrets are
 # generated on the server and never printed. Idempotent: re-run to update.
 #   bash install-host.sh <domain> [git-ref]
 set -euo pipefail
 
 DOMAIN=${1:?usage: install-host.sh <domain> [git-ref]}
 REF=${2:-main}
-REPO=https://github.com/never2average/financial-products-mcp.git
-BASE=/opt/financial-products-mcp
+REPO=https://github.com/never2average/mynt.git
+BASE=/opt/mynt
 SUPABASE_DIR=/opt/supabase
-ENV_DIR=/etc/financial-products-mcp
+ENV_DIR=/etc/mynt
 COMPANION=/etc/caddy-companion
 APP_PORT=3100
 DB_PORT=54329      # Supabase Postgres, localhost only
 POOLER_PORT=54322  # Supabase pooler, localhost only (5432 may belong to a native Postgres)
-LOG=/var/log/financial-products-mcp/install.log
+LOG=/var/log/mynt/install.log
+# An install from before the rename to Mynt, migrated in place and then removed.
+OLD_NAME=financial-products-mcp
 
 install -d -m 700 "$(dirname "$LOG")"
 exec 3>&2 >>"$LOG" 2>&1
@@ -27,9 +29,10 @@ node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(
 export DEBIAN_FRONTEND=noninteractive
 
 # --- release -------------------------------------------------------------------------------------
-id fpmcp >/dev/null 2>&1 || useradd --system --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin fpmcp
+id mynt >/dev/null 2>&1 || useradd --system --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin mynt
 mkdir -p "$BASE/releases"
 [ -d "$BASE/src/.git" ] || git clone -q "$REPO" "$BASE/src"
+git -C "$BASE/src" remote set-url origin "$REPO"
 git -C "$BASE/src" fetch -q origin "$REF"
 SHA=$(git -C "$BASE/src" rev-parse --short FETCH_HEAD)
 REL=$BASE/releases/$SHA
@@ -60,7 +63,7 @@ if [ ! -f .env ]; then
   cp .env.example .env
   sh utils/generate-keys.sh --update-env >/dev/null
   rm -f .env.old
-  sed -i -e "s|^POOLER_TENANT_ID=.*|POOLER_TENANT_ID=financial-products|" .env
+  sed -i -e "s|^POOLER_TENANT_ID=.*|POOLER_TENANT_ID=mynt|" .env
 fi
 # POSTGRES_PORT is also Postgres's port inside its container, so it stays 5432; the host-side ports
 # are set separately and used only by the override.
@@ -88,8 +91,19 @@ for _ in $(seq 150); do
 done
 [ "$(docker inspect -f '{{.State.Health.Status}}' supabase-db)" = healthy ]
 
+# --- migrate an install from before the rename ---------------------------------------------------
+# Keep its database password and Clerk keys, and free its port before the new service starts.
+install -d -m 750 -o root -g mynt "$ENV_DIR"
+if [ -f "/etc/$OLD_NAME/env" ] && [ ! -f "$ENV_DIR/env" ]; then
+  install -m 640 -o root -g mynt "/etc/$OLD_NAME/env" "$ENV_DIR/env"
+fi
+if [ -f "/etc/systemd/system/$OLD_NAME.service" ]; then
+  systemctl disable -q --now "$OLD_NAME" || true
+  rm -f "/etc/systemd/system/$OLD_NAME.service"
+  systemctl daemon-reload
+fi
+
 # --- database role and connection (never printed) ------------------------------------------------
-install -d -m 750 -o root -g fpmcp "$ENV_DIR"
 if ! grep -qs '^DB_PASSWORD=' "$ENV_DIR/env"; then
   umask 077
   printf 'DB_PASSWORD=%s\n' "$(openssl rand -hex 24)" >>"$ENV_DIR/env"
@@ -113,21 +127,21 @@ unset PGPASSWORD
   # Clerk keys are placed in this file separately and kept across runs.
   grep -E '^(CLERK_SECRET_KEY|CLERK_PUBLISHABLE_KEY|MCP_REQUIRE_AUDIENCE)=' "$ENV_DIR/env" || true
 } >"$ENV_DIR/env.new"
-install -m 640 -o root -g fpmcp "$ENV_DIR/env.new" "$ENV_DIR/env"
+install -m 640 -o root -g mynt "$ENV_DIR/env.new" "$ENV_DIR/env"
 rm -f "$ENV_DIR/env.new"
 unset DB_PASSWORD
 
-# --- MCP service ---------------------------------------------------------------------------------
+# --- Mynt service --------------------------------------------------------------------------------
 ln -sfn "$REL" "$BASE/current.new"
 mv -T "$BASE/current.new" "$BASE/current"
 if grep -q '^CLERK_SECRET_KEY=' "$ENV_DIR/env"; then
   # Allowlist, MCP client registration, PKCE and audience claims on the Clerk instance (idempotent).
   (set -a; . "$ENV_DIR/env"; set +a; cd "$REL" && node dist/index.js clerk setup)
 fi
-install -m 644 "$REL/deploy/host/financial-products-mcp.service" /etc/systemd/system/financial-products-mcp.service
+install -m 644 "$REL/deploy/host/mynt.service" /etc/systemd/system/mynt.service
 systemctl daemon-reload
-systemctl enable -q financial-products-mcp
-systemctl restart financial-products-mcp
+systemctl enable -q mynt
+systemctl restart mynt
 for _ in $(seq 30); do curl -fsS "http://127.0.0.1:$APP_PORT/healthz" >/dev/null 2>&1 && break; sleep 2; done
 curl -fsS "http://127.0.0.1:$APP_PORT/healthz" >/dev/null
 
@@ -135,7 +149,8 @@ curl -fsS "http://127.0.0.1:$APP_PORT/healthz" >/dev/null
 # The main Caddyfile is left untouched (it may be generated by other tooling). Caddy instead runs a
 # wrapper that imports it plus this server's companion sites, via a systemd drop-in.
 install -d -m 755 "$COMPANION/sites"
-sed -e "s|@DOMAIN@|$DOMAIN|g" -e "s|@PORT@|$APP_PORT|g" "$REL/deploy/host/site.caddy" >"$COMPANION/sites/financial-products-mcp.caddy"
+rm -f "$COMPANION/sites/$OLD_NAME.caddy"
+sed -e "s|@DOMAIN@|$DOMAIN|g" -e "s|@PORT@|$APP_PORT|g" "$REL/deploy/host/site.caddy" >"$COMPANION/sites/mynt.caddy"
 printf 'import /etc/caddy/Caddyfile\nimport %s/sites/*.caddy\n' "$COMPANION" >"$COMPANION/Caddyfile"
 install -d -m 755 /etc/systemd/system/caddy.service.d
 cat >/etc/systemd/system/caddy.service.d/companion-sites.conf <<EOF
@@ -151,4 +166,8 @@ systemctl reload caddy
 
 for _ in $(seq 30); do curl -fsS "https://$DOMAIN/healthz" >/dev/null 2>&1 && break; sleep 2; done
 curl -fsS "https://$DOMAIN/healthz" >/dev/null
+
+# The new install is healthy: remove what is left of the old one.
+rm -rf "/opt/$OLD_NAME" "/etc/$OLD_NAME" "/var/log/$OLD_NAME"
+if id fpmcp >/dev/null 2>&1; then userdel fpmcp || true; fi
 echo "=== $(date -Is) done $SHA"

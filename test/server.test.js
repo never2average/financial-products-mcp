@@ -11,11 +11,14 @@ import { createMcpHttpServer } from "../dist/http.js";
 import { Store } from "../dist/store.js";
 import { loadCatalog } from "../dist/catalog.js";
 import { runProductTests } from "../dist/product-tests.js";
+import { licensed } from "./helpers.js";
 
 const CATALOG_TOOLS = ["find_licenses", "get_product", "get_region", "get_regulator", "get_template", "list_apps", "list_categories", "list_legal_instruments", "list_product_categories", "list_products", "list_regions", "list_template_defaults", "whoami"];
 const CONSUMER_TOOLS = ["cancel_enrollment", "enroll_in_product", "list_my_enrollments", "list_offers", "upgrade_enrollment"];
 const DEVELOPER_TOOLS = [
   "create_app", "list_my_apps", "preview_app", "publish_app", "update_app",
+  // building on innovators' products
+  "check_experience", "get_product_sdk", "list_buildable_products", "list_my_requests", "request_product_access",
   // GTM engineering
   "create_campaign", "create_segment", "end_campaign", "get_campaign_metrics", "launch_campaign",
   "lint_campaign", "list_my_campaigns", "list_my_segments", "pause_campaign", "update_campaign",
@@ -25,6 +28,9 @@ const INNOVATOR_TOOLS = [
   // versioning
   "create_product_version", "diff_product_versions", "list_product_versions", "restore_product_version",
   "update_product_version", "upgrade_enrollments",
+  // firm, licences, and who may build on its products
+  "create_entity", "get_my_entity", "invite_developer", "list_experiences", "list_requests", "register_license",
+  "review_request", "revoke_access", "set_product_access", "suspend_product_experiences",
 ];
 
 async function connect(store, user = null) {
@@ -139,6 +145,9 @@ test("innovator creates, tests and publishes; consumer and developer then use it
 
   const report = (await call(inno, "test_product", { id: "green-fd" })).data;
   assert.equal(report.passed, true);
+  assert.equal(report.checks.find((c) => c.name === "licence_held").status, "warn");
+  assert.match((await call(inno, "publish_product", { id: "green-fd" })).data.error, /verified licence/, "publishing needs a licence");
+  await licensed(store, innovator, { region: "IN", category: "deposits", action: "issuance" });
 
   // Editing after a test invalidates it.
   await call(inno, "update_product", { id: "green-fd", name: "Green FD" });
@@ -160,6 +169,14 @@ test("innovator creates, tests and publishes; consumer and developer then use it
     audience: "Eco-conscious savers in India",
     product_ids: ["green-fd", "ppf"],
   })).data;
+  // green-fd is approval-only (the default): the developer asks, the innovator approves.
+  const blocked = await call(dev, "publish_app", { app_id: app.id });
+  assert.deepEqual(blocked.data.access_needed.map((a) => a.product_id), ["green-fd"]);
+  const request = (await call(dev, "request_product_access", { app_id: app.id, product_id: "green-fd", note: "Climate savings app" })).data;
+  const [inbox] = (await call(inno, "list_requests")).data;
+  assert.equal(inbox.id, request.id);
+  assert.equal(inbox.app.name, "Climate Saver");
+  await call(inno, "review_request", { request_id: request.id, decision: "approve" });
   assert.equal((await call(dev, "publish_app", { app_id: app.id })).data.status, "published");
   const [listed] = (await call(guest, "list_apps")).data;
   assert.deepEqual(listed.products.map((p) => p.id), ["green-fd", "ppf"]);

@@ -97,6 +97,7 @@ export interface User {
   name: string;
   roles: Role[];
   email: string | null;
+  entity_id: string | null;
   created_at: string;
 }
 
@@ -113,9 +114,72 @@ export interface ProductRecord {
   status: ProductStatus;
   version: number;
   last_test: TestReport | null;
+  entity_id: string | null;
+  action: ProductAction;
+  underlying_product_ids: string[];
+  access_mode: AccessMode;
+  build_terms: BuildTerms;
   created_at: string;
   updated_at: string;
   published_at: string | null;
+}
+
+// Issuers create products; distributors sell and repackagers bundle other issuers' products.
+export const PRODUCT_ROLES = ["issuance", "sale", "repackaging"] as const;
+export type ProductAction = (typeof PRODUCT_ROLES)[number];
+export const ACCESS_MODES = ["open", "approval", "private"] as const;
+export type AccessMode = (typeof ACCESS_MODES)[number];
+export interface BuildTerms {
+  permitted_actions?: string[];
+  required_disclosures?: string[];
+  banned_phrases?: string[];
+  allowed_personas?: string[];
+  branding?: string;
+  commercials?: { model: string; value?: number; notes?: string };
+}
+
+export interface Entity {
+  id: string;
+  name: string;
+  registration_numbers: Record<string, string>;
+  regions: string[];
+  created_by: string | null;
+  created_at: string;
+}
+
+export type LicenseStatus = "pending" | "verified" | "rejected" | "suspended";
+export interface HeldLicense {
+  id: string;
+  entity_id: string;
+  region: string;
+  regulator_id: string;
+  license_id: string;
+  registration_number: string;
+  valid_from: string | null;
+  valid_to: string | null;
+  status: LicenseStatus;
+  submitted_by: string | null;
+  reviewed_by: string | null;
+  review_note: string | null;
+  created_at: string;
+  reviewed_at: string | null;
+}
+
+export type RequestKind = "product_access" | "campaign_launch";
+export type RequestStatus = "pending" | "approved" | "rejected" | "revoked";
+export interface AccessRequest {
+  id: string;
+  kind: RequestKind;
+  product_id: string;
+  app_id: string | null;
+  campaign_id: string | null;
+  requester_id: string;
+  status: RequestStatus;
+  note: string;
+  decision_note: string | null;
+  decided_by: string | null;
+  created_at: string;
+  decided_at: string | null;
 }
 
 export interface ProductVersion {
@@ -162,7 +226,7 @@ export interface Variant {
   cta: string;
 }
 
-export type CampaignStatus = "draft" | "live" | "paused" | "ended";
+export type CampaignStatus = "draft" | "pending_approval" | "live" | "paused" | "ended";
 export interface Campaign {
   id: string;
   owner_id: string;
@@ -185,6 +249,8 @@ export interface App {
   description: string;
   audience: string;
   product_ids: string[];
+  disclosures: string[];
+  actions: string[];
   status: "draft" | "published";
   created_at: string;
   updated_at: string;
@@ -329,6 +395,61 @@ const TABLES = `
     created_at timestamptz NOT NULL DEFAULT now()
   );
   CREATE INDEX IF NOT EXISTS audit_log_created_idx ON financial_products.audit_log (created_at DESC);
+  -- Entities (licensed firms) and the licences they hold; admins verify licences.
+  CREATE TABLE IF NOT EXISTS financial_products.entities (
+    id uuid PRIMARY KEY,
+    name text NOT NULL,
+    registration_numbers jsonb NOT NULL DEFAULT '{}',
+    regions text[] NOT NULL DEFAULT '{}',
+    created_by uuid REFERENCES financial_products.users(id),
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+  ALTER TABLE financial_products.users ADD COLUMN IF NOT EXISTS entity_id uuid REFERENCES financial_products.entities(id);
+  CREATE TABLE IF NOT EXISTS financial_products.held_licenses (
+    id uuid PRIMARY KEY,
+    entity_id uuid NOT NULL REFERENCES financial_products.entities(id),
+    region text NOT NULL,
+    regulator_id text NOT NULL,
+    license_id text NOT NULL,
+    registration_number text NOT NULL,
+    valid_from text,
+    valid_to text,
+    status text NOT NULL CHECK (status IN ('pending', 'verified', 'rejected', 'suspended')),
+    submitted_by uuid REFERENCES financial_products.users(id),
+    reviewed_by uuid REFERENCES financial_products.users(id),
+    review_note text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    reviewed_at timestamptz,
+    UNIQUE (entity_id, region, regulator_id, license_id)
+  );
+  -- Products: who issues or distributes them, what they build on, and how developers may use them.
+  ALTER TABLE financial_products.products ADD COLUMN IF NOT EXISTS entity_id uuid REFERENCES financial_products.entities(id);
+  ALTER TABLE financial_products.products ADD COLUMN IF NOT EXISTS action text NOT NULL DEFAULT 'issuance';
+  ALTER TABLE financial_products.products ADD COLUMN IF NOT EXISTS underlying_product_ids text[] NOT NULL DEFAULT '{}';
+  ALTER TABLE financial_products.products ADD COLUMN IF NOT EXISTS access_mode text NOT NULL DEFAULT 'approval';
+  ALTER TABLE financial_products.products ADD COLUMN IF NOT EXISTS build_terms jsonb NOT NULL DEFAULT '{}';
+  ALTER TABLE financial_products.apps ADD COLUMN IF NOT EXISTS disclosures text[] NOT NULL DEFAULT '{}';
+  ALTER TABLE financial_products.apps ADD COLUMN IF NOT EXISTS actions text[] NOT NULL DEFAULT '{display}';
+  -- Campaigns over other innovators' products wait for their approval.
+  ALTER TABLE financial_products.campaigns DROP CONSTRAINT IF EXISTS campaigns_status_check;
+  ALTER TABLE financial_products.campaigns ADD CONSTRAINT campaigns_status_check
+    CHECK (status IN ('draft', 'pending_approval', 'live', 'paused', 'ended'));
+  -- Developers' requests to build on a product, and to launch campaigns over it.
+  CREATE TABLE IF NOT EXISTS financial_products.requests (
+    id uuid PRIMARY KEY,
+    kind text NOT NULL CHECK (kind IN ('product_access', 'campaign_launch')),
+    product_id text NOT NULL REFERENCES financial_products.products(id),
+    app_id uuid REFERENCES financial_products.apps(id),
+    campaign_id uuid REFERENCES financial_products.campaigns(id),
+    requester_id uuid NOT NULL REFERENCES financial_products.users(id),
+    status text NOT NULL CHECK (status IN ('pending', 'approved', 'rejected', 'revoked')),
+    note text NOT NULL DEFAULT '',
+    decision_note text,
+    decided_by uuid REFERENCES financial_products.users(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    decided_at timestamptz
+  );
+  CREATE INDEX IF NOT EXISTS requests_product_idx ON financial_products.requests (product_id, status);
 `;
 
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -342,6 +463,7 @@ const toUser = (r: Row): User => ({
   name: r.name as string,
   roles: r.roles as Role[],
   email: (r.email as string | null) ?? null,
+  entity_id: (r.entity_id as string | null) ?? null,
   created_at: iso(r.created_at)!,
 });
 
@@ -353,9 +475,56 @@ const toProductRecord = (r: Row): ProductRecord => ({
   status: r.status as ProductStatus,
   version: Number(r.version ?? 1),
   last_test: (r.last_test as TestReport | null) ?? null,
+  entity_id: (r.entity_id as string | null) ?? null,
+  action: ((r.action as string) ?? "issuance") as ProductAction,
+  underlying_product_ids: (r.underlying_product_ids as string[]) ?? [],
+  // The bundled reference catalogue is open to every developer.
+  access_mode: (r.owner_id == null ? "open" : ((r.access_mode as string) ?? "approval")) as AccessMode,
+  build_terms: (r.build_terms as BuildTerms) ?? {},
   created_at: iso(r.created_at)!,
   updated_at: iso(r.updated_at)!,
   published_at: iso(r.published_at),
+});
+
+const toEntity = (r: Row): Entity => ({
+  id: r.id as string,
+  name: r.name as string,
+  registration_numbers: (r.registration_numbers as Record<string, string>) ?? {},
+  regions: (r.regions as string[]) ?? [],
+  created_by: (r.created_by as string | null) ?? null,
+  created_at: iso(r.created_at)!,
+});
+
+const toHeldLicense = (r: Row): HeldLicense => ({
+  id: r.id as string,
+  entity_id: r.entity_id as string,
+  region: r.region as string,
+  regulator_id: r.regulator_id as string,
+  license_id: r.license_id as string,
+  registration_number: r.registration_number as string,
+  valid_from: (r.valid_from as string | null) ?? null,
+  valid_to: (r.valid_to as string | null) ?? null,
+  status: r.status as LicenseStatus,
+  submitted_by: (r.submitted_by as string | null) ?? null,
+  reviewed_by: (r.reviewed_by as string | null) ?? null,
+  review_note: (r.review_note as string | null) ?? null,
+  created_at: iso(r.created_at)!,
+  reviewed_at: iso(r.reviewed_at),
+});
+
+const toRequest = (r: Row): AccessRequest => ({
+  id: r.id as string,
+  kind: r.kind as RequestKind,
+  product_id: r.product_id as string,
+  app_id: (r.app_id as string | null) ?? null,
+  campaign_id: (r.campaign_id as string | null) ?? null,
+  requester_id: r.requester_id as string,
+  status: r.status as RequestStatus,
+  note: (r.note as string) ?? "",
+  decision_note: (r.decision_note as string | null) ?? null,
+  decided_by: (r.decided_by as string | null) ?? null,
+  created_at: iso(r.created_at)!,
+  decided_at: iso(r.decided_at),
 });
 
 const toProductVersion = (r: Row): ProductVersion => ({
@@ -411,6 +580,8 @@ const toApp = (r: Row): App => ({
   description: r.description as string,
   audience: r.audience as string,
   product_ids: r.product_ids as string[],
+  disclosures: (r.disclosures as string[]) ?? [],
+  actions: (r.actions as string[]) ?? ["display"],
   status: r.status as App["status"],
   created_at: iso(r.created_at)!,
   updated_at: iso(r.updated_at)!,
@@ -639,11 +810,16 @@ export class Store {
     );
   }
 
-  async insertDraft(ownerId: string, p: FinancialProduct): Promise<ProductRecord> {
+  async insertDraft(
+    ownerId: string,
+    p: FinancialProduct,
+    meta: { entity_id?: string | null; action?: ProductAction; underlying_product_ids?: string[] } = {},
+  ): Promise<ProductRecord> {
     try {
       const r = await this.one(
-        "INSERT INTO financial_products.products (id, owner_id, status, data) VALUES ($1, $2, 'draft', $3) RETURNING *",
-        [p.id, ownerId, JSON.stringify(p)],
+        `INSERT INTO financial_products.products (id, owner_id, status, data, entity_id, action, underlying_product_ids)
+         VALUES ($1, $2, 'draft', $3, $4, $5, $6) RETURNING *`,
+        [p.id, ownerId, JSON.stringify(p), meta.entity_id ?? null, meta.action ?? "issuance", meta.underlying_product_ids ?? []],
       );
       return toProductRecord(r!);
     } catch (e) {
@@ -884,11 +1060,14 @@ export class Store {
 
   // Apps
 
-  async createApp(ownerId: string, fields: Pick<App, "name" | "description" | "audience" | "product_ids">): Promise<App> {
+  async createApp(
+    ownerId: string,
+    fields: Pick<App, "name" | "description" | "audience" | "product_ids"> & Partial<Pick<App, "disclosures" | "actions">>,
+  ): Promise<App> {
     const r = await this.one(
-      `INSERT INTO financial_products.apps (id, owner_id, name, description, audience, product_ids, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'draft') RETURNING *`,
-      [randomUUID(), ownerId, fields.name, fields.description, fields.audience, fields.product_ids],
+      `INSERT INTO financial_products.apps (id, owner_id, name, description, audience, product_ids, status, disclosures, actions)
+       VALUES ($1, $2, $3, $4, $5, $6, 'draft', $7, $8) RETURNING *`,
+      [randomUUID(), ownerId, fields.name, fields.description, fields.audience, fields.product_ids, fields.disclosures ?? [], fields.actions ?? ["display"]],
     );
     return toApp(r!);
   }
@@ -901,15 +1080,150 @@ export class Store {
   async saveApp(app: App): Promise<App> {
     const r = await this.one(
       `UPDATE financial_products.apps
-       SET name = $1, description = $2, audience = $3, product_ids = $4, status = $5, updated_at = now()
+       SET name = $1, description = $2, audience = $3, product_ids = $4, status = $5, disclosures = $7, actions = $8, updated_at = now()
        WHERE id = $6 RETURNING *`,
-      [app.name, app.description, app.audience, app.product_ids, app.status, app.id],
+      [app.name, app.description, app.audience, app.product_ids, app.status, app.id, app.disclosures, app.actions],
     );
     return toApp(r!);
   }
 
   async appsByOwner(ownerId: string): Promise<App[]> {
     return (await this.all("SELECT * FROM financial_products.apps WHERE owner_id = $1 ORDER BY created_at", [ownerId])).map(toApp);
+  }
+
+
+  async allApps(): Promise<App[]> {
+    return (await this.all("SELECT * FROM financial_products.apps ORDER BY created_at")).map(toApp);
+  }
+
+  // Entities and held licences
+
+  async createEntity(createdBy: string, e: Pick<Entity, "name" | "registration_numbers" | "regions">): Promise<Entity> {
+    const r = await this.one(
+      "INSERT INTO financial_products.entities (id, name, registration_numbers, regions, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+      [randomUUID(), e.name, JSON.stringify(e.registration_numbers), e.regions, createdBy],
+    );
+    return toEntity(r!);
+  }
+
+  async getEntity(id: string): Promise<Entity | undefined> {
+    const r = await this.one("SELECT * FROM financial_products.entities WHERE id::text = $1", [id]);
+    return r && toEntity(r);
+  }
+
+  async listEntities(): Promise<Entity[]> {
+    return (await this.all("SELECT * FROM financial_products.entities ORDER BY created_at")).map(toEntity);
+  }
+
+  async setUserEntity(userId: string, entityId: string | null): Promise<void> {
+    await this.db.query("UPDATE financial_products.users SET entity_id = $2 WHERE id = $1", [userId, entityId]);
+  }
+
+  async userByEmail(email: string): Promise<User | undefined> {
+    const r = await this.one("SELECT * FROM financial_products.users WHERE email = $1", [email.toLowerCase()]);
+    return r && toUser(r);
+  }
+
+  async getUser(id: string): Promise<User | undefined> {
+    const r = await this.one("SELECT * FROM financial_products.users WHERE id::text = $1", [id]);
+    return r && toUser(r);
+  }
+
+  async entityMembers(entityId: string): Promise<User[]> {
+    return (await this.all("SELECT * FROM financial_products.users WHERE entity_id = $1 ORDER BY created_at", [entityId])).map(toUser);
+  }
+
+  async registerLicense(
+    submittedBy: string,
+    l: Pick<HeldLicense, "entity_id" | "region" | "regulator_id" | "license_id" | "registration_number" | "valid_from" | "valid_to">,
+  ): Promise<HeldLicense> {
+    // Re-registering resubmits for review.
+    const r = await this.one(
+      `INSERT INTO financial_products.held_licenses
+         (id, entity_id, region, regulator_id, license_id, registration_number, valid_from, valid_to, status, submitted_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9)
+       ON CONFLICT (entity_id, region, regulator_id, license_id) DO UPDATE SET
+         registration_number = EXCLUDED.registration_number, valid_from = EXCLUDED.valid_from, valid_to = EXCLUDED.valid_to,
+         status = 'pending', submitted_by = EXCLUDED.submitted_by, reviewed_by = NULL, review_note = NULL, reviewed_at = NULL
+       RETURNING *`,
+      [randomUUID(), l.entity_id, l.region, l.regulator_id, l.license_id, l.registration_number, l.valid_from, l.valid_to, submittedBy],
+    );
+    return toHeldLicense(r!);
+  }
+
+  async getHeldLicense(id: string): Promise<HeldLicense | undefined> {
+    const r = await this.one("SELECT * FROM financial_products.held_licenses WHERE id::text = $1", [id]);
+    return r && toHeldLicense(r);
+  }
+
+  async licensesOf(entityId: string): Promise<HeldLicense[]> {
+    return (await this.all("SELECT * FROM financial_products.held_licenses WHERE entity_id = $1 ORDER BY created_at", [entityId])).map(toHeldLicense);
+  }
+
+  async licensesByStatus(status?: LicenseStatus): Promise<HeldLicense[]> {
+    const rows = status
+      ? await this.all("SELECT * FROM financial_products.held_licenses WHERE status = $1 ORDER BY created_at", [status])
+      : await this.all("SELECT * FROM financial_products.held_licenses ORDER BY created_at");
+    return rows.map(toHeldLicense);
+  }
+
+  async reviewLicense(id: string, status: LicenseStatus, reviewerId: string, note: string | null): Promise<HeldLicense> {
+    const r = await this.one(
+      `UPDATE financial_products.held_licenses SET status = $2, reviewed_by = $3, review_note = $4, reviewed_at = now()
+       WHERE id::text = $1 RETURNING *`,
+      [id, status, reviewerId, note],
+    );
+    return toHeldLicense(r!);
+  }
+
+  // Product access
+
+  async setProductAccess(id: string, mode: AccessMode, terms: BuildTerms): Promise<ProductRecord> {
+    const r = await this.one(
+      "UPDATE financial_products.products SET access_mode = $2, build_terms = $3, updated_at = now() WHERE id = $1 RETURNING *",
+      [id, mode, JSON.stringify(terms)],
+    );
+    return toProductRecord(r!);
+  }
+
+  async createRequest(
+    req: Pick<AccessRequest, "kind" | "product_id" | "app_id" | "campaign_id" | "requester_id" | "status" | "note"> & { decided_by?: string | null },
+  ): Promise<AccessRequest> {
+    const r = await this.one(
+      `INSERT INTO financial_products.requests (id, kind, product_id, app_id, campaign_id, requester_id, status, note, decided_by, decided_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CASE WHEN $7 = 'pending' THEN NULL ELSE now() END) RETURNING *`,
+      [randomUUID(), req.kind, req.product_id, req.app_id, req.campaign_id, req.requester_id, req.status, req.note, req.decided_by ?? null],
+    );
+    return toRequest(r!);
+  }
+
+  async getRequest(id: string): Promise<AccessRequest | undefined> {
+    const r = await this.one("SELECT * FROM financial_products.requests WHERE id::text = $1", [id]);
+    return r && toRequest(r);
+  }
+
+  async decideRequest(id: string, status: RequestStatus, deciderId: string, note: string | null): Promise<AccessRequest> {
+    const r = await this.one(
+      `UPDATE financial_products.requests SET status = $2, decided_by = $3, decision_note = $4, decided_at = now()
+       WHERE id::text = $1 RETURNING *`,
+      [id, status, deciderId, note],
+    );
+    return toRequest(r!);
+  }
+
+  async requestsForProducts(productIds: string[]): Promise<AccessRequest[]> {
+    if (productIds.length === 0) return [];
+    return (
+      await this.all("SELECT * FROM financial_products.requests WHERE product_id = ANY($1) ORDER BY created_at DESC", [productIds])
+    ).map(toRequest);
+  }
+
+  async requestsBy(requesterId: string): Promise<AccessRequest[]> {
+    return (await this.all("SELECT * FROM financial_products.requests WHERE requester_id = $1 ORDER BY created_at DESC", [requesterId])).map(toRequest);
+  }
+
+  async requestsForCampaign(campaignId: string): Promise<AccessRequest[]> {
+    return (await this.all("SELECT * FROM financial_products.requests WHERE campaign_id::text = $1 ORDER BY created_at", [campaignId])).map(toRequest);
   }
 
   async publishedApps(): Promise<App[]> {

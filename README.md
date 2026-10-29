@@ -45,7 +45,47 @@ Only Clerk dashboard owners can set public metadata; users can't edit their own.
 
 The CLI (`users invite --role admin`) remains as a fallback for creating the first admin.
 
-### GTM engineering (developers)
+### Who does what: licensed innovators, software developers
+
+- **Innovators are the licensed layer.** Any firm doing a regulated financial action:
+  - issuing a product (a bank, NBFC, AMC or insurer)
+  - selling another issuer's product (a mutual fund distributor, insurance broker, lending service provider)
+  - repackaging others' products (a model portfolio)
+
+  Each innovator acts for a **firm** (`create_entity`) and registers the **licences** it holds (`register_license`), which an admin verifies against the regulator's register (`review_license`). A product declares its `action` (`issuance`, `sale` or `repackaging`, with `underlying_product_ids` for the last two). **`publish_product` requires a verified, in-date licence held by the firm that covers that action on that category in that region.**
+- **Developers are the software layer.** They build SDKs, apps and experiences on innovators' products, and never issue, sell, hold funds or collect financial data. Onboarding, KYC and payments hand off to the innovator's own flow (`deep_link` / `initiate_onboarding`).
+
+**Opening products to developers.** Each product has an **access mode**, set with `set_product_access`:
+
+| Mode | Developers |
+| --- | --- |
+| `open` | Build and publish any experience that meets the terms |
+| `approval` (default) | Build now; go live once the innovator approves their request |
+| `private` | Only developers the innovator invites (`invite_developer`) |
+
+Each product also has **build terms**:
+- **permitted actions:** display, compare, prefill, deep_link, embed_widget, initiate_onboarding
+- **required disclosures**
+- **banned phrases**
+- **allowed customer personas**
+- **branding**
+- **commercials:** none, referral fee or revenue share
+
+**The developer side:**
+- **Find products:** `list_buildable_products` and `get_product_sdk` (data shape, sandbox sample, permitted actions, hand-offs).
+- **Ask for access:** `request_product_access` and `list_my_requests`.
+- **Check and publish:** `check_experience`, then `publish_app`. Publishing needs access to every product **and** a passing check against each product's terms.
+
+**The innovator side:**
+- **Inbox:** `list_requests` and `review_request` (approve or reject, with a note).
+- **Visibility:** `list_experiences` shows every app using their products.
+- **Control:** `revoke_access`, and **`suspend_product_experiences`** as a kill switch (the product goes private, every grant is revoked, and live campaigns using it are paused).
+
+**Campaigns.** Promoting a financial product is a regulated act:
+- A campaign over the launcher's own (or their firm's) products, or the open reference catalogue, goes live once its copy passes the lint.
+- A campaign over **another innovator's** products becomes `pending_approval` and lands in that innovator's inbox. It goes live when every product's innovator approves, and goes back to draft on any rejection.
+
+### GTM engineering (campaigns)
 
 - **Segments** pick consumers by what they currently hold: `enrolled_in`, `enrolled_in_lines`, and `not_enrolled_in` for cross-sell.
 - **Campaigns** target a segment (or everyone) on chosen channels, with up to 5 copy variants for A/B tests.

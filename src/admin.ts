@@ -277,6 +277,79 @@ export function registerAdminTools(server: McpServer, store: Store, user: User, 
     },
   );
 
+  // ---- firms and their licences ----
+
+  server.registerTool(
+    "list_entities",
+    {
+      title: "Firms",
+      description: "Admin: every registered firm with its members and licences.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    async () =>
+      json(
+        await Promise.all(
+          (await store.listEntities()).map(async (e) => ({
+            ...e,
+            members: (await store.entityMembers(e.id)).map((m) => ({ id: m.id, name: m.name, email: m.email })),
+            licenses: await store.licensesOf(e.id),
+          })),
+        ),
+      ),
+  );
+
+  server.registerTool(
+    "add_entity_member",
+    {
+      title: "Add someone to a firm",
+      description: "Admin: make a signed-in user a member of a firm (they then act for it as an innovator).",
+      inputSchema: { email: z.string().email(), entity_id: z.string() },
+    },
+    async ({ email, entity_id }) => {
+      const member = await store.userByEmail(email);
+      if (!member) return fail(`${email} hasn't signed in to Mynt yet`);
+      const entity = await store.getEntity(entity_id);
+      if (!entity) return fail(`No firm '${entity_id}'`);
+      await store.setUserEntity(member.id, entity.id);
+      await audit("add_entity_member", entity.id, { email: member.email });
+      return json({ entity_id: entity.id, entity: entity.name, member: member.email });
+    },
+  );
+
+  server.registerTool(
+    "list_license_reviews",
+    {
+      title: "Licences to review",
+      description: "Admin: licences firms have registered, by review status (pending by default).",
+      inputSchema: { status: z.enum(["pending", "verified", "rejected", "suspended"]).default("pending") },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ status }) =>
+      json(
+        await Promise.all(
+          (await store.licensesByStatus(status)).map(async (l) => ({ ...l, entity: (await store.getEntity(l.entity_id))?.name })),
+        ),
+      ),
+  );
+
+  server.registerTool(
+    "review_license",
+    {
+      title: "Verify a firm's licence",
+      description:
+        "Admin: verify, reject or suspend a licence a firm registered, after checking it against the regulator's public register. Only verified, in-date licences let a firm publish products.",
+      inputSchema: { license_record_id: z.string(), decision: z.enum(["verified", "rejected", "suspended"]), note: z.string().optional() },
+    },
+    async ({ license_record_id, decision, note }) => {
+      const held = await store.getHeldLicense(license_record_id);
+      if (!held) return fail(`No registered licence '${license_record_id}'`);
+      const reviewed = await store.reviewLicense(held.id, decision, user.id, note ?? null);
+      await audit("review_license", held.id, { decision, entity_id: held.entity_id, license: held.license_id });
+      return json(reviewed);
+    },
+  );
+
   // ---- whitelist and users ----
 
   const adminInvites = async () => (await store.listInvites()).filter((i) => i.roles.includes("admin")).map((i) => i.email);

@@ -3,7 +3,19 @@ import { z } from "zod";
 import type { ClerkAdmin } from "./auth.js";
 import { PRODUCT_LINES } from "./catalog.js";
 import { runProductTests } from "./product-tests.js";
-import { EMPTY_MODEL, LegalInstrumentSchema, RegulatorSchema, validateRegulator } from "./regulatory.js";
+import {
+  JudgmentSchema,
+  LegacyLegalSchema,
+  legacyToJudgment,
+  legalIds,
+  LegislativeSchema,
+  normalizeModel,
+  RegulatorSchema,
+  validateRegulator,
+  type Judgment,
+  type Legislation,
+  type RegulatoryModel,
+} from "./regulatory.js";
 import { ROLES, type Role, type Store, type User } from "./store.js";
 
 const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] });
@@ -97,10 +109,10 @@ export function registerAdminTools(server: McpServer, store: Store, user: User, 
       const region = await regionFor(code);
       if (!region) return fail(`No region '${code}'; create it with define_region first`);
       const ref = await store.referenceData(true);
-      const model = region.regulatory ?? EMPTY_MODEL;
+      const model = normalizeModel(region.regulatory);
       const { errors, warnings } = validateRegulator(regulator, {
         categories: ref.categories.filter((c) => c.active).map((c) => c.id),
-        legalIds: model.legal.map((l) => l.id),
+        legalIds: legalIds(model),
       });
       if (errors.length) return { ...json({ error: "The regulator has broken links", errors, warnings }), isError: true };
       const replaced = model.regulators.some((r) => r.id === regulator.id);
@@ -124,7 +136,7 @@ export function registerAdminTools(server: McpServer, store: Store, user: User, 
     async ({ region: code, regulator_id }) => {
       const region = await regionFor(code);
       if (!region) return fail(`No region '${code}'`);
-      const model = region.regulatory ?? EMPTY_MODEL;
+      const model = normalizeModel(region.regulatory);
       const gone = model.regulators.find((r) => r.id === regulator_id);
       if (!gone) return fail(`No regulator '${regulator_id}' in ${code}`);
       await store.setRegulatoryModel(code, { ...model, regulators: model.regulators.filter((r) => r.id !== regulator_id) });
@@ -133,44 +145,133 @@ export function registerAdminTools(server: McpServer, store: Store, user: User, 
     },
   );
 
+  // Legal: the legislative branch (acts, rules, directions, circulars...) and the judiciary (case law).
+  const saveLegal = async (code: string, legal: RegulatoryModel["legal"]) => {
+    const region = (await regionFor(code))!;
+    await store.setRegulatoryModel(code, { ...normalizeModel(region.regulatory), legal });
+  };
+
+  const legislationWarnings = (code: string, model: RegulatoryModel, l: Legislation) => {
+    const regulatorIds = model.regulators.map((r) => r.id);
+    return [
+      ...(l.issued_by && l.issued_by !== "parliament" && !regulatorIds.includes(l.issued_by) ? [`issued_by '${l.issued_by}' isn't a regulator in ${code}`] : []),
+      ...(l.parent_id && !model.legal.legislative.some((x) => x.id === l.parent_id) ? [`parent_id '${l.parent_id}' isn't recorded legislation in ${code}`] : []),
+      ...l.applies_to.regulators.filter((id) => !regulatorIds.includes(id)).map((id) => `applies to unknown regulator '${id}'`),
+    ];
+  };
+
+  const putLegislation = async (code: string, l: Legislation) => {
+    const model = normalizeModel((await regionFor(code))!.regulatory);
+    const warnings = legislationWarnings(code, model, l);
+    const replaced = model.legal.legislative.some((x) => x.id === l.id);
+    await saveLegal(code, { ...model.legal, legislative: [...model.legal.legislative.filter((x) => x.id !== l.id), l] });
+    await audit("define_legislation", `${code}/${l.id}`, { kind: l.kind, replaced });
+    return { region: code, branch: "legislative", id: l.id, replaced, warnings };
+  };
+
+  const putJudgment = async (code: string, j: Judgment) => {
+    const model = normalizeModel((await regionFor(code))!.regulatory);
+    const legislativeIds = model.legal.legislative.map((x) => x.id);
+    const regulatorIds = model.regulators.map((r) => r.id);
+    const warnings = [
+      ...j.interprets.filter((id) => !legislativeIds.includes(id)).map((id) => `interprets '${id}', which isn't recorded legislation in ${code}`),
+      ...j.applies_to.regulators.filter((id) => !regulatorIds.includes(id)).map((id) => `applies to unknown regulator '${id}'`),
+    ];
+    const replaced = model.legal.judiciary.some((x) => x.id === j.id);
+    await saveLegal(code, { ...model.legal, judiciary: [...model.legal.judiciary.filter((x) => x.id !== j.id), j] });
+    await audit("define_judgment", `${code}/${j.id}`, { court_level: j.court_level, replaced });
+    return { region: code, branch: "judiciary", id: j.id, replaced, warnings };
+  };
+
+  server.registerTool(
+    "define_legislation",
+    {
+      title: "Define legislation",
+      description:
+        "Admin: add or replace a legislative instrument in a region (act, ordinance, rule, regulation, master direction, circular, guideline, notification, order) with its citation, issuer, the instrument it is made under, effective date, status, official URL, summary and what it applies to. Obligations and filings cite it by id (legal_ref).",
+      inputSchema: { region: z.string(), instrument: LegislativeSchema },
+    },
+    async ({ region: code, instrument }) => {
+      if (!(await regionFor(code))) return fail(`No region '${code}'; create it with define_region first`);
+      return json(await putLegislation(code, instrument));
+    },
+  );
+
+  server.registerTool(
+    "define_judgment",
+    {
+      title: "Define a judgment",
+      description:
+        "Admin: add or replace a court or tribunal decision in a region: case name, court and level, citation, date, bench, holding, the legislation it interprets, whether it is still good law, official URL and what it applies to. Obligations and filings can cite it by id (legal_ref).",
+      inputSchema: { region: z.string(), judgment: JudgmentSchema },
+    },
+    async ({ region: code, judgment }) => {
+      if (!(await regionFor(code))) return fail(`No region '${code}'; create it with define_region first`);
+      return json(await putJudgment(code, judgment));
+    },
+  );
+
+  for (const [name, branch, title] of [
+    ["remove_legislation", "legislative", "Remove legislation"],
+    ["remove_judgment", "judiciary", "Remove a judgment"],
+  ] as const) {
+    server.registerTool(
+      name,
+      {
+        title,
+        description: `Admin: delete one ${branch === "legislative" ? "legislative instrument" : "judgment"} from a region.`,
+        inputSchema: { region: z.string(), id: z.string() },
+        annotations: { destructiveHint: true },
+      },
+      async ({ region: code, id }) => {
+        const region = await regionFor(code);
+        if (!region) return fail(`No region '${code}'`);
+        const model = normalizeModel(region.regulatory);
+        const list = model.legal[branch] as { id: string }[];
+        if (!list.some((x) => x.id === id)) return fail(`No ${branch} item '${id}' in ${code}`);
+        await saveLegal(code, { ...model.legal, [branch]: list.filter((x) => x.id !== id) });
+        await audit(name, `${code}/${id}`);
+        return json({ region: code, branch, removed: id });
+      },
+    );
+  }
+
+  // Deprecated: the earlier single list. Routes judgments to the judiciary and everything else to
+  // legislation, so sessions started before the split keep working.
   server.registerTool(
     "define_legal_instrument",
     {
-      title: "Define a legal instrument",
-      description:
-        "Admin: add or replace an act, rule, regulation, master direction, circular, guideline, notification or judgment in a region, with its citation, issuer, effective date, official URL, summary and what it applies to. Obligations and filings cite these by id (legal_ref).",
-      inputSchema: { region: z.string(), instrument: LegalInstrumentSchema },
+      title: "Define a legal instrument (deprecated)",
+      description: "Deprecated: use define_legislation or define_judgment. Files kind 'judgment' under the judiciary and everything else under legislation.",
+      inputSchema: { region: z.string(), instrument: LegacyLegalSchema },
     },
     async ({ region: code, instrument }) => {
-      const region = await regionFor(code);
-      if (!region) return fail(`No region '${code}'; create it with define_region first`);
-      const model = region.regulatory ?? EMPTY_MODEL;
-      const regulatorIds = model.regulators.map((r) => r.id);
-      const warnings = [
-        ...(instrument.issued_by && !regulatorIds.includes(instrument.issued_by) ? [`issued_by '${instrument.issued_by}' isn't a regulator in ${code}`] : []),
-        ...instrument.applies_to.regulators.filter((id) => !regulatorIds.includes(id)).map((id) => `applies to unknown regulator '${id}'`),
-      ];
-      const replaced = model.legal.some((l) => l.id === instrument.id);
-      await store.setRegulatoryModel(code, { ...model, legal: [...model.legal.filter((l) => l.id !== instrument.id), instrument] });
-      await audit("define_legal_instrument", `${code}/${instrument.id}`, { kind: instrument.kind, replaced });
-      return json({ region: code, instrument: instrument.id, replaced, warnings });
+      if (!(await regionFor(code))) return fail(`No region '${code}'; create it with define_region first`);
+      const result =
+        instrument.kind === "judgment"
+          ? await putJudgment(code, legacyToJudgment(instrument))
+          : await putLegislation(code, LegislativeSchema.parse(instrument));
+      return json({ ...result, deprecated: "use define_legislation or define_judgment" });
     },
   );
 
   server.registerTool(
     "remove_legal_instrument",
     {
-      title: "Remove a legal instrument",
-      description: "Admin: delete a legal instrument from a region.",
+      title: "Remove a legal instrument (deprecated)",
+      description: "Deprecated: use remove_legislation or remove_judgment. Removes the id from whichever branch holds it.",
       inputSchema: { region: z.string(), instrument_id: z.string() },
       annotations: { destructiveHint: true },
     },
     async ({ region: code, instrument_id }) => {
       const region = await regionFor(code);
       if (!region) return fail(`No region '${code}'`);
-      const model = region.regulatory ?? EMPTY_MODEL;
-      if (!model.legal.some((l) => l.id === instrument_id)) return fail(`No legal instrument '${instrument_id}' in ${code}`);
-      await store.setRegulatoryModel(code, { ...model, legal: model.legal.filter((l) => l.id !== instrument_id) });
+      const model = normalizeModel(region.regulatory);
+      const legislative = model.legal.legislative.filter((x) => x.id !== instrument_id);
+      const judiciary = model.legal.judiciary.filter((x) => x.id !== instrument_id);
+      if (legislative.length + judiciary.length === model.legal.legislative.length + model.legal.judiciary.length)
+        return fail(`No legal item '${instrument_id}' in ${code}`);
+      await saveLegal(code, { legislative, judiciary });
       await audit("remove_legal_instrument", `${code}/${instrument_id}`);
       return json({ region: code, removed: instrument_id });
     },

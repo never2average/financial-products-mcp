@@ -118,34 +118,115 @@ export const RegulatorSchema = z.object({
   license_types: z.array(LicenseType).default([]),
 });
 
-export const LEGAL_KINDS = ["act", "rule", "regulation", "master_direction", "circular", "guideline", "notification", "judgment"] as const;
+// ---- legal: split into the legislative branch (what the law says) and the judiciary (how courts
+// have read it). Obligations and filings cite either by id through legal_ref.
 
-export const LegalInstrumentSchema = z.object({
+const AppliesTo = z
+  .object({
+    regulators: z.array(z.string()).default([]),
+    license_types: z.array(z.string()).default([]),
+    product_types: z.array(z.string()).default([]),
+    customer_personas: z.array(z.string()).default([]),
+  })
+  .default({ regulators: [], license_types: [], product_types: [], customer_personas: [] });
+
+export const LEGISLATIVE_KINDS = [
+  "act",
+  "ordinance",
+  "rule",
+  "regulation",
+  "master_direction",
+  "circular",
+  "guideline",
+  "notification",
+  "order",
+] as const;
+
+export const LegislativeSchema = z.object({
   id: Id,
   title: z.string().min(1),
-  kind: z.enum(LEGAL_KINDS),
+  kind: z.enum(LEGISLATIVE_KINDS),
   citation: z.string().optional().describe("e.g. 'Act No. 2 of 1934' or a circular number"),
-  issued_by: z.string().optional().describe("Regulator id, or the legislature"),
+  issued_by: z.string().optional().describe("Regulator id, or the legislature (e.g. parliament)"),
+  parent_id: z.string().optional().describe("The legislative id this is made under, e.g. the act a rule or direction derives from"),
   effective_from: z.string().optional(),
+  status: z.enum(["in_force", "amended", "repealed", "draft"]).default("in_force"),
   url: z.string().url().optional(),
   summary: z.string().default(""),
-  applies_to: z
-    .object({
-      regulators: z.array(z.string()).default([]),
-      license_types: z.array(z.string()).default([]),
-      product_types: z.array(z.string()).default([]),
-      customer_personas: z.array(z.string()).default([]),
-    })
-    .default({ regulators: [], license_types: [], product_types: [], customer_personas: [] }),
+  applies_to: AppliesTo,
 });
 
+export const COURT_LEVELS = ["supreme_court", "high_court", "tribunal", "appellate_authority", "other"] as const;
+
+export const JudgmentSchema = z.object({
+  id: Id,
+  title: z.string().min(1).describe("Case name, e.g. 'X v. Union of India'"),
+  court: z.string().min(1).describe("e.g. Supreme Court of India, Securities Appellate Tribunal"),
+  court_level: z.enum(COURT_LEVELS),
+  citation: z.string().optional().describe("e.g. a law-report citation or case number"),
+  decided_on: z.string().optional(),
+  bench: z.array(z.string()).default([]),
+  holding: z.string().default("").describe("The legal principle the court decided"),
+  summary: z.string().default(""),
+  interprets: z.array(z.string()).default([]).describe("Legislative ids this judgment construes"),
+  status: z.enum(["good_law", "overruled", "distinguished", "stayed", "under_appeal"]).default("good_law"),
+  url: z.string().url().optional(),
+  applies_to: AppliesTo,
+});
+
+// The earlier single-list shape, still accepted by the deprecated define_legal_instrument tool.
+export const LegacyLegalSchema = LegislativeSchema.extend({ kind: z.enum([...LEGISLATIVE_KINDS, "judgment"]) }).omit({ status: true, parent_id: true });
+
 export type Regulator = z.infer<typeof RegulatorSchema>;
-export type LegalInstrument = z.infer<typeof LegalInstrumentSchema>;
+export type Legislation = z.infer<typeof LegislativeSchema>;
+export type Judgment = z.infer<typeof JudgmentSchema>;
+export interface LegalModel {
+  legislative: Legislation[];
+  judiciary: Judgment[];
+}
 export interface RegulatoryModel {
   regulators: Regulator[];
-  legal: LegalInstrument[];
+  legal: LegalModel;
 }
-export const EMPTY_MODEL: RegulatoryModel = { regulators: [], legal: [] };
+export const EMPTY_MODEL: RegulatoryModel = { regulators: [], legal: { legislative: [], judiciary: [] } };
+
+// Accepts what is stored, including the earlier flat legal list, and returns the split shape.
+export function normalizeModel(raw: unknown): RegulatoryModel {
+  const m = (raw ?? {}) as { regulators?: Regulator[]; legal?: unknown };
+  const legal = m.legal;
+  if (Array.isArray(legal)) {
+    const items = legal as (Omit<Legislation, "kind"> & { kind: string })[];
+    return {
+      regulators: m.regulators ?? [],
+      legal: {
+        legislative: items.filter((l) => l.kind !== "judgment") as Legislation[],
+        judiciary: items.filter((l) => l.kind === "judgment").map(legacyToJudgment),
+      },
+    };
+  }
+  const l = (legal ?? {}) as Partial<LegalModel>;
+  return { regulators: m.regulators ?? [], legal: { legislative: l.legislative ?? [], judiciary: l.judiciary ?? [] } };
+}
+
+export function legacyToJudgment(l: { id: string; title: string; issued_by?: string; citation?: string; effective_from?: string; url?: string; summary?: string; applies_to?: Judgment["applies_to"] }): Judgment {
+  return {
+    id: l.id,
+    title: l.title,
+    court: l.issued_by ?? "Verify: court not recorded",
+    court_level: "other",
+    citation: l.citation,
+    decided_on: l.effective_from,
+    bench: [],
+    holding: "",
+    summary: l.summary ?? "",
+    interprets: [],
+    status: "good_law",
+    url: l.url,
+    applies_to: l.applies_to ?? { regulators: [], license_types: [], product_types: [], customer_personas: [] },
+  };
+}
+
+export const legalIds = (m: RegulatoryModel) => [...m.legal.legislative.map((l) => l.id), ...m.legal.judiciary.map((j) => j.id)];
 
 const dupes = (ids: string[]) => [...new Set(ids.filter((id, i) => ids.indexOf(id) !== i))];
 
@@ -222,6 +303,9 @@ export function summarizeModel(model: RegulatoryModel) {
       customer_personas: r.scope.customer_personas.length,
       license_types: r.license_types.map((l) => ({ _id: l._id, name: l.name })),
     })),
-    legal: model.legal.map((l) => ({ id: l.id, title: l.title, kind: l.kind, citation: l.citation })),
+    legal: {
+      legislative: model.legal.legislative.map((l) => ({ id: l.id, title: l.title, kind: l.kind, status: l.status, citation: l.citation })),
+      judiciary: model.legal.judiciary.map((j) => ({ id: j.id, title: j.title, court: j.court, decided_on: j.decided_on, status: j.status })),
+    },
   };
 }

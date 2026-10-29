@@ -73,7 +73,7 @@ test("admins load regulators and legal instruments in the pasted schema; innovat
   // Citing a law that isn't recorded yet is a warning, not an error.
   const first = (await call(admin, "define_regulator", { region: "IN", regulator: regulator() })).data;
   assert.ok(first.warnings.some((w) => /kyc_direction/.test(w)));
-  await call(admin, "define_legal_instrument", {
+  await call(admin, "define_legislation", {
     region: "IN",
     instrument: { id: "kyc_direction", title: "KYC Master Direction", kind: "master_direction", issued_by: "rbi", summary: "Customer due diligence rules" },
   });
@@ -98,7 +98,94 @@ test("admins load regulators and legal instruments in the pasted schema; innovat
   assert.deepEqual((await call(inno, "find_licenses", { region: "IN", category: "deposits", action: "repackaging" })).data, []);
 
   const laws = (await call(inno, "list_legal_instruments", { region: "IN", applies_to: "rbi" })).data;
-  assert.deepEqual(laws.map((l) => l.id), ["kyc_direction"]);
+  assert.deepEqual(laws.legislative.map((l) => l.id), ["kyc_direction"]);
+  assert.equal(laws.legislative[0].status, "in_force");
+});
+
+test("legal is split into legislative and judiciary branches", async () => {
+  const { as, connect, call } = await setup();
+  const admin = await connect(await as("Ada", ["admin"]));
+  const inno = await connect(await as("Ines", ["innovator"]));
+
+  await call(admin, "define_legislation", { region: "IN", instrument: { id: "rbi_act", title: "RBI Act", kind: "act", issued_by: "parliament" } });
+  const rule = (await call(admin, "define_legislation", {
+    region: "IN",
+    instrument: { id: "nbfc_direction", title: "NBFC Master Direction", kind: "master_direction", issued_by: "rbi", parent_id: "rbi_act" },
+  })).data;
+  assert.equal(rule.branch, "legislative");
+  assert.ok(rule.warnings.some((w) => /issued_by 'rbi'/.test(w)), "rbi isn't defined as a regulator yet");
+
+  const judgment = (await call(admin, "define_judgment", {
+    region: "IN",
+    judgment: {
+      id: "case_one",
+      title: "A v. B",
+      court: "Supreme Court of India",
+      court_level: "supreme_court",
+      decided_on: "2020-01-01",
+      holding: "Fixture holding",
+      interprets: ["rbi_act", "missing_act"],
+    },
+  })).data;
+  assert.equal(judgment.branch, "judiciary");
+  assert.deepEqual(judgment.warnings, ["interprets 'missing_act', which isn't recorded legislation in IN"]);
+
+  // A regulator's obligations may cite either branch.
+  const r = regulator();
+  r.license_types[0].grc.registers.obligations = [
+    { id: "o1", title: "From statute", legal_ref: "rbi_act" },
+    { id: "o2", title: "From case law", legal_ref: "case_one" },
+  ];
+  assert.deepEqual((await call(admin, "define_regulator", { region: "IN", regulator: r })).data.warnings, []);
+
+  const all = (await call(inno, "list_legal_instruments", { region: "IN" })).data;
+  assert.deepEqual(all.legislative.map((l) => l.id).sort(), ["nbfc_direction", "rbi_act"]);
+  assert.deepEqual(all.judiciary.map((j) => [j.id, j.status]), [["case_one", "good_law"]]);
+  assert.deepEqual((await call(inno, "list_legal_instruments", { region: "IN", court_level: "supreme_court" })).data.legislative, []);
+  assert.deepEqual((await call(inno, "list_legal_instruments", { region: "IN", applies_to: "rbi_act" })).data.judiciary.map((j) => j.id), ["case_one"]);
+  const summary = (await call(inno, "get_region", { code: "IN" })).data.regulatory.legal;
+  assert.equal(summary.legislative.length, 2);
+  assert.equal(summary.judiciary[0].court, "Supreme Court of India");
+
+  await call(admin, "remove_judgment", { region: "IN", id: "case_one" });
+  assert.deepEqual((await call(inno, "list_legal_instruments", { region: "IN", branch: "judiciary" })).data.judiciary, []);
+});
+
+test("the deprecated define_legal_instrument files items into the right branch", async () => {
+  const { as, connect, call } = await setup();
+  const admin = await connect(await as("Ada", ["admin"]));
+  const leg = (await call(admin, "define_legal_instrument", { region: "IN", instrument: { id: "a1", title: "Act", kind: "act" } })).data;
+  const jud = (await call(admin, "define_legal_instrument", { region: "IN", instrument: { id: "j1", title: "X v. Y", kind: "judgment", issued_by: "Delhi High Court" } })).data;
+  assert.equal(leg.branch, "legislative");
+  assert.equal(jud.branch, "judiciary");
+  const all = (await call(admin, "list_legal_instruments", { region: "IN" })).data;
+  assert.equal(all.judiciary[0].court, "Delhi High Court");
+  assert.equal((await call(admin, "remove_legal_instrument", { region: "IN", instrument_id: "j1" })).data.removed, "j1");
+});
+
+test("a stored flat legal list is migrated into the two branches when Mynt starts", async () => {
+  const pg = new PGlite();
+  const db = { query: (s, p) => pg.query(s, p), exec: (s) => pg.exec(s), close: async () => {} };
+  await Store.open(db);
+  const flat = [
+    { id: "act1", title: "Some Act", kind: "act", issued_by: "parliament", summary: "s" },
+    { id: "case1", title: "P v. Q", kind: "judgment", issued_by: "Bombay High Court", effective_from: "2019-05-01" },
+  ];
+  await pg.query("UPDATE financial_products.regions SET regulatory = jsonb_build_object('regulators', '[]'::jsonb, 'legal', $1::jsonb) WHERE code = 'IN'", [
+    JSON.stringify(flat),
+  ]);
+  const store = await Store.open(db);
+  const { rows } = await pg.query("SELECT regulatory FROM financial_products.regions WHERE code = 'IN'");
+  const legal = rows[0].regulatory.legal;
+  assert.deepEqual(legal.legislative.map((l) => l.id), ["act1"]);
+  assert.deepEqual(legal.legislative[0], flat[0], "legislative items move unchanged");
+  assert.equal(legal.judiciary[0].court, "Bombay High Court");
+  assert.equal(legal.judiciary[0].decided_on, "2019-05-01");
+  assert.equal(legal.judiciary[0].court_level, "other");
+  // Running again leaves the split shape alone.
+  await Store.open(db);
+  assert.deepEqual((await pg.query("SELECT regulatory FROM financial_products.regions WHERE code = 'IN'")).rows[0].regulatory.legal, legal);
+  assert.ok(store);
 });
 
 test("broken links inside a regulator are refused; links outside it are warnings", async () => {

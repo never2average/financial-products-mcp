@@ -1,83 +1,132 @@
 #!/usr/bin/env bash
-# Installs the MCP server on a host without Docker that already runs Caddy as a system service
-# (e.g. a software-factory app server). State lives in an external Postgres such as Supabase Cloud.
-# Idempotent. Usage (as root on the server):
-#   bash install-host.sh <domain> [git-ref] [port]
-# Then set DATABASE_URL in /etc/financial-products-mcp/env (see set-database-url.sh) and the service starts.
+# Installs the MCP server with its own self-hosted Supabase on a server that already runs Caddy as a
+# system service. Prints nothing on success; on failure prints one line naming the log. Secrets are
+# generated on the server and never printed. Idempotent: re-run to update.
+#   bash install-host.sh <domain> [git-ref]
 set -euo pipefail
 
-DOMAIN=${1:?usage: install-host.sh <domain> [git-ref] [port]}
+DOMAIN=${1:?usage: install-host.sh <domain> [git-ref]}
 REF=${2:-main}
-PORT=${3:-3100}
 REPO=https://github.com/never2average/financial-products-mcp.git
 BASE=/opt/financial-products-mcp
+SUPABASE_DIR=/opt/supabase
 ENV_DIR=/etc/financial-products-mcp
-SITES=/etc/caddy/sites.d
-SITE_FILE=$SITES/financial-products-mcp.caddy
+COMPANION=/etc/caddy-companion
+APP_PORT=3100
+DB_PORT=54329      # Supabase Postgres, localhost only
+POOLER_PORT=54322  # Supabase pooler, localhost only (5432 may belong to a native Postgres)
+LOG=/var/log/financial-products-mcp/install.log
 
-log() { printf '\n==> %s\n' "$*"; }
+install -d -m 700 "$(dirname "$LOG")"
+exec 3>&2 >>"$LOG" 2>&1
+trap 'echo "install failed; details in $LOG" >&3' ERR
+echo "=== $(date -Is) install $DOMAIN $REF"
 
-if command -v docker >/dev/null; then echo "note: Docker is present; this installer does not use it" >&2; fi
-command -v caddy >/dev/null || { echo "Caddy (system service) is required" >&2; exit 2; }
-node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=13)?0:1)' ||
-  { echo "Node.js >= 22.13 is required" >&2; exit 2; }
-if ss -ltnH "sport = :$PORT" | grep -q . && ! systemctl is-active -q financial-products-mcp; then
-  echo "port $PORT is already in use; pass another port" >&2; exit 2
-fi
+command -v caddy >/dev/null
+node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=13)?0:1)'
+export DEBIAN_FRONTEND=noninteractive
 
-log "Service user"
+# --- release -------------------------------------------------------------------------------------
 id fpmcp >/dev/null 2>&1 || useradd --system --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin fpmcp
-
-log "Release ($REF)"
 mkdir -p "$BASE/releases"
-SRC=$BASE/src
-if [ ! -d "$SRC/.git" ]; then git clone -q "$REPO" "$SRC"; fi
-git -C "$SRC" fetch -q origin "$REF"
-SHA=$(git -C "$SRC" rev-parse --short FETCH_HEAD)
+[ -d "$BASE/src/.git" ] || git clone -q "$REPO" "$BASE/src"
+git -C "$BASE/src" fetch -q origin "$REF"
+SHA=$(git -C "$BASE/src" rev-parse --short FETCH_HEAD)
 REL=$BASE/releases/$SHA
 if [ ! -f "$REL/dist/index.js" ]; then
   rm -rf "$REL"
-  git -C "$SRC" archive FETCH_HEAD | (mkdir -p "$REL" && tar -x -C "$REL")
-  (cd "$REL" && npm ci --no-audit --no-fund --loglevel=error && npx tsc && npm prune --omit=dev --no-audit --no-fund --loglevel=error)
+  mkdir -p "$REL"
+  git -C "$BASE/src" archive FETCH_HEAD | tar -x -C "$REL"
+  (cd "$REL" && npm ci --no-audit --no-fund --loglevel=error && npm prune --omit=dev --no-audit --no-fund --loglevel=error)
 fi
 chown -R root:root "$REL"
-ln -sfn "$REL" "$BASE/current.new" && mv -T "$BASE/current.new" "$BASE/current"
 
-log "Environment ($ENV_DIR/env)"
-install -d -m 750 -o root -g fpmcp "$ENV_DIR"
-if [ ! -f "$ENV_DIR/env" ]; then
-  install -m 640 -o root -g fpmcp /dev/null "$ENV_DIR/env"
-  echo "PORT=$PORT" >>"$ENV_DIR/env"
+# --- Docker --------------------------------------------------------------------------------------
+if ! command -v docker >/dev/null; then
+  curl -fsSL https://get.docker.com | sh
 fi
-grep -q '^PORT=' "$ENV_DIR/env" || echo "PORT=$PORT" >>"$ENV_DIR/env"
-PORT=$(grep '^PORT=' "$ENV_DIR/env" | cut -d= -f2)
+systemctl enable -q --now docker
 
-log "systemd unit"
+# --- Supabase ------------------------------------------------------------------------------------
+if [ ! -d "$SUPABASE_DIR" ]; then
+  tmp=$(mktemp -d)
+  git clone -q --depth 1 --filter=blob:none --sparse https://github.com/supabase/supabase "$tmp"
+  git -C "$tmp" sparse-checkout set docker
+  cp -r "$tmp/docker" "$SUPABASE_DIR"
+  rm -rf "$tmp"
+fi
+cd "$SUPABASE_DIR"
+if [ ! -f .env ]; then
+  cp .env.example .env
+  sh utils/generate-keys.sh --update-env >/dev/null
+  rm -f .env.old
+  sed -i -e "s|^POOLER_TENANT_ID=.*|POOLER_TENANT_ID=financial-products|" -e "s|^POSTGRES_PORT=.*|POSTGRES_PORT=$POOLER_PORT|" .env
+  echo "MCP_DB_PORT=$DB_PORT" >>.env
+fi
+chmod 600 .env
+install -m 644 "$REL/deploy/host/supabase.override.yml" docker-compose.override.yml
+docker compose pull -q
+docker compose up -d --quiet-pull
+for _ in $(seq 150); do
+  [ "$(docker inspect -f '{{.State.Health.Status}}' supabase-db 2>/dev/null)" = healthy ] && break
+  sleep 2
+done
+[ "$(docker inspect -f '{{.State.Health.Status}}' supabase-db)" = healthy ]
+
+# --- database role and connection (never printed) ------------------------------------------------
+install -d -m 750 -o root -g fpmcp "$ENV_DIR"
+if ! grep -qs '^DB_PASSWORD=' "$ENV_DIR/env"; then
+  umask 077
+  printf 'DB_PASSWORD=%s\n' "$(openssl rand -hex 24)" >>"$ENV_DIR/env"
+fi
+DB_PASSWORD=$(grep '^DB_PASSWORD=' "$ENV_DIR/env" | cut -d= -f2)
+PGPASSWORD=$(grep '^POSTGRES_PASSWORD=' "$SUPABASE_DIR/.env" | cut -d= -f2-)
+export PGPASSWORD
+docker exec -i -e PGPASSWORD supabase-db \
+  psql -v ON_ERROR_STOP=1 -q -h 127.0.0.1 -U supabase_admin -d postgres -v pw="$DB_PASSWORD" <<'SQL'
+SELECT format('CREATE ROLE financial_products_app LOGIN PASSWORD %L', :'pw')
+  WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'financial_products_app') \gexec
+ALTER ROLE financial_products_app PASSWORD :'pw';
+CREATE SCHEMA IF NOT EXISTS financial_products AUTHORIZATION financial_products_app;
+SQL
+unset PGPASSWORD
+{
+  echo "DB_PASSWORD=$DB_PASSWORD"
+  echo "PORT=$APP_PORT"
+  echo "DATABASE_URL=postgres://financial_products_app:$DB_PASSWORD@127.0.0.1:$DB_PORT/postgres"
+} >"$ENV_DIR/env.new"
+install -m 640 -o root -g fpmcp "$ENV_DIR/env.new" "$ENV_DIR/env"
+rm -f "$ENV_DIR/env.new"
+unset DB_PASSWORD
+
+# --- MCP service ---------------------------------------------------------------------------------
+ln -sfn "$REL" "$BASE/current.new"
+mv -T "$BASE/current.new" "$BASE/current"
 install -m 644 "$REL/deploy/host/financial-products-mcp.service" /etc/systemd/system/financial-products-mcp.service
 systemctl daemon-reload
 systemctl enable -q financial-products-mcp
-if grep -q '^DATABASE_URL=' "$ENV_DIR/env"; then
-  systemctl restart financial-products-mcp
-else
-  echo "DATABASE_URL is not set yet; the service starts once it is (set-database-url.sh)"
-fi
+systemctl restart financial-products-mcp
+for _ in $(seq 30); do curl -fsS "http://127.0.0.1:$APP_PORT/healthz" >/dev/null 2>&1 && break; sleep 2; done
+curl -fsS "http://127.0.0.1:$APP_PORT/healthz" >/dev/null
 
-log "Caddy site for $DOMAIN"
-install -d -m 755 "$SITES"
-sed -e "s|@DOMAIN@|$DOMAIN|g" -e "s|@PORT@|$PORT|g" "$REL/deploy/host/site.caddy" >"$SITE_FILE.new"
-mv "$SITE_FILE.new" "$SITE_FILE"
-# The main Caddyfile must import the sites folder. A software-factory server's generator adds this line itself;
-# on any other server (or before its next deploy) it is appended here.
-grep -qF "import $SITES/*.caddy" /etc/caddy/Caddyfile || printf '\nimport %s/*.caddy\n' "$SITES" >>/etc/caddy/Caddyfile
-caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile >/dev/null
+# --- Caddy ---------------------------------------------------------------------------------------
+# The main Caddyfile is left untouched (it may be generated by other tooling). Caddy instead runs a
+# wrapper that imports it plus this server's companion sites, via a systemd drop-in.
+install -d -m 755 "$COMPANION/sites"
+sed -e "s|@DOMAIN@|$DOMAIN|g" -e "s|@PORT@|$APP_PORT|g" "$REL/deploy/host/site.caddy" >"$COMPANION/sites/financial-products-mcp.caddy"
+printf 'import /etc/caddy/Caddyfile\nimport %s/sites/*.caddy\n' "$COMPANION" >"$COMPANION/Caddyfile"
+install -d -m 755 /etc/systemd/system/caddy.service.d
+cat >/etc/systemd/system/caddy.service.d/companion-sites.conf <<EOF
+[Service]
+ExecStart=
+ExecStart=/usr/bin/caddy run --environ --config $COMPANION/Caddyfile
+ExecReload=
+ExecReload=/usr/bin/caddy reload --config $COMPANION/Caddyfile --force
+EOF
+caddy validate --adapter caddyfile --config "$COMPANION/Caddyfile"
+systemctl daemon-reload
 systemctl reload caddy
 
-if systemctl is-active -q financial-products-mcp; then
-  log "Health"
-  for _ in $(seq 30); do
-    if curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then echo "healthy: https://$DOMAIN/mcp ($SHA)"; exit 0; fi
-    sleep 2
-  done
-  journalctl -u financial-products-mcp -n 30 --no-pager >&2
-  exit 1
-fi
+for _ in $(seq 30); do curl -fsS "https://$DOMAIN/healthz" >/dev/null 2>&1 && break; sleep 2; done
+curl -fsS "https://$DOMAIN/healthz" >/dev/null
+echo "=== $(date -Is) done $SHA"

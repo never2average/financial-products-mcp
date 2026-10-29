@@ -1,0 +1,15 @@
+# Copied to /opt/supabase/docker-compose.override.yml by install-host.sh.
+# Every Supabase port is bound to localhost (Docker-published ports bypass the host firewall), and the
+# database is published on its own localhost port so the MCP service on the host can reach it.
+# Reach Studio with an SSH tunnel: ssh -L 8000:127.0.0.1:8000 root@<server>
+services:
+  db:
+    ports:
+      - 127.0.0.1:${MCP_DB_PORT:-54329}:5432
+  api-gw:
+    ports: !override
+      - 127.0.0.1:${KONG_HTTP_PORT:-8000}:8000/tcp
+  supavisor:
+    ports: !override
+      - 127.0.0.1:${POSTGRES_PORT}:5432
+      - 127.0.0.1:${POOLER_PROXY_PORT_TRANSACTION}:6543

@@ -1,5 +1,5 @@
 import { createClerkClient } from "@clerk/backend";
-import type { Store, User } from "./store.js";
+import { ROLES, type Role, type Store, type User } from "./store.js";
 
 // The parts of Clerk's backend client this server uses, so tests can provide a stand-in.
 export interface ClerkLike {
@@ -12,8 +12,20 @@ export interface ClerkLike {
       lastName: string | null;
       primaryEmailAddressId: string | null;
       emailAddresses: { id: string; emailAddress: string; verification: { status: string } | null }[];
+      publicMetadata?: Record<string, unknown> | null;
     }>;
   };
+}
+
+// Roles granted in Clerk: public metadata { "mynt_roles": ["admin"] } on the user (or on a Clerk
+// invitation, which Clerk copies onto the user at sign-up). Only Clerk dashboard owners and the
+// Backend API can set public metadata; users can't edit their own.
+export const CLERK_ROLES_KEY = "mynt_roles";
+
+export function rolesFromClerkMetadata(metadata: Record<string, unknown> | null | undefined): Role[] {
+  const raw = metadata?.[CLERK_ROLES_KEY];
+  const list = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
+  return [...new Set(list.filter((r): r is Role => (ROLES as readonly string[]).includes(r as string)))];
 }
 
 export interface ClerkAuthConfig {
@@ -90,16 +102,25 @@ export class ClerkAuth {
     const linked = await this.store.userByClerkId(subject);
     let email = linked?.email ?? null;
     let name = linked?.name ?? "";
-    if (!email) {
+    let invite = email ? await this.store.getInvite(email) : undefined;
+
+    // Not whitelisted in Mynt (or not linked yet): ask Clerk for the verified email and any roles
+    // granted there. Clerk-granted roles become a whitelist entry; from then on Mynt manages it.
+    if (!invite) {
       const u = await this.clerk.users.getUser(subject);
       // Only a verified address counts, primary first.
       const verified = u.emailAddresses.filter((e) => e.verification?.status === "verified");
       const primary = verified.find((e) => e.id === u.primaryEmailAddressId) ?? verified[0];
       email = primary?.emailAddress.toLowerCase() ?? null;
-      name = [u.firstName, u.lastName].filter(Boolean).join(" ") || email || "user";
+      name = name || [u.firstName, u.lastName].filter(Boolean).join(" ") || email || "user";
+      invite = email ? await this.store.getInvite(email) : undefined;
+      const granted = rolesFromClerkMetadata(u.publicMetadata);
+      if (email && !invite && granted.length) {
+        invite = await this.store.upsertInvite(email, granted);
+        await this.store.audit(null, "invite_via_clerk", email, { roles: granted, clerk_user_id: subject });
+      }
     }
 
-    const invite = email ? await this.store.getInvite(email) : undefined;
     if (!email || !invite) {
       return { ok: false, status: 403, error: "not_whitelisted", message: "Your account is not on this server's whitelist" };
     }
@@ -168,5 +189,11 @@ export class ClerkAdmin {
     for (const item of items.filter((i) => i.identifier.toLowerCase() === email.toLowerCase())) {
       await this.call("DELETE", `/allowlist_identifiers/${item.id}`);
     }
+  }
+
+  // Mirrors Mynt's roles onto the Clerk user's public metadata (null clears them), so a revoked
+  // person can't be re-granted by roles left behind in Clerk.
+  async setRoles(clerkUserId: string, roles: Role[] | null): Promise<void> {
+    await this.call("PATCH", `/users/${encodeURIComponent(clerkUserId)}/metadata`, { public_metadata: { [CLERK_ROLES_KEY]: roles } });
   }
 }

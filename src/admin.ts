@@ -91,11 +91,23 @@ export function registerAdminTools(server: McpServer, store: Store, user: User, 
       if (admins.includes(lower) && !roles.includes("admin") && admins.length === 1)
         return fail("That would remove the last admin; make someone else an admin first");
       const invite = await store.upsertInvite(lower, [...new Set(roles)] as Role[]);
-      const warning = (await ctx.clerkAdmin?.allow(lower)) ?? null;
+      const warnings = [(await ctx.clerkAdmin?.allow(lower)) ?? null, await mirrorToClerk(lower, invite.roles)].filter(Boolean);
       await audit("invite_user", lower, { roles: invite.roles });
-      return json({ ...invite, ...(warning ? { warning } : {}) });
+      return json({ ...invite, ...(warnings.length ? { warnings } : {}) });
     },
   );
+
+  // Keep roles granted in Clerk (public metadata) in step with Mynt for people who have signed in.
+  const mirrorToClerk = async (email: string, roles: Role[] | null): Promise<string | null> => {
+    const clerkUserId = ctx.clerkAdmin ? await store.clerkIdForEmail(email) : null;
+    if (!clerkUserId) return null;
+    try {
+      await ctx.clerkAdmin!.setRoles(clerkUserId, roles);
+      return null;
+    } catch (e) {
+      return `roles not updated in Clerk (${(e as Error).message})`;
+    }
+  };
 
   server.registerTool(
     "revoke_user",
@@ -111,8 +123,10 @@ export function registerAdminTools(server: McpServer, store: Store, user: User, 
       if (admins.length === 1 && admins[0] === lower) return fail("That is the last admin; make someone else an admin first");
       if (!(await store.deleteInvite(lower))) return fail(`${lower} is not on the whitelist`);
       await ctx.clerkAdmin?.disallow(lower);
+      // Clear roles granted in Clerk too, or they would re-grant access on the next sign-in.
+      const warning = await mirrorToClerk(lower, null);
       await audit("revoke_user", lower);
-      return json({ revoked: lower });
+      return json({ revoked: lower, ...(warning ? { warning } : {}) });
     },
   );
 

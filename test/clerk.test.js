@@ -15,8 +15,10 @@ function fakeClerk() {
   const audiences = [];
   return {
     audiences,
-    addUser(id, email, { verified = true, token = `oat_${id}` } = {}) {
+    userMap: users,
+    addUser(id, email, { verified = true, token = `oat_${id}`, publicMetadata = {} } = {}) {
       users.set(id, {
+        publicMetadata,
         firstName: id,
         lastName: null,
         primaryEmailAddressId: `e_${id}`,
@@ -46,7 +48,17 @@ async function setup() {
   const store = await Store.open({ query: (s, p) => pg.query(s, p), exec: (s) => pg.exec(s), close: () => pg.close() });
   const clerk = fakeClerk();
   const auth = new ClerkAuth({ secretKey: "sk_test_x", publishableKey: PUBLISHABLE_KEY, publicUrl: PUBLIC_URL, requireAudience: true }, store, clerk);
-  const http = createMcpHttpServer(store, auth).listen(0, "127.0.0.1");
+  // Stand-in for Clerk's Backend API: role changes land in the fake users' public metadata.
+  const roleWrites = [];
+  const clerkAdmin = {
+    allow: async () => null,
+    disallow: async () => {},
+    setRoles: async (id, roles) => {
+      roleWrites.push([id, roles]);
+      clerk.userMap.get(id).publicMetadata = { ...clerk.userMap.get(id).publicMetadata, mynt_roles: roles };
+    },
+  };
+  const http = createMcpHttpServer(store, auth, { clerkAdmin }).listen(0, "127.0.0.1");
   await new Promise((r) => http.once("listening", r));
   const base = `http://127.0.0.1:${http.address().port}`;
   const rpc = (method, params = {}, token) =>
@@ -65,7 +77,7 @@ async function setup() {
     const text = await res.text();
     return JSON.parse(text.match(/^data: (.*)$/m)?.[1] ?? text).result.tools.map((t) => t.name);
   };
-  return { store, clerk, base, rpc, tools, close: () => http.close() };
+  return { store, clerk, base, rpc, tools, roleWrites, close: () => http.close() };
 }
 
 test("decodes the Clerk frontend API host from the publishable key", () => {
@@ -172,6 +184,32 @@ test("whitelisted users get their invite's roles; changes and revocation apply o
 
     await store.deleteInvite("ines@example.com");
     assert.equal((await rpc("tools/list", {}, token)).status, 403);
+  } finally {
+    close();
+  }
+});
+
+test("roles granted in Clerk (public metadata mynt_roles) whitelist the user; Mynt then manages them", async () => {
+  const { store, clerk, rpc, tools, roleWrites, close } = await setup();
+  try {
+    const adminToken = clerk.addUser("a1", "Boss@Example.com", { publicMetadata: { mynt_roles: ["admin"] } });
+    const adminTools = await tools(adminToken);
+    assert.ok(adminTools.includes("define_region") && adminTools.includes("create_product"), "admin via Clerk, with everything below it");
+    assert.deepEqual((await store.getInvite("boss@example.com")).roles, ["admin"]);
+    assert.equal((await store.auditLog())[0].action, "invite_via_clerk");
+
+    // Junk in the metadata grants nothing.
+    const junk = clerk.addUser("j1", "junk@example.com", { publicMetadata: { mynt_roles: ["superuser"] } });
+    assert.equal((await rpc("tools/list", {}, junk)).status, 403);
+
+    // A Clerk-granted developer, later revoked from Mynt by the admin: Clerk's copy is cleared too,
+    // so the next sign-in doesn't re-grant access.
+    const devToken = clerk.addUser("d1", "dev@example.com", { publicMetadata: { mynt_roles: "developer" } });
+    assert.ok((await tools(devToken)).includes("create_campaign"));
+    const res = await rpc("tools/call", { name: "revoke_user", arguments: { email: "dev@example.com" } }, adminToken);
+    assert.equal(res.status, 200);
+    assert.deepEqual(roleWrites.at(-1), ["d1", null]);
+    assert.equal((await rpc("tools/list", {}, devToken)).status, 403);
   } finally {
     close();
   }

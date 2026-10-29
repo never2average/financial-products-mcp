@@ -65,11 +65,37 @@ function registerCatalogTools(server: McpServer, store: Store, user: User | null
     "list_regions",
     {
       title: "Regions",
-      description: "The geographies products can be offered in, with their regulators (defined by admins).",
+      description:
+        "The geographies products can be offered in, with their regulators and which product lines have a documented launch procedure (defined by admins). Use get_region for the full regulatory picture.",
       inputSchema: { include_inactive: z.boolean().default(false).describe("Admins: include retired regions") },
       annotations: { readOnlyHint: true },
     },
-    async ({ include_inactive }) => json((await store.referenceData(include_inactive && user?.roles.includes("admin"))).regions),
+    async ({ include_inactive }) =>
+      json(
+        (await store.referenceData(include_inactive && user?.roles.includes("admin"))).regions.map(({ ecosystem, procedures, sources, ...r }) => ({
+          ...r,
+          procedures_for: [...new Set(procedures.map((p) => p.product_line))],
+        })),
+      ),
+  );
+
+  server.registerTool(
+    "get_region",
+    {
+      title: "Region's regulatory picture",
+      description:
+        "Everything an innovator needs before launching in a region: its regulators, regulatory ecosystem, the legal procedure for each product line, and official sources.",
+      inputSchema: {
+        code: z.string(),
+        product_line: z.enum(PRODUCT_LINES).optional().describe("Only the launch procedures for this product line"),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ code, product_line }) => {
+      const region = (await store.referenceData(user?.roles.includes("admin"))).regions.find((r) => r.code === code.trim());
+      if (!region) return fail(`No region '${code}'; see list_regions`);
+      return json({ ...region, procedures: region.procedures.filter((p) => !product_line || p.product_line === product_line) });
+    },
   );
 
   server.registerTool(

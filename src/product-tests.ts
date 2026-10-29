@@ -56,6 +56,13 @@ function referenceChecks(p: FinancialProduct, ref: ReferenceData): Check[] {
       `Regulator '${p.regulator}' isn't one listed for ${p.region} (${region?.regulators.join(", ")})`,
       "warn",
     ),
+    check(
+      "launch_procedure",
+      !region || (region.procedures ?? []).some((proc) => proc.product_line === p.product_line),
+      `A ${p.product_line} launch procedure is documented for ${p.region} (see get_region)`,
+      `No ${p.product_line} launch procedure is documented for ${p.region} yet; ask an admin to add one before going live`,
+      "warn",
+    ),
   ];
 }
 

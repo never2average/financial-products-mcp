@@ -14,9 +14,9 @@ Everyone (including guests without a token) gets the catalog tools: `whoami`, `l
 ### Administration
 
 Admins own Mynt's reference data and access. **Every admin action is written to the audit log with who did it.**
-- **Geographies** (`define_region`): where products may be offered, and the regulators each region answers to.
+- **Geographies** (`define_region`): where products may be offered. Each region records its regulators, its regulatory ecosystem (each regulator's remit, the key laws and bodies), the legal procedure to launch each product line there (licences, approvals, filings, timeline), and the official sources. Fields you leave out keep their values. Innovators read the full picture with `get_region`.
 - **Product types** (`define_product_category`): the categories products may have, and which of the four product lines each may be used in.
-- **How products are checked against them:** `test_product` fails a product whose region or category isn't defined and active, or whose category doesn't allow its product line. It warns when the regulator isn't one listed for the region. Retiring a region or category (`active: false`) stops new products from using it; live products stay. Mynt seeds both lists from the bundled catalog the first time it starts.
+- **How products are checked against them:** `test_product` fails a product whose region or category isn't defined and active, or whose category doesn't allow its product line. It warns when the regulator isn't one listed for the region, and when no launch procedure is documented for the product's line there. Retiring a region or category (`active: false`) stops new products from using it; live products stay. Mynt seeds both lists from the bundled catalog the first time it starts.
 - **Whitelist** (`invite_user`, `revoke_user`, `list_whitelist`): kept in step with Clerk's allowlist. Mynt refuses any change that would remove the last admin.
 - **Oversight:** see every campaign and pause any of them. Unpublish any product, or republish one; republishing re-runs the tests first.
 

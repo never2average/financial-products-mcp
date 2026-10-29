@@ -140,3 +140,49 @@ test("admins oversee campaigns and products", async () => {
   const actions = (await call(admin, "audit_log")).data.map((e) => e.action);
   assert.deepEqual(actions.slice(0, 3), ["admin_set_product_status", "admin_set_product_status", "admin_pause_campaign"]);
 });
+
+test("admins record a region's regulatory ecosystem and launch procedures; innovators read them", async () => {
+  const { as, connect, call } = await setup();
+  const admin = await connect(await as("Ada", ["admin"]));
+  const inno = await connect(await as("Ines", ["innovator"]));
+
+  await call(admin, "define_region", {
+    code: "GB",
+    name: "United Kingdom",
+    regulators: ["FCA", "PRA"],
+    ecosystem: "The FCA regulates conduct; the PRA supervises deposit-takers and insurers.",
+    procedures: [
+      {
+        product_line: "treasury",
+        name: "Deposit-taking",
+        regulator: "PRA",
+        steps: ["Apply for Part 4A permission to accept deposits", "Join the FSCS"],
+        typical_timeline: "6-12 months",
+      },
+    ],
+    sources: ["https://www.fca.org.uk/firms/authorisation"],
+  });
+
+  // A partial update (e.g. retiring and restoring) keeps the researched content.
+  await call(admin, "define_region", { code: "GB", active: false });
+  await call(admin, "define_region", { code: "GB", active: true });
+  const gb = (await call(inno, "get_region", { code: "GB" })).data;
+  assert.match(gb.ecosystem, /FCA regulates conduct/);
+  assert.deepEqual(gb.sources, ["https://www.fca.org.uk/firms/authorisation"]);
+  assert.equal(gb.procedures[0].regulator, "PRA");
+  assert.deepEqual((await call(inno, "get_region", { code: "GB", product_line: "credit" })).data.procedures, []);
+
+  // The list stays short: it says which lines have a documented procedure.
+  const listed = (await call(inno, "list_regions")).data.find((r) => r.code === "GB");
+  assert.deepEqual(listed.procedures_for, ["treasury"]);
+  assert.equal(listed.ecosystem, undefined);
+
+  // Innovators are warned (not blocked) when no procedure covers their product's line.
+  await call(inno, "create_product", product());
+  const ok = (await call(inno, "test_product", { id: "uk-isa" })).data;
+  assert.equal(ok.checks.find((c) => c.name === "launch_procedure").status, "pass");
+  await call(inno, "update_product", { id: "uk-isa", product_line: "wealth", category: "mutual_funds", return_type: "market_linked", risk_level: "high" });
+  const warned = (await call(inno, "test_product", { id: "uk-isa" })).data;
+  assert.equal(warned.checks.find((c) => c.name === "launch_procedure").status, "warn");
+  assert.equal(warned.passed, true);
+});

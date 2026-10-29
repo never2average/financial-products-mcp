@@ -6,6 +6,20 @@ import type { TestReport } from "./product-tests.js";
 export const ROLES = ["consumer", "developer", "innovator"] as const;
 export type Role = (typeof ROLES)[number];
 
+// Roles nest: every innovator is a developer, and every developer is a consumer.
+const IMPLIES: Record<Role, Role[]> = { consumer: [], developer: ["consumer"], innovator: ["developer"] };
+
+export function effectiveRoles(roles: Role[]): Role[] {
+  const out = new Set<Role>();
+  const add = (r: Role) => {
+    if (out.has(r)) return;
+    out.add(r);
+    IMPLIES[r].forEach(add);
+  };
+  roles.forEach(add);
+  return ROLES.filter((r) => out.has(r));
+}
+
 export interface User {
   id: string;
   name: string;

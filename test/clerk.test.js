@@ -133,16 +133,17 @@ test("an unverified email does not match the whitelist", async () => {
 test("whitelisted users get their invite's roles; changes and revocation apply on the next request", async () => {
   const { store, clerk, tools, rpc, close } = await setup();
   try {
-    await store.upsertInvite("Ines@Example.com", ["innovator"]);
+    await store.upsertInvite("Ines@Example.com", ["consumer"]);
     const token = clerk.addUser("u3", "ines@example.com");
 
     const first = await tools(token);
-    assert.ok(first.includes("create_product"));
-    assert.ok(!first.includes("enroll_in_product"));
+    assert.ok(first.includes("enroll_in_product"));
+    assert.ok(!first.includes("create_app") && !first.includes("create_product"));
     assert.deepEqual(clerk.audiences.at(-1), `${PUBLIC_URL}/mcp`, "tokens must be issued for this resource");
 
-    await store.upsertInvite("ines@example.com", ["innovator", "consumer"]);
-    assert.ok((await tools(token)).includes("enroll_in_product"));
+    await store.upsertInvite("ines@example.com", ["innovator"]);
+    const promoted = await tools(token);
+    assert.ok(["enroll_in_product", "create_app", "create_product"].every((t) => promoted.includes(t)), "innovator includes everything");
     assert.equal((await store.listUsers()).filter((u) => u.email === "ines@example.com").length, 1, "one linked user");
 
     await store.deleteInvite("ines@example.com");

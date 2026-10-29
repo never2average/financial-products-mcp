@@ -11,7 +11,7 @@ import {
   type FinancialProduct,
 } from "./catalog.js";
 import { runProductTests } from "./product-tests.js";
-import { DuplicateError, type App, type Role, type Store, type User } from "./store.js";
+import { DuplicateError, effectiveRoles, type App, type Role, type Store, type User } from "./store.js";
 
 const json = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
@@ -32,11 +32,12 @@ const productFields = {
   key_features: z.array(z.string()),
 };
 
-// Tools are registered per user, so each role only sees what it is allowed to call.
-// Guests (no token) get the read-only catalog tools.
+// Tools are registered per user, so each role only sees what it is allowed to call. Roles nest
+// (innovator > developer > consumer). Guests (no token) get the read-only catalog tools.
 export function createServer(store: Store, user: User | null = null): McpServer {
-  const server = new McpServer({ name: "financial-products", version: "0.3.0" });
-  const has = (role: Role) => user?.roles.includes(role) ?? false;
+  const server = new McpServer({ name: "financial-products", version: "0.4.0" });
+  const roles = effectiveRoles(user?.roles ?? []);
+  const has = (role: Role) => roles.includes(role);
 
   registerCatalogTools(server, store, user);
   if (has("consumer")) registerConsumerTools(server, store, user!);
@@ -51,11 +52,12 @@ function registerCatalogTools(server: McpServer, store: Store, user: User | null
     "whoami",
     {
       title: "Who am I",
-      description: "Return the current user and their roles (consumer, developer, innovator). Guests can only browse.",
+      description:
+        "Return the current user, the roles they were granted and what those include (innovators are developers, developers are consumers). Guests can only browse.",
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
-    async () => json(user ?? { name: "guest", roles: [] }),
+    async () => json(user ? { ...user, effective_roles: effectiveRoles(user.roles) } : { name: "guest", roles: [], effective_roles: [] }),
   );
 
   server.registerTool(

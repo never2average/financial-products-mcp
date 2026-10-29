@@ -10,7 +10,7 @@ An [MCP](https://modelcontextprotocol.io) server for **credit, wealth, insurance
 
 Everyone (including guests without a token) gets the catalog tools: `whoami`, `list_products`, `get_product`, `list_categories`, `list_apps`, plus the resource `financial-products://catalog`.
 
-Tools are registered per user, so a client only *sees* the tools its roles allow. A user can hold more than one role.
+Roles nest: **every innovator is also a developer, and every developer is also a consumer**. An innovator gets all three tool sets, and a developer gets the developer and consumer tools. Tools are registered per user, so a client only *sees* the tools its roles allow. `whoami` shows both the granted and the effective roles.
 
 ## Product lines
 

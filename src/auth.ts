@@ -116,7 +116,8 @@ export class ClerkAdmin {
   private async call(method: string, path: string, body?: unknown) {
     const res = await fetch(`${this.api}${path}`, {
       method,
-      headers: { Authorization: `Bearer ${this.secretKey}`, "Content-Type": "application/json" },
+      // Clerk's edge refuses some default client User-Agents.
+      headers: { Authorization: `Bearer ${this.secretKey}`, "Content-Type": "application/json", "User-Agent": "financial-products-mcp" },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const text = await res.text();

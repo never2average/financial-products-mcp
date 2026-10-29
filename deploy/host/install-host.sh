@@ -65,8 +65,20 @@ if [ ! -f .env ]; then
 fi
 chmod 600 .env
 install -m 644 "$REL/deploy/host/supabase.override.yml" docker-compose.override.yml
+# Supabase's .env pins COMPOSE_FILE, which stops Compose from loading the override automatically.
+# Without the override its ports are published on every interface, past the host firewall.
+sed -i -e '/^COMPOSE_FILE=/d' .env
+echo "COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml" >>.env
+docker compose config | grep -q "published: \"$DB_PORT\""
 docker compose pull -q
 docker compose up -d --quiet-pull
+# Nothing Supabase runs may answer the internet: only SSH, 80 and 443 are public on this server.
+public=$(ss -ltnH | awk '{print $4}' | grep -vE '^(127\.|\[::1\]|\[::ffff:127\.)' | sed -E 's/.*:([0-9]+)$/\1/' | sort -un | grep -vxE '22|80|443' || true)
+if [ -n "$public" ]; then
+  docker compose stop
+  echo "refusing: public listener(s) on $public" >&2
+  false
+fi
 for _ in $(seq 150); do
   [ "$(docker inspect -f '{{.State.Health.Status}}' supabase-db 2>/dev/null)" = healthy ] && break
   sleep 2

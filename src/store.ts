@@ -3,11 +3,65 @@ import { loadCatalog, type FinancialProduct } from "./catalog.js";
 import type { Db } from "./db.js";
 import type { TestReport } from "./product-tests.js";
 
-export const ROLES = ["consumer", "developer", "innovator"] as const;
+export const ROLES = ["consumer", "developer", "innovator", "admin"] as const;
 export type Role = (typeof ROLES)[number];
 
-// Roles nest: every innovator is a developer, and every developer is a consumer.
-const IMPLIES: Record<Role, Role[]> = { consumer: [], developer: ["consumer"], innovator: ["developer"] };
+// Roles nest: every admin is an innovator, every innovator a developer, every developer a consumer.
+const IMPLIES: Record<Role, Role[]> = { consumer: [], developer: ["consumer"], innovator: ["developer"], admin: ["innovator"] };
+
+// Reference data admins manage: where products may be offered and what kinds of product exist.
+export interface Region {
+  code: string; // ISO 3166-1 alpha-2, or "global"
+  name: string;
+  regulators: string[];
+  active: boolean;
+  updated_at: string;
+}
+
+export interface ProductCategory {
+  id: string;
+  name: string;
+  product_lines: string[];
+  description: string;
+  active: boolean;
+  updated_at: string;
+}
+
+export interface ReferenceData {
+  regions: Region[];
+  categories: ProductCategory[];
+}
+
+export interface AuditEntry {
+  id: string;
+  actor_id: string | null;
+  actor_email: string | null;
+  action: string;
+  target: string;
+  details: unknown;
+  created_at: string;
+}
+
+const KNOWN_REGIONS: Record<string, { name: string; regulators: string[] }> = {
+  global: { name: "Global", regulators: [] },
+  IN: { name: "India", regulators: ["RBI", "SEBI", "IRDAI", "PFRDA", "EPFO", "Ministry of Finance"] },
+  US: { name: "United States", regulators: ["SEC", "FINRA", "FDIC", "NCUA", "CFPB", "CFTC", "IRS", "US Treasury", "Department of Labor", "State insurance regulators"] },
+};
+
+const titleCase = (id: string) => id.split("_").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
+
+// Regions and categories implied by a catalog, so the bundled products are valid from the start.
+export function referenceSeed(products: FinancialProduct[]) {
+  const regions = [...new Set(["global", ...products.map((p) => p.region)])].map((code) => ({
+    code,
+    name: KNOWN_REGIONS[code]?.name ?? code,
+    regulators: KNOWN_REGIONS[code]?.regulators ?? [],
+  }));
+  const lines = new Map<string, Set<string>>();
+  for (const p of products) lines.set(p.category, (lines.get(p.category) ?? new Set()).add(p.product_line));
+  const categories = [...lines].map(([id, l]) => ({ id, name: titleCase(id), product_lines: [...l].sort() }));
+  return { regions, categories };
+}
 
 export function effectiveRoles(roles: Role[]): Role[] {
   const out = new Set<Role>();
@@ -214,6 +268,31 @@ const TABLES = `
   ALTER TABLE financial_products.enrollments ADD COLUMN IF NOT EXISTS product_version integer NOT NULL DEFAULT 1;
   ALTER TABLE financial_products.enrollments ADD COLUMN IF NOT EXISTS campaign_id uuid REFERENCES financial_products.campaigns(id);
   ALTER TABLE financial_products.enrollments ADD COLUMN IF NOT EXISTS variant text;
+  -- Admin-managed reference data and the audit log of admin actions.
+  CREATE TABLE IF NOT EXISTS financial_products.regions (
+    code text PRIMARY KEY CHECK (code = 'global' OR code ~ '^[A-Z]{2}$'),
+    name text NOT NULL,
+    regulators text[] NOT NULL DEFAULT '{}',
+    active boolean NOT NULL DEFAULT true,
+    updated_at timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE TABLE IF NOT EXISTS financial_products.product_categories (
+    id text PRIMARY KEY CHECK (id ~ '^[a-z][a-z0-9_]*$'),
+    name text NOT NULL,
+    product_lines text[] NOT NULL,
+    description text NOT NULL DEFAULT '',
+    active boolean NOT NULL DEFAULT true,
+    updated_at timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE TABLE IF NOT EXISTS financial_products.audit_log (
+    id uuid PRIMARY KEY,
+    actor_id uuid REFERENCES financial_products.users(id),
+    action text NOT NULL,
+    target text NOT NULL,
+    details jsonb NOT NULL DEFAULT '{}',
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS audit_log_created_idx ON financial_products.audit_log (created_at DESC);
 `;
 
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -317,7 +396,86 @@ export class Store {
        ON CONFLICT (id) DO NOTHING`,
       [JSON.stringify(seed)],
     );
+    // Seed reference data once; after that admins own it (existing rows are never overwritten).
+    const ref = referenceSeed(seed);
+    await db.query(
+      `INSERT INTO financial_products.regions (code, name, regulators)
+       SELECT r->>'code', r->>'name', ARRAY(SELECT jsonb_array_elements_text(r->'regulators')) FROM jsonb_array_elements($1::jsonb) AS r
+       ON CONFLICT (code) DO NOTHING`,
+      [JSON.stringify(ref.regions)],
+    );
+    await db.query(
+      `INSERT INTO financial_products.product_categories (id, name, product_lines)
+       SELECT c->>'id', c->>'name', ARRAY(SELECT jsonb_array_elements_text(c->'product_lines')) FROM jsonb_array_elements($1::jsonb) AS c
+       ON CONFLICT (id) DO NOTHING`,
+      [JSON.stringify(ref.categories)],
+    );
     return new Store(db);
+  }
+
+  // Reference data
+
+  async referenceData(includeInactive = false): Promise<ReferenceData> {
+    const where = includeInactive ? "" : "WHERE active";
+    const [regions, categories] = await Promise.all([
+      this.all(`SELECT * FROM financial_products.regions ${where} ORDER BY code = 'global' DESC, code`),
+      this.all(`SELECT * FROM financial_products.product_categories ${where} ORDER BY id`),
+    ]);
+    return {
+      regions: regions.map((r) => ({ ...(r as unknown as Region), updated_at: iso(r.updated_at)! })),
+      categories: categories.map((c) => ({ ...(c as unknown as ProductCategory), updated_at: iso(c.updated_at)! })),
+    };
+  }
+
+  async upsertRegion(r: Omit<Region, "updated_at">): Promise<Region> {
+    const row = await this.one(
+      `INSERT INTO financial_products.regions (code, name, regulators, active) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, regulators = EXCLUDED.regulators, active = EXCLUDED.active, updated_at = now()
+       RETURNING *`,
+      [r.code, r.name, r.regulators, r.active],
+    );
+    return { ...(row as unknown as Region), updated_at: iso(row!.updated_at)! };
+  }
+
+  async upsertCategory(c: Omit<ProductCategory, "updated_at">): Promise<ProductCategory> {
+    const row = await this.one(
+      `INSERT INTO financial_products.product_categories (id, name, product_lines, description, active) VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, product_lines = EXCLUDED.product_lines,
+         description = EXCLUDED.description, active = EXCLUDED.active, updated_at = now()
+       RETURNING *`,
+      [c.id, c.name, c.product_lines, c.description, c.active],
+    );
+    return { ...(row as unknown as ProductCategory), updated_at: iso(row!.updated_at)! };
+  }
+
+  // Audit log
+
+  async audit(actorId: string | null, action: string, target: string, details: unknown = {}): Promise<void> {
+    await this.db.query(
+      "INSERT INTO financial_products.audit_log (id, actor_id, action, target, details) VALUES ($1, $2, $3, $4, $5)",
+      [randomUUID(), actorId, action, target, JSON.stringify(details)],
+    );
+  }
+
+  async auditLog(limit = 100): Promise<AuditEntry[]> {
+    const rows = await this.all(
+      `SELECT a.*, u.email AS actor_email FROM financial_products.audit_log a
+       LEFT JOIN financial_products.users u ON u.id = a.actor_id ORDER BY a.created_at DESC LIMIT $1`,
+      [limit],
+    );
+    return rows.map((r) => ({
+      id: r.id as string,
+      actor_id: (r.actor_id as string | null) ?? null,
+      actor_email: (r.actor_email as string | null) ?? null,
+      action: r.action as string,
+      target: r.target as string,
+      details: r.details,
+      created_at: iso(r.created_at)!,
+    }));
+  }
+
+  async allCampaigns(): Promise<Campaign[]> {
+    return (await this.all("SELECT * FROM financial_products.campaigns ORDER BY created_at DESC")).map(toCampaign);
   }
 
   close(): Promise<void> {

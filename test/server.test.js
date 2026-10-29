@@ -12,7 +12,7 @@ import { Store } from "../dist/store.js";
 import { loadCatalog } from "../dist/catalog.js";
 import { runProductTests } from "../dist/product-tests.js";
 
-const CATALOG_TOOLS = ["get_product", "list_apps", "list_categories", "list_products", "whoami"];
+const CATALOG_TOOLS = ["get_product", "list_apps", "list_categories", "list_product_categories", "list_products", "list_regions", "whoami"];
 const CONSUMER_TOOLS = ["cancel_enrollment", "enroll_in_product", "list_my_enrollments", "list_offers", "upgrade_enrollment"];
 const DEVELOPER_TOOLS = [
   "create_app", "list_my_apps", "preview_app", "publish_app", "update_app",
@@ -108,9 +108,10 @@ test("catalog covers credit, wealth, insurance and treasury", async () => {
   assert.ok(treasury.products.some((p) => p.id === "treasury-bills"));
 });
 
-test("every bundled product passes the product test suite", () => {
+test("every bundled product passes the product test suite, including the seeded regions and categories", async () => {
+  const ref = await (await openStore()).referenceData();
   for (const p of loadCatalog()) {
-    const failed = runProductTests(p).checks.filter((c) => c.status === "fail");
+    const failed = runProductTests(p, ref).checks.filter((c) => c.status === "fail");
     assert.deepEqual(failed, [], p.id);
   }
 });

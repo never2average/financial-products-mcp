@@ -10,7 +10,7 @@ import { ROLES, Store, type Role } from "./store.js";
 const USAGE = `Usage:
   financial-products-mcp [serve]                         Run over stdio (token from FINANCIAL_PRODUCTS_TOKEN)
   financial-products-mcp serve-http [--port 3000] [--host 127.0.0.1]
-  financial-products-mcp users invite --email <email> --role <${ROLES.join("|")}> [--role ...]
+  financial-products-mcp users invite --email <email> --role <${ROLES.join("|")}> [--role ...]   (bootstrap; admins then use Mynt)
   financial-products-mcp users revoke --email <email>
   financial-products-mcp users add --name <name> --role <role> [--role ...]   Local token (stdio, or HTTP without Clerk)
   financial-products-mcp users list
@@ -67,13 +67,13 @@ if (values.help) {
   const store = await openStore();
   const token = process.env.FINANCIAL_PRODUCTS_TOKEN;
   const user = token ? ((await store.userByToken(token)) ?? die("FINANCIAL_PRODUCTS_TOKEN is not a valid token")) : null;
-  await createServer(store, user).connect(new StdioServerTransport());
+  await createServer(store, user, { clerkAdmin: clerkAdmin() }).connect(new StdioServerTransport());
 } else if (command === "serve-http") {
   const port = Number(values.port);
   const store = await openStore();
   const config = clerkConfigFromEnv();
   const clerk = config ? new ClerkAuth(config, store) : null;
-  const http = createMcpHttpServer(store, clerk).listen(port, values.host, () =>
+  const http = createMcpHttpServer(store, clerk, { clerkAdmin: clerkAdmin() }).listen(port, values.host, () =>
     console.error(`mynt MCP listening on http://${values.host}:${port}/mcp${clerk ? " (Clerk whitelist auth)" : ""}`),
   );
   process.on("SIGTERM", () => http.close(() => process.exit(0)));

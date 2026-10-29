@@ -60,9 +60,12 @@ if [ ! -f .env ]; then
   cp .env.example .env
   sh utils/generate-keys.sh --update-env >/dev/null
   rm -f .env.old
-  sed -i -e "s|^POOLER_TENANT_ID=.*|POOLER_TENANT_ID=financial-products|" -e "s|^POSTGRES_PORT=.*|POSTGRES_PORT=$POOLER_PORT|" .env
-  echo "MCP_DB_PORT=$DB_PORT" >>.env
+  sed -i -e "s|^POOLER_TENANT_ID=.*|POOLER_TENANT_ID=financial-products|" .env
 fi
+# POSTGRES_PORT is also Postgres's port inside its container, so it stays 5432; the host-side ports
+# are set separately and used only by the override.
+sed -i -e '/^MCP_DB_PORT=/d' -e '/^MCP_POOLER_PORT=/d' -e "s|^POSTGRES_PORT=.*|POSTGRES_PORT=5432|" .env
+printf 'MCP_DB_PORT=%s\nMCP_POOLER_PORT=%s\n' "$DB_PORT" "$POOLER_PORT" >>.env
 chmod 600 .env
 install -m 644 "$REL/deploy/host/supabase.override.yml" docker-compose.override.yml
 # Supabase's .env pins COMPOSE_FILE, which stops Compose from loading the override automatically.

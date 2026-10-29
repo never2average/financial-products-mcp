@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { PRODUCT_LINES, type FinancialProduct } from "./catalog.js";
+import { productsAnsweredBy } from "./access.js";
 import type { Campaign, SegmentCriteria, Store, User, Variant } from "./store.js";
 
 const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] });
@@ -197,7 +198,8 @@ export function registerGtmTools(server: McpServer, store: Store, user: User) {
     async ({ campaign_id, ...changes }) => {
       const c = await ownCampaign(campaign_id);
       if (!c) return fail(`No campaign of yours with id '${campaign_id}'`);
-      if (c.status === "live" || c.status === "ended") return fail(`A ${c.status} campaign can't be edited; pause it first`);
+      if (c.status === "live" || c.status === "ended" || c.status === "pending_approval")
+        return fail(`A ${c.status.replace("_", " ")} campaign can't be edited${c.status === "live" ? "; pause it first" : ""}`);
       if (changes.product_ids) {
         const { missing } = await loadProducts(store, changes.product_ids);
         if (missing.length) return fail(`Products not available: ${missing.join(", ")}`);
@@ -232,18 +234,32 @@ export function registerGtmTools(server: McpServer, store: Store, user: User) {
     "launch_campaign",
     {
       title: "Launch a campaign",
-      description: "Developer (GTM): go live. Consumers in the segment see it in list_offers. Its copy must pass the compliance lint.",
+      description:
+        "GTM: go live. Consumers in the segment see it in list_offers. Its copy must pass the compliance lint. Promoting a financial product is a regulated act, so a campaign over other innovators' products waits for each of them to approve it (they see it in their requests inbox).",
       inputSchema: { campaign_id: z.string() },
     },
     async ({ campaign_id }) => {
       const c = await ownCampaign(campaign_id);
       if (!c) return fail(`No campaign of yours with id '${campaign_id}'`);
-      if (c.status === "live" || c.status === "ended") return fail(`Campaign is already ${c.status}`);
+      if (c.status === "live" || c.status === "ended" || c.status === "pending_approval") return fail(`Campaign is already ${c.status}`);
       const { products, missing } = await loadProducts(store, c.product_ids);
       if (missing.length) return fail(`Cannot launch: products not available: ${missing.join(", ")}`);
       const report = lintCampaign(c.variants, products);
       if (!report.passed) return { ...json({ error: "Cannot launch: the copy fails the compliance lint", ...report }), isError: true };
-      return json(await store.saveCampaign({ ...c, status: "live", last_lint: report }));
+      // Your own (or your entity's) products and the open reference catalogue need no approval.
+      const yours = new Set((await productsAnsweredBy(store, user)).map((p) => p.product.id));
+      const needApproval = [];
+      for (const id of c.product_ids) {
+        const record = await store.getProduct(id);
+        if (record?.owner_id && !yours.has(id)) needApproval.push(id);
+      }
+      if (needApproval.length === 0) return json(await store.saveCampaign({ ...c, status: "live", last_lint: report }));
+      const existing = await store.requestsForCampaign(c.id);
+      for (const product_id of needApproval) {
+        if (existing.some((r) => r.product_id === product_id && r.status === "pending")) continue;
+        await store.createRequest({ kind: "campaign_launch", product_id, app_id: null, campaign_id: c.id, requester_id: user.id, status: "pending", note: c.name });
+      }
+      return json({ ...(await store.saveCampaign({ ...c, status: "pending_approval", last_lint: report })), awaiting_approval_for: needApproval });
     },
   );
 

@@ -6,6 +6,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer, SERVER_NAME } from "../dist/server.js";
 import { lintCampaign } from "../dist/gtm.js";
 import { Store } from "../dist/store.js";
+import { licensed } from "./helpers.js";
 
 async function setup() {
   const pg = new PGlite();
@@ -49,8 +50,10 @@ test("the server identifies itself as mynt", async () => {
 });
 
 test("innovators version products: draft, test, publish, history, diff, upgrade, restore", async () => {
-  const { as, connect, call } = await setup();
-  const inno = await connect(await as("Ines", ["innovator"]));
+  const { store, as, connect, call } = await setup();
+  const ines = await as("Ines", ["innovator"]);
+  await licensed(store, ines, { region: "IN", category: "deposits", action: "issuance" });
+  const inno = await connect(ines);
   await call(inno, "create_product", product);
   await call(inno, "test_product", { id: "flexi-fd" });
   assert.equal((await call(inno, "publish_product", { id: "flexi-fd" })).data.version, 1);

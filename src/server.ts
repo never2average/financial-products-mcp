@@ -12,10 +12,22 @@ import {
 } from "./catalog.js";
 import { attributionFor, offersFor, registerGtmTools } from "./gtm.js";
 import { registerAdminTools, type AdminContext } from "./admin.js";
+import { accessStatus, BuildTermsSchema, coveringLicenses, EXPERIENCE_ACTIONS, lintExperience, productEntity } from "./access.js";
 import { runProductTests } from "./product-tests.js";
 import { COURT_LEVELS, findLicenses, LEGISLATIVE_KINDS, normalizeModel, PRODUCT_ACTIONS, summarizeModel, type Regulator } from "./regulatory.js";
 import { DEFAULT_FIELDS, resolveFields, TEMPLATE_KINDS, type TemplateKind } from "./grc.js";
-import { DuplicateError, effectiveRoles, type App, type Role, type Store, type User } from "./store.js";
+import {
+  ACCESS_MODES,
+  DuplicateError,
+  effectiveRoles,
+  PRODUCT_ROLES,
+  type App,
+  type ProductRecord,
+  type Role,
+  type Store,
+  type User,
+} from "./store.js";
+import { registerMarketplaceTools } from "./marketplace.js";
 import { registerVersioningTools } from "./versions.js";
 
 // The name MCP clients show for this server.
@@ -56,6 +68,7 @@ export function createServer(store: Store, user: User | null = null, ctx: AdminC
   if (has("innovator")) {
     registerInnovatorTools(server, store, user!);
     registerVersioningTools(server, store, user!, productFields);
+    registerMarketplaceTools(server, store, user!);
   }
   if (has("admin")) registerAdminTools(server, store, user!, ctx);
 
@@ -446,39 +459,140 @@ function registerConsumerTools(server: McpServer, store: Store, user: User) {
   );
 }
 
+// Products an app may show: published, and still accessible to the app's developer (access can be
+// revoked or suspended by the product's innovator).
 async function resolveApp(store: Store, app: App) {
-  const products = await Promise.all(app.product_ids.map(async (id) => ({ id, record: await store.getProduct(id) })));
+  const owner = await store.getUser(app.owner_id);
+  const products = await Promise.all(
+    app.product_ids.map(async (id) => {
+      const record = await store.getProduct(id);
+      const access = record && owner ? await accessStatus(store, owner, record, app.id) : undefined;
+      return { id, record, ok: record?.status === "published" && access?.granted === true };
+    }),
+  );
   return {
     ...app,
-    products: products.filter((p) => p.record?.status === "published").map((p) => p.record!.product),
-    unavailable_product_ids: products.filter((p) => p.record?.status !== "published").map((p) => p.id),
+    products: products.filter((p) => p.ok).map((p) => p.record!.product),
+    unavailable_product_ids: products.filter((p) => !p.ok).map((p) => p.id),
   };
 }
 
+// Developers build software on innovators' products; they never issue, sell or hold funds.
 function registerDeveloperTools(server: McpServer, store: Store, user: User) {
-  const unpublished = async (ids: string[]) => {
-    const records = await Promise.all(ids.map((id) => store.getProduct(id)));
-    return ids.filter((_, i) => records[i]?.status !== "published");
-  };
   const ownApp = async (id: string) => {
     const app = await store.getApp(id);
     return app && app.owner_id === user.id ? app : undefined;
   };
 
+  // Products a draft may include: published, and not private unless this developer was let in.
+  const unusable = async (ids: string[], appId: string | null) => {
+    const out: string[] = [];
+    for (const id of ids) {
+      const record = await store.getProduct(id);
+      if (record?.status !== "published") out.push(`${id} (not published)`);
+      else if (record.access_mode === "private" && !(await accessStatus(store, user, record, appId)).granted) out.push(`${id} (private)`);
+    }
+    return out;
+  };
+
+  const experienceFields = {
+    disclosures: z.array(z.string().min(1)).optional().describe("Text the experience shows users, e.g. risk warnings the products require"),
+    actions: z.array(z.enum(EXPERIENCE_ACTIONS)).min(1).optional().describe("What the experience does with the products (default: display)"),
+  };
+
+  server.registerTool(
+    "list_buildable_products",
+    {
+      title: "Products you can build on",
+      description:
+        "Developer: published products you can build experiences on, with each one's access mode (open: build and publish; approval: build now, publish once the innovator approves; private: invitation only), build terms and who issues or distributes it.",
+      inputSchema: {
+        product_line: z.enum(PRODUCT_LINES).optional(),
+        query: z.string().optional(),
+        access_mode: z.enum(ACCESS_MODES).optional(),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ product_line, query, access_mode }) => {
+      const q = query?.toLowerCase();
+      const out = [];
+      for (const p of await store.publishedProducts()) {
+        if (product_line && p.product_line !== product_line) continue;
+        if (q && !`${p.name} ${p.description}`.toLowerCase().includes(q)) continue;
+        const record = (await store.getProduct(p.id))!;
+        if (access_mode && record.access_mode !== access_mode) continue;
+        const access = await accessStatus(store, user, record, null);
+        if (record.access_mode === "private" && !access.granted) continue;
+        const entity = await productEntity(store, record);
+        out.push({
+          id: p.id,
+          name: p.name,
+          product_line: p.product_line,
+          region: p.region,
+          action: record.action,
+          by: entity?.name ?? (record.owner_id ? null : "Mynt reference catalogue"),
+          access_mode: record.access_mode,
+          access: access.via,
+          build_terms: { ...BuildTermsSchema.parse({}), ...record.build_terms },
+        });
+      }
+      return json(out);
+    },
+  );
+
+  server.registerTool(
+    "get_product_sdk",
+    {
+      title: "Integration kit for a product",
+      description:
+        "Developer: what you need to build on a product: its data shape, sample data for a sandbox, the actions and hand-offs you may use, the disclosures and branding you must show, and your access status.",
+      inputSchema: { product_id: z.string() },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ product_id }) => {
+      const record = await store.getProduct(product_id);
+      if (record?.status !== "published") return fail(`No published product '${product_id}'`);
+      const access = await accessStatus(store, user, record, null);
+      if (record.access_mode === "private" && !access.granted) return fail(`'${product_id}' is private; ask its innovator for an invitation`);
+      const entity = await productEntity(store, record);
+      const terms = { ...BuildTermsSchema.parse({}), ...record.build_terms };
+      return json({
+        product: record.product,
+        version: record.version,
+        issued_or_distributed_by: entity?.name ?? null,
+        action: record.action,
+        underlying_product_ids: record.underlying_product_ids,
+        access: { mode: record.access_mode, status: access.via },
+        build_terms: terms,
+        integration: {
+          data_shape: Object.fromEntries(Object.entries(record.product).map(([k, v]) => [k, Array.isArray(v) ? "string[]" : typeof v])),
+          sandbox_sample: { ...record.product, sandbox: true },
+          actions: Object.fromEntries(
+            EXPERIENCE_ACTIONS.map((a) => [a, terms.permitted_actions.includes(a) ? "permitted" : "not permitted"]),
+          ),
+          hand_off:
+            "Onboarding, KYC and payments happen in the innovator's own regulated flow: deep_link or initiate_onboarding pass the user there. Experiences never collect funds or financial data themselves.",
+        },
+      });
+    },
+  );
+
   server.registerTool(
     "create_app",
     {
       title: "Create an app experience",
-      description: "Developer: create a draft app experience (e.g. a retirement planner or first-salary starter kit) that bundles published products.",
+      description:
+        "Developer: create a draft app experience (e.g. a retirement planner or first-salary starter kit) on published products. Declare what it does (actions) and the disclosures it shows; check_experience tells you whether it meets each product's terms.",
       inputSchema: {
         name: z.string().min(1),
         description: z.string().min(1),
         audience: z.string().min(1).describe("Who the experience is for, e.g. 'first-time investors in India'"),
         product_ids: z.array(z.string()).min(1),
+        ...experienceFields,
       },
     },
     async (fields) => {
-      const bad = await unpublished(fields.product_ids);
+      const bad = await unusable(fields.product_ids, null);
       if (bad.length) return fail(`Products not available: ${bad.join(", ")}`);
       return json(await store.createApp(user.id, fields));
     },
@@ -495,12 +609,13 @@ function registerDeveloperTools(server: McpServer, store: Store, user: User) {
         description: z.string().min(1).optional(),
         audience: z.string().min(1).optional(),
         product_ids: z.array(z.string()).min(1).optional(),
+        ...experienceFields,
       },
     },
     async ({ app_id, ...changes }) => {
       const app = await ownApp(app_id);
       if (!app) return fail(`No app with id '${app_id}'`);
-      const bad = await unpublished(changes.product_ids ?? []);
+      const bad = await unusable(changes.product_ids ?? [], app.id);
       if (bad.length) return fail(`Products not available: ${bad.join(", ")}`);
       const defined = Object.fromEntries(Object.entries(changes).filter(([, v]) => v !== undefined));
       return json(await store.saveApp({ ...app, ...defined }));
@@ -518,11 +633,42 @@ function registerDeveloperTools(server: McpServer, store: Store, user: User) {
     async () => json(await store.appsByOwner(user.id)),
   );
 
+  // Access per product and the terms lint, for one of the developer's apps.
+  const readiness = async (app: App) => {
+    const records = (await Promise.all(app.product_ids.map((id) => store.getProduct(id)))).filter(Boolean) as ProductRecord[];
+    const access = await Promise.all(
+      app.product_ids.map(async (id) => {
+        const record = records.find((r) => r.product.id === id);
+        if (record?.status !== "published") return { product_id: id, granted: false, status: "unavailable" };
+        const a = await accessStatus(store, user, record, app.id);
+        return { product_id: id, granted: a.granted, status: a.via, request_id: a.request_id };
+      }),
+    );
+    return { access, lint: lintExperience(app, records.filter((r) => r.status === "published")) };
+  };
+
+  server.registerTool(
+    "check_experience",
+    {
+      title: "Check an experience against the products' terms",
+      description:
+        "Developer: for one of your apps, whether you have access to each product and whether the experience meets each product's build terms (permitted actions, required disclosures, banned wording). Both must pass to publish.",
+      inputSchema: { app_id: z.string() },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ app_id }) => {
+      const app = await ownApp(app_id);
+      if (!app) return fail(`No app with id '${app_id}'`);
+      const r = await readiness(app);
+      return json({ ready: r.access.every((a) => a.granted) && r.lint.passed, ...r });
+    },
+  );
+
   server.registerTool(
     "preview_app",
     {
       title: "Preview an app experience",
-      description: "Developer: render one of your app experiences with full product details and flag products that are no longer available.",
+      description: "Developer: render one of your app experiences with full product details and flag products it can't show.",
       inputSchema: { app_id: z.string() },
       annotations: { readOnlyHint: true },
     },
@@ -533,17 +679,63 @@ function registerDeveloperTools(server: McpServer, store: Store, user: User) {
   );
 
   server.registerTool(
+    "request_product_access",
+    {
+      title: "Ask to build on a product",
+      description:
+        "Developer: ask a product's innovator to let one of your apps go live with it. Open products need no request; approval products go to the innovator's inbox; private products need an invitation.",
+      inputSchema: { app_id: z.string(), product_id: z.string(), note: z.string().default("").describe("What you're building and why") },
+    },
+    async ({ app_id, product_id, note }) => {
+      const app = await ownApp(app_id);
+      if (!app) return fail(`No app with id '${app_id}'`);
+      const record = await store.getProduct(product_id);
+      if (record?.status !== "published") return fail(`No published product '${product_id}'`);
+      const access = await accessStatus(store, user, record, app.id);
+      if (access.granted) return json({ product_id, granted: true, via: access.via, note: "No request needed" });
+      if (record.access_mode === "private") return fail(`'${product_id}' is private; its innovator has to invite you`);
+      if (access.via === "pending") return fail(`A request for '${product_id}' is already waiting (${access.request_id})`);
+      if (!app.product_ids.includes(product_id)) await store.saveApp({ ...app, product_ids: [...app.product_ids, product_id] });
+      return json(
+        await store.createRequest({ kind: "product_access", product_id, app_id: app.id, campaign_id: null, requester_id: user.id, status: "pending", note }),
+      );
+    },
+  );
+
+  server.registerTool(
+    "list_my_requests",
+    {
+      title: "My requests",
+      description: "Developer: your access and campaign-launch requests and what innovators decided.",
+      inputSchema: { status: z.enum(["pending", "approved", "rejected", "revoked"]).optional() },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ status }) => json((await store.requestsBy(user.id)).filter((r) => !status || r.status === status)),
+  );
+
+  server.registerTool(
     "publish_app",
     {
       title: "Publish an app experience",
-      description: "Developer: make one of your app experiences visible to everyone via list_apps. All its products must be published.",
+      description:
+        "Developer: make one of your app experiences visible to everyone via list_apps. You need access to every product and the experience must meet each product's build terms (see check_experience).",
       inputSchema: { app_id: z.string() },
     },
     async ({ app_id }) => {
       const app = await ownApp(app_id);
       if (!app) return fail(`No app with id '${app_id}'`);
-      const bad = await unpublished(app.product_ids);
-      if (bad.length) return fail(`Cannot publish: products not available: ${bad.join(", ")}`);
+      const r = await readiness(app);
+      const blocked = r.access.filter((a) => !a.granted);
+      if (blocked.length || !r.lint.passed) {
+        return {
+          ...json({
+            error: "Cannot publish yet",
+            access_needed: blocked.map((b) => ({ product_id: b.product_id, status: b.status })),
+            failed_checks: r.lint.checks.filter((c) => c.status === "fail"),
+          }),
+          isError: true,
+        };
+      }
       return json(await store.saveApp({ ...app, status: "published" }));
     },
   );
@@ -559,15 +751,19 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User) {
     "create_product",
     {
       title: "Create a financial product",
-      description: "Innovator: create a draft financial product. Run test_product, then publish_product to list it in the catalog.",
+      description:
+        "Innovator: create a draft financial product. action says what your firm does with it: issuance (you are the issuer), sale (you distribute another issuer's products, e.g. as a mutual fund distributor) or repackaging (you bundle others' products, e.g. a model portfolio); for sale and repackaging name the underlying products. Publishing needs a verified licence covering that action. Run test_product, then publish_product.",
       inputSchema: {
         id: z.string().regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, "Use a lowercase slug like 'green-fd'"),
         ...productFields,
+        action: z.enum(PRODUCT_ROLES).default("issuance"),
+        underlying_product_ids: z.array(z.string()).default([]).describe("For sale or repackaging: the published products this builds on"),
       },
     },
-    async (product) => {
+    async ({ action, underlying_product_ids, ...product }) => {
+      if (action !== "issuance" && underlying_product_ids.length === 0) return fail(`A ${action} product must name its underlying_product_ids`);
       try {
-        return json(await store.insertDraft(user.id, product));
+        return json(await store.insertDraft(user.id, product, { entity_id: user.entity_id, action, underlying_product_ids }));
       } catch (e) {
         if (e instanceof DuplicateError) return fail(e.message);
         throw e;
@@ -607,10 +803,23 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User) {
       if (!record) return fail(`No product of yours with id '${id}'`);
       // A pending draft version is what gets tested; otherwise the product itself.
       const draft = await store.draftVersion(id);
-      const report = runProductTests(draft?.data ?? record.product, await store.referenceData());
+      const data = draft?.data ?? record.product;
+      const report = runProductTests(data, await store.referenceData());
       if (draft) await store.saveDraftVersionTest(id, report);
       else await store.saveTestReport(id, report);
-      return json(draft ? { version: draft.version, ...report } : report);
+      // Advisory here; publish_product enforces it.
+      const held = await coveringLicenses(store, user.entity_id, data.region, data.category, record.action);
+      const licence = held.length
+        ? { name: "licence_held", status: "pass", message: `Your entity holds ${held.map((h) => `${h.license_id} (${h.regulator_id}, ${h.registration_number})`).join(", ")}` }
+        : {
+            name: "licence_held",
+            status: "warn",
+            message: user.entity_id
+              ? `Your entity holds no verified licence for ${record.action} of '${data.category}' in ${data.region}; register one with register_license`
+              : "You don't belong to an entity yet; create one with create_entity, then register its licences",
+          };
+      const result = { ...report, checks: [...report.checks, licence] };
+      return json(draft ? { version: draft.version, ...result } : result);
     },
   );
 
@@ -632,7 +841,19 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User) {
       if (!lastTest || lastTest.fingerprint !== runProductTests(data).fingerprint)
         return fail("Product changed since its last test (or was never tested); run test_product first");
       if (!lastTest.passed) return fail("Last test failed; fix the failing checks and run test_product again");
-      return json(draft ? await store.publishDraftVersion(id) : await store.publishCurrentVersion(id));
+      // A regulated action needs a verified, in-force licence held by the innovator's entity.
+      const held = await coveringLicenses(store, user.entity_id, data.region, data.category, record.action);
+      if (held.length === 0)
+        return fail(
+          `Publishing needs a verified licence for ${record.action} of '${data.category}' in ${data.region}, held by your entity (see find_licenses, register_license)`,
+        );
+      const notLive = [];
+      for (const u of record.underlying_product_ids) if ((await store.getProduct(u))?.status !== "published") notLive.push(u);
+      if (notLive.length) return fail(`Underlying products aren't published: ${notLive.join(", ")}`);
+      return json({
+        ...(draft ? await store.publishDraftVersion(id) : await store.publishCurrentVersion(id)),
+        licensed_under: held.map((h) => ({ regulator: h.regulator_id, license: h.license_id, registration_number: h.registration_number })),
+      });
     },
   );
 

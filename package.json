@@ -1,11 +1,11 @@
 {
-  "name": "financial-products-mcp",
+  "name": "mynt",
   "version": "0.3.0",
-  "description": "MCP server for credit, wealth, insurance and treasury products with consumer, developer and innovator roles",
+  "description": "Mynt: MCP server for credit, wealth, insurance and treasury products, with consumer, developer, innovator and admin roles",
   "type": "module",
   "license": "MIT",
   "bin": {
-    "financial-products-mcp": "dist/index.js"
+    "mynt": "dist/index.js"
   },
   "files": [
     "dist",

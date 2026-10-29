@@ -7,6 +7,6 @@
 		reverse_proxy mcp:3000
 	}
 	handle {
-		respond "financial-products MCP server. Connect an MCP client to https://{$MCP_DOMAIN}/mcp" 200
+		respond "Mynt MCP server. Connect an MCP client to https://{$MCP_DOMAIN}/mcp" 200
 	}
 }

@@ -1,4 +1,4 @@
-# financial-products MCP server. Installed by deploy/host/install-host.sh into /etc/caddy-companion/sites/.
+# Mynt MCP server. Installed by deploy/host/install-host.sh into /etc/caddy-companion/sites/.
 @DOMAIN@ {
 	encode zstd gzip
 	header {

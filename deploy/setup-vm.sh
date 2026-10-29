@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Deploys self-hosted Supabase + the financial-products MCP server on a fresh Ubuntu VM.
+# Deploys self-hosted Supabase + the Mynt MCP server on a fresh Ubuntu VM.
 # Idempotent: re-run to update. Usage (as root on the VM):
 #   bash setup-vm.sh <domain> [git-ref]
 set -euo pipefail
 
 DOMAIN=${1:?usage: setup-vm.sh <domain> [git-ref]}
 REF=${2:-main}
-REPO=https://github.com/never2average/financial-products-mcp.git
+REPO=https://github.com/never2average/mynt.git
 SUPABASE_DIR=/opt/supabase
-APP_DIR=/opt/financial-products-mcp
+APP_DIR=/opt/mynt
 
 log() { printf '\n==> %s\n' "$*"; }
 

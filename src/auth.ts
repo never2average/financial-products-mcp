@@ -117,7 +117,7 @@ export class ClerkAdmin {
     const res = await fetch(`${this.api}${path}`, {
       method,
       // Clerk's edge refuses some default client User-Agents.
-      headers: { Authorization: `Bearer ${this.secretKey}`, "Content-Type": "application/json", "User-Agent": "financial-products-mcp" },
+      headers: { Authorization: `Bearer ${this.secretKey}`, "Content-Type": "application/json", "User-Agent": "mynt" },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const text = await res.text();

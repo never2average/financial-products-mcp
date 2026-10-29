@@ -10,6 +10,13 @@ export interface User {
   id: string;
   name: string;
   roles: Role[];
+  email: string | null;
+  created_at: string;
+}
+
+export interface Invite {
+  email: string;
+  roles: Role[];
   created_at: string;
 }
 
@@ -89,6 +96,17 @@ const TABLES = `
     updated_at timestamptz NOT NULL DEFAULT now()
   );
   CREATE INDEX IF NOT EXISTS apps_owner_idx ON financial_products.apps (owner_id);
+  -- Clerk sign-in: a user is linked to a Clerk user and holds no local token.
+  ALTER TABLE financial_products.users ALTER COLUMN token_hash DROP NOT NULL;
+  ALTER TABLE financial_products.users ADD COLUMN IF NOT EXISTS clerk_user_id text UNIQUE;
+  ALTER TABLE financial_products.users ADD COLUMN IF NOT EXISTS email text UNIQUE;
+  -- The whitelist: only these emails may use the server over Clerk, with these roles. Removing an
+  -- invite cuts the user off on their next request.
+  CREATE TABLE IF NOT EXISTS financial_products.invites (
+    email text PRIMARY KEY CHECK (email = lower(email)),
+    roles text[] NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
 `;
 
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -97,7 +115,15 @@ const isUniqueViolation = (e: unknown) => (e as { code?: string })?.code === "23
 
 type Row = Record<string, unknown>;
 
-const toUser = (r: Row): User => ({ id: r.id as string, name: r.name as string, roles: r.roles as Role[], created_at: iso(r.created_at)! });
+const toUser = (r: Row): User => ({
+  id: r.id as string,
+  name: r.name as string,
+  roles: r.roles as Role[],
+  email: (r.email as string | null) ?? null,
+  created_at: iso(r.created_at)!,
+});
+
+const toInvite = (r: Row): Invite => ({ email: r.email as string, roles: r.roles as Role[], created_at: iso(r.created_at)! });
 
 const toProductRecord = (r: Row): ProductRecord => ({
   product: r.data as FinancialProduct,
@@ -183,6 +209,46 @@ export class Store {
 
   async listUsers(): Promise<User[]> {
     return (await this.all("SELECT * FROM financial_products.users ORDER BY created_at")).map(toUser);
+  }
+
+  async userByClerkId(clerkUserId: string): Promise<User | undefined> {
+    const r = await this.one("SELECT * FROM financial_products.users WHERE clerk_user_id = $1", [clerkUserId]);
+    return r && toUser(r);
+  }
+
+  // Creates or refreshes the user linked to a Clerk account. Roles always come from the invite.
+  async upsertClerkUser(clerkUserId: string, email: string, name: string, roles: Role[]): Promise<User> {
+    const r = await this.one(
+      `INSERT INTO financial_products.users (id, name, roles, clerk_user_id, email) VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (clerk_user_id) DO UPDATE SET roles = EXCLUDED.roles, email = EXCLUDED.email
+       RETURNING *`,
+      [randomUUID(), name, roles, clerkUserId, email.toLowerCase()],
+    );
+    return toUser(r!);
+  }
+
+  // Whitelist
+
+  async upsertInvite(email: string, roles: Role[]): Promise<Invite> {
+    const r = await this.one(
+      `INSERT INTO financial_products.invites (email, roles) VALUES ($1, $2)
+       ON CONFLICT (email) DO UPDATE SET roles = EXCLUDED.roles RETURNING *`,
+      [email.toLowerCase(), roles],
+    );
+    return toInvite(r!);
+  }
+
+  async getInvite(email: string): Promise<Invite | undefined> {
+    const r = await this.one("SELECT * FROM financial_products.invites WHERE email = $1", [email.toLowerCase()]);
+    return r && toInvite(r);
+  }
+
+  async deleteInvite(email: string): Promise<boolean> {
+    return (await this.all("DELETE FROM financial_products.invites WHERE email = $1 RETURNING email", [email.toLowerCase()])).length > 0;
+  }
+
+  async listInvites(): Promise<Invite[]> {
+    return (await this.all("SELECT * FROM financial_products.invites ORDER BY created_at")).map(toInvite);
   }
 
   // Products

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { ClerkAdmin, ClerkAuth, clerkConfigFromEnv } from "./auth.js";
 import { connectPostgres } from "./db.js";
 import { createMcpHttpServer } from "./http.js";
 import { createServer } from "./server.js";
@@ -9,11 +10,17 @@ import { ROLES, Store, type Role } from "./store.js";
 const USAGE = `Usage:
   financial-products-mcp [serve]                         Run over stdio (token from FINANCIAL_PRODUCTS_TOKEN)
   financial-products-mcp serve-http [--port 3000] [--host 127.0.0.1]
-  financial-products-mcp users add --name <name> --role <${ROLES.join("|")}> [--role ...]
+  financial-products-mcp users invite --email <email> --role <${ROLES.join("|")}> [--role ...]
+  financial-products-mcp users revoke --email <email>
+  financial-products-mcp users add --name <name> --role <role> [--role ...]   Local token (stdio, or HTTP without Clerk)
   financial-products-mcp users list
+  financial-products-mcp clerk setup                     Turn on Clerk's allowlist and MCP client registration
 
 Environment:
   DATABASE_URL              Postgres connection string, e.g. your Supabase database (required)
+  CLERK_SECRET_KEY          With CLERK_PUBLISHABLE_KEY and PUBLIC_URL: HTTP requires Clerk sign-in + whitelist
+  CLERK_PUBLISHABLE_KEY
+  PUBLIC_URL                Public origin of this server, e.g. https://mcp.example.com
   FINANCIAL_PRODUCTS_FILE   JSON catalog used to seed published products
   FINANCIAL_PRODUCTS_TOKEN  User token for stdio mode; omit to browse as a guest`;
 
@@ -21,6 +28,7 @@ const { positionals, values } = parseArgs({
   allowPositionals: true,
   options: {
     name: { type: "string" },
+    email: { type: "string" },
     role: { type: "string", multiple: true },
     port: { type: "string", default: process.env.PORT ?? "3000" },
     host: { type: "string", default: process.env.HOST ?? "127.0.0.1" },
@@ -36,6 +44,22 @@ const die = (msg: string): never => {
 const openStore = () =>
   Store.open(connectPostgres(process.env.DATABASE_URL ?? die("DATABASE_URL is required (your Supabase Postgres connection string)")));
 
+const parseRoles = (): Role[] => {
+  const roles = values.role ?? [];
+  if (roles.length === 0) die(USAGE);
+  const invalid = roles.filter((r) => !(ROLES as readonly string[]).includes(r));
+  if (invalid.length) die(`Unknown role(s): ${invalid.join(", ")}. Use ${ROLES.join(", ")}`);
+  return [...new Set(roles)] as Role[];
+};
+
+const parseEmail = (): string => {
+  const email = values.email?.trim().toLowerCase();
+  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) die("--email <address> is required");
+  return email!;
+};
+
+const clerkAdmin = () => (process.env.CLERK_SECRET_KEY ? new ClerkAdmin(process.env.CLERK_SECRET_KEY) : null);
+
 const [command = "serve", sub] = positionals;
 if (values.help) {
   console.log(USAGE);
@@ -46,24 +70,46 @@ if (values.help) {
   await createServer(store, user).connect(new StdioServerTransport());
 } else if (command === "serve-http") {
   const port = Number(values.port);
-  const http = createMcpHttpServer(await openStore()).listen(port, values.host, () =>
-    console.error(`financial-products MCP listening on http://${values.host}:${port}/mcp`),
+  const store = await openStore();
+  const config = clerkConfigFromEnv();
+  const clerk = config ? new ClerkAuth(config, store) : null;
+  const http = createMcpHttpServer(store, clerk).listen(port, values.host, () =>
+    console.error(`financial-products MCP listening on http://${values.host}:${port}/mcp${clerk ? " (Clerk whitelist auth)" : ""}`),
   );
   process.on("SIGTERM", () => http.close(() => process.exit(0)));
-} else if (command === "users" && sub === "add") {
-  const roles = values.role ?? [];
-  if (!values.name || roles.length === 0) die(USAGE);
-  const invalid = roles.filter((r) => !(ROLES as readonly string[]).includes(r));
-  if (invalid.length) die(`Unknown role(s): ${invalid.join(", ")}. Use ${ROLES.join(", ")}`);
+} else if (command === "users" && sub === "invite") {
+  const email = parseEmail();
+  const roles = parseRoles();
   const store = await openStore();
-  const { user, token } = await store.createUser(values.name!, [...new Set(roles)] as Role[]);
+  const invite = await store.upsertInvite(email, roles);
+  const warning = await clerkAdmin()?.allow(email);
+  if (warning) console.error(`warning: ${email} ${warning}`);
+  console.log(JSON.stringify(invite, null, 2));
+  await store.close();
+} else if (command === "users" && sub === "revoke") {
+  const email = parseEmail();
+  const store = await openStore();
+  const removed = await store.deleteInvite(email);
+  await clerkAdmin()?.disallow(email);
+  console.log(removed ? `Revoked ${email}` : `${email} was not on the whitelist`);
+  await store.close();
+} else if (command === "users" && sub === "add") {
+  if (!values.name) die(USAGE);
+  const roles = parseRoles();
+  const store = await openStore();
+  const { user, token } = await store.createUser(values.name!, roles);
   console.log(JSON.stringify({ ...user, token }, null, 2));
   console.error("Save this token now; it is stored hashed and cannot be shown again.");
   await store.close();
 } else if (command === "users" && sub === "list") {
   const store = await openStore();
-  console.log(JSON.stringify(await store.listUsers(), null, 2));
+  console.log(JSON.stringify({ whitelist: await store.listInvites(), users: await store.listUsers() }, null, 2));
   await store.close();
+} else if (command === "clerk" && sub === "setup") {
+  const admin = clerkAdmin() ?? die("CLERK_SECRET_KEY is required");
+  const warnings = await admin.setup();
+  for (const w of warnings) console.error(`warning: ${w}`);
+  console.log(`Clerk: ${warnings.length ? "" : "allowlist on, "}dynamic client registration on, PKCE required, audience claims on`);
 } else {
   die(USAGE);
 }

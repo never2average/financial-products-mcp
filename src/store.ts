@@ -514,6 +514,11 @@ export class Store {
     return (await this.all("SELECT * FROM financial_products.users ORDER BY created_at")).map(toUser);
   }
 
+  async clerkIdForEmail(email: string): Promise<string | null> {
+    const r = await this.one("SELECT clerk_user_id FROM financial_products.users WHERE email = $1", [email.toLowerCase()]);
+    return (r?.clerk_user_id as string | null | undefined) ?? null;
+  }
+
   async userByClerkId(clerkUserId: string): Promise<User | undefined> {
     const r = await this.one("SELECT * FROM financial_products.users WHERE clerk_user_id = $1", [clerkUserId]);
     return r && toUser(r);

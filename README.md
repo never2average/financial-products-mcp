@@ -20,7 +20,14 @@ Admins own Mynt's reference data and access. **Every admin action is written to 
 - **Whitelist** (`invite_user`, `revoke_user`, `list_whitelist`): kept in step with Clerk's allowlist. Mynt refuses any change that would remove the last admin.
 - **Oversight:** see every campaign and pause any of them. Unpublish any product, or republish one; republishing re-runs the tests first.
 
-The CLI (`users invite --role admin`) is only for creating the first admin.
+**Inviting from Clerk** works too, and is the easiest way to create the first admin:
+1. In the Clerk dashboard, go to **Users → Invite**, enter the email, and set **public metadata** to `{"mynt_roles": ["admin"]}`. Any role works: `admin`, `innovator`, `developer` or `consumer`.
+2. The person accepts Clerk's emailed invitation and signs up.
+3. On their first Mynt request, Mynt whitelists them with those roles and logs `invite_via_clerk` in the audit log.
+
+Only Clerk dashboard owners can set public metadata; users can't edit their own. After that first sign-in, manage the person in Mynt: role changes and revocations are written back to their Clerk metadata, so an old grant can't restore access. With Clerk's allowlist on, add the email under **Configure → Restrictions → Allowlist** too, in case the invitation alone isn't enough to sign up.
+
+The CLI (`users invite --role admin`) remains as a fallback for creating the first admin.
 
 ### GTM engineering (developers)
 

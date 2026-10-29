@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { HORIZONS, LIQUIDITY, PRODUCT_LINES, RETURN_TYPES, RISK_LEVELS, type FinancialProduct } from "./catalog.js";
+import { EMPTY_MODEL, findLicenses } from "./regulatory.js";
 import type { ReferenceData } from "./store.js";
 
 export type CheckStatus = "pass" | "warn" | "fail";
@@ -32,6 +33,7 @@ const oneOf = (name: string, value: string, allowed: readonly string[]): Check =
 function referenceChecks(p: FinancialProduct, ref: ReferenceData): Check[] {
   const region = ref.regions.find((r) => r.code === p.region);
   const category = ref.categories.find((c) => c.id === p.category);
+  const licenses = region ? findLicenses(region.regulatory ?? EMPTY_MODEL, { category: p.category }) : [];
   const regulatorKnown =
     !region || region.regulators.length === 0 || region.regulators.some((r) => p.regulator.toLowerCase().includes(r.toLowerCase()));
   return [
@@ -61,6 +63,13 @@ function referenceChecks(p: FinancialProduct, ref: ReferenceData): Check[] {
       !region || (region.procedures ?? []).some((proc) => proc.product_line === p.product_line),
       `A ${p.product_line} launch procedure is documented for ${p.region} (see get_region)`,
       `No ${p.product_line} launch procedure is documented for ${p.region} yet; ask an admin to add one before going live`,
+      "warn",
+    ),
+    check(
+      "licensing",
+      !region || licenses.length > 0,
+      `Licensed under ${licenses.map((l) => `${l.license.name} (${l.regulator.id})`).join(", ")} (see find_licenses)`,
+      `No licence recorded for ${p.region} covers '${p.category}' yet; ask an admin to define the regulator that supervises it`,
       "warn",
     ),
   ];

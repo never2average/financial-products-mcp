@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { ClerkAdmin } from "./auth.js";
 import { PRODUCT_LINES } from "./catalog.js";
 import { runProductTests } from "./product-tests.js";
+import { EMPTY_MODEL, LegalInstrumentSchema, RegulatorSchema, validateRegulator } from "./regulatory.js";
 import { ROLES, type Role, type Store, type User } from "./store.js";
 
 const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] });
@@ -77,6 +78,101 @@ export function registerAdminTools(server: McpServer, store: Store, user: User, 
       const saved = await store.upsertCategory(category);
       await audit("define_product_category", category.id, category);
       return json(saved);
+    },
+  );
+
+  // ---- regulatory model: regulators (scope, licences, GRC) and legal instruments ----
+
+  const regionFor = async (code: string) => (await store.referenceData(true)).regions.find((r) => r.code === code);
+
+  server.registerTool(
+    "define_regulator",
+    {
+      title: "Define a regulator",
+      description:
+        "Admin: add or replace one regulator in a region's regulatory model: what it supervises (product types it covers and the actions on them, customer personas and their qualifications), and the licences it grants, each with its GRC (obligations, filings, risks, controls, repositories, allowed product types and segments, mandatory internal and external stakeholders). Broken internal links are refused; links outside the regulator come back as warnings.",
+      inputSchema: { region: z.string().describe("Region code, e.g. IN (define_region first)"), regulator: RegulatorSchema },
+    },
+    async ({ region: code, regulator }) => {
+      const region = await regionFor(code);
+      if (!region) return fail(`No region '${code}'; create it with define_region first`);
+      const ref = await store.referenceData(true);
+      const model = region.regulatory ?? EMPTY_MODEL;
+      const { errors, warnings } = validateRegulator(regulator, {
+        categories: ref.categories.filter((c) => c.active).map((c) => c.id),
+        legalIds: model.legal.map((l) => l.id),
+      });
+      if (errors.length) return { ...json({ error: "The regulator has broken links", errors, warnings }), isError: true };
+      const replaced = model.regulators.some((r) => r.id === regulator.id);
+      await store.setRegulatoryModel(code, { ...model, regulators: [...model.regulators.filter((r) => r.id !== regulator.id), regulator] });
+      // Keep the region's short regulator list (used to check what products cite) in step.
+      const short = regulator.short_name ?? regulator.name;
+      if (!region.regulators.includes(short)) await store.upsertRegion({ code, regulators: [...region.regulators, short] });
+      await audit("define_regulator", `${code}/${regulator.id}`, { replaced, license_types: regulator.license_types.map((l) => l._id) });
+      return json({ region: code, regulator: regulator.id, replaced, license_types: regulator.license_types.length, warnings });
+    },
+  );
+
+  server.registerTool(
+    "remove_regulator",
+    {
+      title: "Remove a regulator",
+      description: "Admin: delete one regulator (and its licences) from a region's regulatory model.",
+      inputSchema: { region: z.string(), regulator_id: z.string() },
+      annotations: { destructiveHint: true },
+    },
+    async ({ region: code, regulator_id }) => {
+      const region = await regionFor(code);
+      if (!region) return fail(`No region '${code}'`);
+      const model = region.regulatory ?? EMPTY_MODEL;
+      const gone = model.regulators.find((r) => r.id === regulator_id);
+      if (!gone) return fail(`No regulator '${regulator_id}' in ${code}`);
+      await store.setRegulatoryModel(code, { ...model, regulators: model.regulators.filter((r) => r.id !== regulator_id) });
+      await audit("remove_regulator", `${code}/${regulator_id}`);
+      return json({ region: code, removed: regulator_id });
+    },
+  );
+
+  server.registerTool(
+    "define_legal_instrument",
+    {
+      title: "Define a legal instrument",
+      description:
+        "Admin: add or replace an act, rule, regulation, master direction, circular, guideline, notification or judgment in a region, with its citation, issuer, effective date, official URL, summary and what it applies to. Obligations and filings cite these by id (legal_ref).",
+      inputSchema: { region: z.string(), instrument: LegalInstrumentSchema },
+    },
+    async ({ region: code, instrument }) => {
+      const region = await regionFor(code);
+      if (!region) return fail(`No region '${code}'; create it with define_region first`);
+      const model = region.regulatory ?? EMPTY_MODEL;
+      const regulatorIds = model.regulators.map((r) => r.id);
+      const warnings = [
+        ...(instrument.issued_by && !regulatorIds.includes(instrument.issued_by) ? [`issued_by '${instrument.issued_by}' isn't a regulator in ${code}`] : []),
+        ...instrument.applies_to.regulators.filter((id) => !regulatorIds.includes(id)).map((id) => `applies to unknown regulator '${id}'`),
+      ];
+      const replaced = model.legal.some((l) => l.id === instrument.id);
+      await store.setRegulatoryModel(code, { ...model, legal: [...model.legal.filter((l) => l.id !== instrument.id), instrument] });
+      await audit("define_legal_instrument", `${code}/${instrument.id}`, { kind: instrument.kind, replaced });
+      return json({ region: code, instrument: instrument.id, replaced, warnings });
+    },
+  );
+
+  server.registerTool(
+    "remove_legal_instrument",
+    {
+      title: "Remove a legal instrument",
+      description: "Admin: delete a legal instrument from a region.",
+      inputSchema: { region: z.string(), instrument_id: z.string() },
+      annotations: { destructiveHint: true },
+    },
+    async ({ region: code, instrument_id }) => {
+      const region = await regionFor(code);
+      if (!region) return fail(`No region '${code}'`);
+      const model = region.regulatory ?? EMPTY_MODEL;
+      if (!model.legal.some((l) => l.id === instrument_id)) return fail(`No legal instrument '${instrument_id}' in ${code}`);
+      await store.setRegulatoryModel(code, { ...model, legal: model.legal.filter((l) => l.id !== instrument_id) });
+      await audit("remove_legal_instrument", `${code}/${instrument_id}`);
+      return json({ region: code, removed: instrument_id });
     },
   );
 

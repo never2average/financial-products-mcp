@@ -13,7 +13,8 @@ import {
 import { attributionFor, offersFor, registerGtmTools } from "./gtm.js";
 import { registerAdminTools, type AdminContext } from "./admin.js";
 import { runProductTests } from "./product-tests.js";
-import { COURT_LEVELS, findLicenses, LEGISLATIVE_KINDS, normalizeModel, PRODUCT_ACTIONS, summarizeModel } from "./regulatory.js";
+import { COURT_LEVELS, findLicenses, LEGISLATIVE_KINDS, normalizeModel, PRODUCT_ACTIONS, summarizeModel, type Regulator } from "./regulatory.js";
+import { DEFAULT_FIELDS, resolveFields, TEMPLATE_KINDS, type TemplateKind } from "./grc.js";
 import { DuplicateError, effectiveRoles, type App, type Role, type Store, type User } from "./store.js";
 import { registerVersioningTools } from "./versions.js";
 
@@ -181,6 +182,56 @@ function registerCatalogTools(server: McpServer, store: Store, user: User | null
       if (!model) return fail(`No region '${region}'; see list_regions`);
       return json(findLicenses(model, q));
     },
+  );
+
+  // Where each template kind lives inside a licence's GRC.
+  const TEMPLATE_LOCATIONS: Record<TemplateKind, (grc: Regulator["license_types"][number]["grc"]) => { id: string }[]> = {
+    control: (g) => g.registers.controls,
+    inspection_event: (g) => g.registers.inspection_events,
+    policy: (g) => g.repositories.policies,
+    risk_model: (g) => g.repositories.risk_models,
+    inspection_record: (g) => g.repositories.inspection_history,
+  };
+
+  server.registerTool(
+    "get_template",
+    {
+      title: "How to define a required record",
+      description:
+        "A regulator's template for a record a licensee must keep (a control, policy, risk model, inspection record or inspection event): its guidance, the law behind it, and the full field schema the licensee's own record must follow. Omit template_id to list the licence's templates of that kind.",
+      inputSchema: {
+        region: z.string(),
+        regulator_id: z.string(),
+        license_id: z.string(),
+        kind: z.enum(TEMPLATE_KINDS),
+        template_id: z.string().optional(),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ region, regulator_id, license_id, kind, template_id }) => {
+      const model = await modelFor(region);
+      if (!model) return fail(`No region '${region}'; see list_regions`);
+      const license = model.regulators.find((r) => r.id === regulator_id)?.license_types.find((l) => l._id === license_id);
+      if (!license) return fail(`No licence '${license_id}' under '${regulator_id}' in ${region}; see get_regulator`);
+      const list = TEMPLATE_LOCATIONS[kind](license.grc) as ({ id: string; name: string } & Record<string, unknown>)[];
+      if (!template_id) return json(list.map((t) => ({ id: t.id, name: t.name, mandatory: t.mandatory, guidance: t.guidance })));
+      const t = list.find((x) => x.id === template_id);
+      if (!t) return fail(`No ${kind} template '${template_id}' in licence '${license_id}'`);
+      const { fields, ...rest } = t;
+      return json({ ...rest, kind, own_fields: fields, schema: resolveFields(kind, t as never) });
+    },
+  );
+
+  server.registerTool(
+    "list_template_defaults",
+    {
+      title: "Default record schemas",
+      description:
+        "The default field schema each template kind starts from (control, policy, risk_model, inspection_record, inspection_event), including its enums, e.g. control type, test method and frequency, test rating.",
+      inputSchema: { kind: z.enum(TEMPLATE_KINDS).optional() },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ kind }) => json(kind ? { [kind]: DEFAULT_FIELDS[kind] } : DEFAULT_FIELDS),
   );
 
   server.registerTool(

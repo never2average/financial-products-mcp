@@ -13,6 +13,7 @@ import {
 import { attributionFor, offersFor, registerGtmTools } from "./gtm.js";
 import { registerAdminTools, type AdminContext } from "./admin.js";
 import { runProductTests } from "./product-tests.js";
+import { EMPTY_MODEL, findLicenses, LEGAL_KINDS, PRODUCT_ACTIONS, summarizeModel } from "./regulatory.js";
 import { DuplicateError, effectiveRoles, type App, type Role, type Store, type User } from "./store.js";
 import { registerVersioningTools } from "./versions.js";
 
@@ -72,7 +73,7 @@ function registerCatalogTools(server: McpServer, store: Store, user: User | null
     },
     async ({ include_inactive }) =>
       json(
-        (await store.referenceData(include_inactive && user?.roles.includes("admin"))).regions.map(({ ecosystem, procedures, sources, ...r }) => ({
+        (await store.referenceData(include_inactive && user?.roles.includes("admin"))).regions.map(({ ecosystem, procedures, sources, regulatory, ...r }) => ({
           ...r,
           procedures_for: [...new Set(procedures.map((p) => p.product_line))],
         })),
@@ -94,7 +95,77 @@ function registerCatalogTools(server: McpServer, store: Store, user: User | null
     async ({ code, product_line }) => {
       const region = (await store.referenceData(user?.roles.includes("admin"))).regions.find((r) => r.code === code.trim());
       if (!region) return fail(`No region '${code}'; see list_regions`);
-      return json({ ...region, procedures: region.procedures.filter((p) => !product_line || p.product_line === product_line) });
+      return json({
+        ...region,
+        regulatory: summarizeModel(region.regulatory ?? EMPTY_MODEL),
+        procedures: region.procedures.filter((p) => !product_line || p.product_line === product_line),
+      });
+    },
+  );
+
+  const modelFor = async (code: string) =>
+    (await store.referenceData(user?.roles.includes("admin"))).regions.find((r) => r.code === code.trim())?.regulatory;
+
+  server.registerTool(
+    "get_regulator",
+    {
+      title: "A regulator in full",
+      description:
+        "One regulator in a region: the product types and customer personas it supervises, and every licence it grants with its GRC (obligations, filings, risks, controls, repositories, allowed products and segments, mandatory stakeholders).",
+      inputSchema: { region: z.string(), regulator_id: z.string() },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ region, regulator_id }) => {
+      const model = await modelFor(region);
+      if (!model) return fail(`No region '${region}'; see list_regions`);
+      const r = model.regulators.find((x) => x.id === regulator_id);
+      return r ? json(r) : fail(`No regulator '${regulator_id}' in ${region}; see get_region`);
+    },
+  );
+
+  server.registerTool(
+    "list_legal_instruments",
+    {
+      title: "Laws and rules in a region",
+      description: "The acts, rules, regulations, directions, circulars, guidelines and judgments recorded for a region, optionally narrowed by kind or by what they apply to.",
+      inputSchema: {
+        region: z.string(),
+        kind: z.enum(LEGAL_KINDS).optional(),
+        applies_to: z.string().optional().describe("Only those applying to this regulator, licence, product type or persona id"),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ region, kind, applies_to }) => {
+      const model = await modelFor(region);
+      if (!model) return fail(`No region '${region}'; see list_regions`);
+      return json(
+        model.legal.filter(
+          (l) =>
+            (!kind || l.kind === kind) &&
+            (!applies_to || l.issued_by === applies_to || Object.values(l.applies_to).some((ids) => ids.includes(applies_to))),
+        ),
+      );
+    },
+  );
+
+  server.registerTool(
+    "find_licenses",
+    {
+      title: "Which licence do I need?",
+      description:
+        "Licences in a region that permit an action (issuance, sale, purchase, secondary_sale, repackaging) on a product category for a customer persona, with the application steps, mandatory stakeholders and filings each brings.",
+      inputSchema: {
+        region: z.string(),
+        category: z.string().optional().describe("A Mynt product category id, e.g. deposits"),
+        action: z.enum(PRODUCT_ACTIONS).optional(),
+        persona: z.string().optional().describe("A customer persona id from get_regulator"),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ region, ...q }) => {
+      const model = await modelFor(region);
+      if (!model) return fail(`No region '${region}'; see list_regions`);
+      return json(findLicenses(model, q));
     },
   );
 

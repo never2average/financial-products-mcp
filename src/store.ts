@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { loadCatalog, type FinancialProduct } from "./catalog.js";
 import type { Db } from "./db.js";
 import type { TestReport } from "./product-tests.js";
+import type { RegulatoryModel } from "./regulatory.js";
 
 export const ROLES = ["consumer", "developer", "innovator", "admin"] as const;
 export type Role = (typeof ROLES)[number];
@@ -27,12 +28,13 @@ export interface Region {
   ecosystem: string; // how the regulators, key laws and bodies fit together
   procedures: LaunchProcedure[];
   sources: string[]; // official pages the above is drawn from
+  regulatory: RegulatoryModel; // regulators, scope, licences + GRC, and legal instruments
   active: boolean;
   updated_at: string;
 }
 
 // Fields left out keep their current value, so a partial update never wipes researched content.
-export type RegionUpdate = Pick<Region, "code"> & Partial<Omit<Region, "code" | "updated_at">>;
+export type RegionUpdate = Pick<Region, "code"> & Partial<Omit<Region, "code" | "updated_at" | "regulatory">>;
 
 export interface ProductCategory {
   id: string;
@@ -295,6 +297,7 @@ const TABLES = `
   ALTER TABLE financial_products.regions ADD COLUMN IF NOT EXISTS ecosystem text NOT NULL DEFAULT '';
   ALTER TABLE financial_products.regions ADD COLUMN IF NOT EXISTS procedures jsonb NOT NULL DEFAULT '[]';
   ALTER TABLE financial_products.regions ADD COLUMN IF NOT EXISTS sources text[] NOT NULL DEFAULT '{}';
+  ALTER TABLE financial_products.regions ADD COLUMN IF NOT EXISTS regulatory jsonb NOT NULL DEFAULT '{"regulators": [], "legal": []}';
   CREATE TABLE IF NOT EXISTS financial_products.product_categories (
     id text PRIMARY KEY CHECK (id ~ '^[a-z][a-z0-9_]*$'),
     name text NOT NULL,
@@ -467,6 +470,10 @@ export class Store {
       ],
     );
     return { ...(row as unknown as Region), updated_at: iso(row!.updated_at)! };
+  }
+
+  async setRegulatoryModel(code: string, model: RegulatoryModel): Promise<void> {
+    await this.db.query("UPDATE financial_products.regions SET regulatory = $2, updated_at = now() WHERE code = $1", [code, JSON.stringify(model)]);
   }
 
   async upsertCategory(c: Omit<ProductCategory, "updated_at">): Promise<ProductCategory> {

@@ -16,6 +16,6 @@
 		reverse_proxy 127.0.0.1:@PORT@
 	}
 	handle {
-		respond "financial-products MCP server. Connect an MCP client to https://@DOMAIN@/mcp" 200
+		respond "Mynt MCP server. Connect an MCP client to https://@DOMAIN@/mcp" 200
 	}
 }

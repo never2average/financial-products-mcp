@@ -10,8 +10,13 @@ import {
   RISK_LEVELS,
   type FinancialProduct,
 } from "./catalog.js";
+import { attributionFor, offersFor, registerGtmTools } from "./gtm.js";
 import { runProductTests } from "./product-tests.js";
 import { DuplicateError, effectiveRoles, type App, type Role, type Store, type User } from "./store.js";
+import { registerVersioningTools } from "./versions.js";
+
+// The name MCP clients show for this server.
+export const SERVER_NAME = "mynt";
 
 const json = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
@@ -35,14 +40,20 @@ const productFields = {
 // Tools are registered per user, so each role only sees what it is allowed to call. Roles nest
 // (innovator > developer > consumer). Guests (no token) get the read-only catalog tools.
 export function createServer(store: Store, user: User | null = null): McpServer {
-  const server = new McpServer({ name: "financial-products", version: "0.4.0" });
+  const server = new McpServer({ name: SERVER_NAME, title: "Mynt: financial products", version: "0.5.0" });
   const roles = effectiveRoles(user?.roles ?? []);
   const has = (role: Role) => roles.includes(role);
 
   registerCatalogTools(server, store, user);
   if (has("consumer")) registerConsumerTools(server, store, user!);
-  if (has("developer")) registerDeveloperTools(server, store, user!);
-  if (has("innovator")) registerInnovatorTools(server, store, user!);
+  if (has("developer")) {
+    registerDeveloperTools(server, store, user!);
+    registerGtmTools(server, store, user!);
+  }
+  if (has("innovator")) {
+    registerInnovatorTools(server, store, user!);
+    registerVersioningTools(server, store, user!, productFields);
+  }
 
   return server;
 }
@@ -131,7 +142,7 @@ function registerCatalogTools(server: McpServer, store: Store, user: User | null
 
   server.registerResource(
     "catalog",
-    "financial-products://catalog",
+    "mynt://catalog",
     { title: "Published financial product catalog", mimeType: "application/json" },
     async (uri) => ({
       contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(await store.publishedProducts(), null, 2) }],
@@ -144,20 +155,57 @@ function registerConsumerTools(server: McpServer, store: Store, user: User) {
     "enroll_in_product",
     {
       title: "Enroll in a financial product",
-      description: "Consumer: start using a published financial product (open, subscribe, apply or invest).",
+      description:
+        "Consumer: start using a published financial product (open, subscribe, apply or invest), on its live version. Pass campaign_id when enrolling from an offer in list_offers.",
       inputSchema: {
         product_id: z.string(),
         amount: z.number().positive().optional().describe("Amount to invest, deposit or borrow, if relevant"),
+        campaign_id: z.string().optional().describe("The offer you are responding to, from list_offers"),
       },
     },
-    async ({ product_id, amount }) => {
+    async ({ product_id, amount, campaign_id }) => {
       if ((await store.getProduct(product_id))?.status !== "published") return fail(`No published product with id '${product_id}'`);
+      let attribution = null;
+      if (campaign_id) {
+        const a = await attributionFor(store, user, campaign_id, product_id);
+        if ("error" in a) return fail(a.error!);
+        attribution = a;
+      }
       try {
-        return json(await store.createEnrollment(user.id, product_id, amount ?? null));
+        return json(await store.createEnrollment(user.id, product_id, amount ?? null, attribution));
       } catch (e) {
         if (e instanceof DuplicateError) return fail(e.message);
         throw e;
       }
+    },
+  );
+
+  server.registerTool(
+    "list_offers",
+    {
+      title: "My offers",
+      description: "Consumer: live offers from campaigns aimed at you, with the products they're for. Enroll with enroll_in_product and the offer's campaign_id.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    async () => json(await offersFor(store, user)),
+  );
+
+  server.registerTool(
+    "upgrade_enrollment",
+    {
+      title: "Upgrade an enrollment",
+      description: "Consumer: move one of your enrollments onto the product's latest version (see upgrade_available in list_my_enrollments).",
+      inputSchema: { enrollment_id: z.string() },
+    },
+    async ({ enrollment_id }) => {
+      const e = await store.getEnrollment(enrollment_id);
+      if (!e || e.user_id !== user.id) return fail(`No enrollment with id '${enrollment_id}'`);
+      const record = await store.getProduct(e.product_id);
+      if (e.status !== "active" || record?.status !== "published" || e.product_version >= record.version)
+        return fail("No upgrade available for this enrollment");
+      await store.upgradeEnrollments(e.product_id, e.id);
+      return json({ ...(await store.getEnrollment(enrollment_id)), product: record.product });
     },
   );
 
@@ -171,7 +219,19 @@ function registerConsumerTools(server: McpServer, store: Store, user: User) {
     },
     async ({ include_cancelled }) => {
       const enrollments = (await store.enrollmentsByUser(user.id)).filter((e) => include_cancelled || e.status === "active");
-      return json(await Promise.all(enrollments.map(async (e) => ({ ...e, product: (await store.getProduct(e.product_id))?.product }))));
+      return json(
+        await Promise.all(
+          enrollments.map(async (e) => {
+            const record = await store.getProduct(e.product_id);
+            return {
+              ...e,
+              product: record?.product,
+              live_version: record?.version,
+              upgrade_available: e.status === "active" && record?.status === "published" && e.product_version < record.version,
+            };
+          }),
+        ),
+      );
     },
   );
 
@@ -334,7 +394,7 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User) {
     async ({ id, ...changes }) => {
       const record = await ownProduct(id);
       if (!record) return fail(`No product of yours with id '${id}'`);
-      if (record.status === "published") return fail("Unpublish the product before editing it");
+      if (record.status === "published") return fail("The product is live; draft its next version with create_product_version");
       const defined = Object.fromEntries(Object.entries(changes).filter(([, v]) => v !== undefined));
       return json(await store.saveProduct({ ...record.product, ...defined } as FinancialProduct, "draft"));
     },
@@ -351,9 +411,12 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User) {
     async ({ id }) => {
       const record = await ownProduct(id);
       if (!record) return fail(`No product of yours with id '${id}'`);
-      const report = runProductTests(record.product);
-      await store.saveTestReport(id, report);
-      return json(report);
+      // A pending draft version is what gets tested; otherwise the product itself.
+      const draft = await store.draftVersion(id);
+      const report = runProductTests(draft?.data ?? record.product);
+      if (draft) await store.saveDraftVersionTest(id, report);
+      else await store.saveTestReport(id, report);
+      return json(draft ? { version: draft.version, ...report } : report);
     },
   );
 
@@ -367,12 +430,15 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User) {
     async ({ id }) => {
       const record = await ownProduct(id);
       if (!record) return fail(`No product of yours with id '${id}'`);
-      if (record.status === "published") return fail("Product is already published");
-      const fresh = runProductTests(record.product);
-      if (!record.last_test || record.last_test.fingerprint !== fresh.fingerprint)
+      // A pending draft version goes live in place of the current one; otherwise the product itself.
+      const draft = await store.draftVersion(id);
+      if (!draft && record.status === "published") return fail("Product is already published; draft a new version with create_product_version");
+      const data = draft?.data ?? record.product;
+      const lastTest = draft ? draft.last_test : record.last_test;
+      if (!lastTest || lastTest.fingerprint !== runProductTests(data).fingerprint)
         return fail("Product changed since its last test (or was never tested); run test_product first");
-      if (!record.last_test.passed) return fail("Last test failed; fix the failing checks and run test_product again");
-      return json(await store.setProductStatus(id, "published"));
+      if (!lastTest.passed) return fail("Last test failed; fix the failing checks and run test_product again");
+      return json(draft ? await store.publishDraftVersion(id) : await store.publishCurrentVersion(id));
     },
   );
 
@@ -402,12 +468,16 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User) {
     },
     async () =>
       json(
-        (await store.productsByOwner(user.id)).map((r) => ({
-          ...r.product,
-          status: r.status,
-          last_test_passed: r.last_test?.passed ?? null,
-          published_at: r.published_at,
-        })),
+        await Promise.all(
+          (await store.productsByOwner(user.id)).map(async (r) => ({
+            ...r.product,
+            status: r.status,
+            version: r.version,
+            draft_version: (await store.draftVersion(r.product.id))?.version ?? null,
+            last_test_passed: r.last_test?.passed ?? null,
+            published_at: r.published_at,
+          })),
+        ),
       ),
   );
 }

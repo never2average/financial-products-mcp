@@ -1,14 +1,29 @@
 # financial-products-mcp
 
-An [MCP](https://modelcontextprotocol.io) server for **credit, wealth, insurance and treasury** products, with three kinds of user:
+**Mynt** is an [MCP](https://modelcontextprotocol.io) server for **credit, wealth, insurance and treasury** products. MCP clients show it as `mynt`. It has three kinds of user:
 
 | User type | Can | Tools (in addition to the catalog tools) |
 | --- | --- | --- |
-| **Consumer** | Use financial products | `enroll_in_product`, `list_my_enrollments`, `cancel_enrollment` |
-| **Developer** | Build app experiences around financial products | `create_app`, `update_app`, `list_my_apps`, `preview_app`, `publish_app` |
-| **Innovator** | Create, test and publish financial products | `create_product`, `update_product`, `test_product`, `publish_product`, `unpublish_product`, `list_my_products` |
+| **Consumer** | Use financial products and respond to offers | `enroll_in_product`, `list_my_enrollments`, `cancel_enrollment`, `list_offers`, `upgrade_enrollment` |
+| **Developer** | Build app experiences and do GTM engineering around financial products | Apps: `create_app`, `update_app`, `list_my_apps`, `preview_app`, `publish_app`. GTM: `create_segment`, `list_my_segments`, `create_campaign`, `update_campaign`, `lint_campaign`, `launch_campaign`, `pause_campaign`, `end_campaign`, `list_my_campaigns`, `get_campaign_metrics` |
+| **Innovator** | Create, test, publish, version and upgrade financial products | `create_product`, `update_product`, `test_product`, `publish_product`, `unpublish_product`, `list_my_products`, `create_product_version`, `update_product_version`, `list_product_versions`, `diff_product_versions`, `restore_product_version`, `upgrade_enrollments` |
 
-Everyone (including guests without a token) gets the catalog tools: `whoami`, `list_products`, `get_product`, `list_categories`, `list_apps`, plus the resource `financial-products://catalog`.
+Everyone (including guests without a token) gets the catalog tools: `whoami`, `list_products`, `get_product`, `list_categories`, `list_apps`, plus the resource `mynt://catalog`.
+
+### GTM engineering (developers)
+
+- **Segments** pick consumers by what they currently hold: `enrolled_in`, `enrolled_in_lines`, and `not_enrolled_in` for cross-sell.
+- **Campaigns** target a segment (or everyone) on chosen channels, with up to 5 copy variants for A/B tests.
+- **`lint_campaign`** checks every variant against its products. It blocks guaranteed or risk-free claims for products that can lose value, requires a market-risk disclosure for market-linked products, and requires interest/fee disclosure for credit. `launch_campaign` refuses copy that fails.
+- **Attribution:** live campaigns show up in consumers' `list_offers`. Each consumer always sees the same variant, and `enroll_in_product` with the offer's `campaign_id` is attributed. `get_campaign_metrics` reports audience, enrollments, conversion, and results per variant and per product.
+
+### Versioning (innovators)
+
+A published product isn't edited in place:
+- `create_product_version` drafts the next version with a changelog. `test_product` and `publish_product` then act on that draft, with the same gates as a new product. The live version keeps serving until the draft is published.
+- `list_product_versions` and `diff_product_versions` show the history.
+- `restore_product_version` drafts a rollback as a new version, so history stays linear.
+- Enrollments remember the version they joined on. `upgrade_enrollments` moves all of them to the live version, and a consumer can `upgrade_enrollment` their own.
 
 Roles nest: **every innovator is also a developer, and every developer is also a consumer**. An innovator gets all three tool sets, and a developer gets the developer and consumer tools. Tools are registered per user, so a client only *sees* the tools its roles allow. `whoami` shows both the granted and the effective roles.
 
@@ -69,7 +84,7 @@ Pass the user's token in `FINANCIAL_PRODUCTS_TOKEN`. Without it, the server runs
 Claude Code:
 
 ```bash
-claude mcp add financial-products -e DATABASE_URL=postgres://... -e FINANCIAL_PRODUCTS_TOKEN=fpm_... -- node /absolute/path/to/financial-products-mcp/dist/index.js
+claude mcp add mynt -e DATABASE_URL=postgres://... -e FINANCIAL_PRODUCTS_TOKEN=fpm_... -- node /absolute/path/to/financial-products-mcp/dist/index.js
 ```
 
 Claude Desktop / other clients:
@@ -77,7 +92,7 @@ Claude Desktop / other clients:
 ```json
 {
   "mcpServers": {
-    "financial-products": {
+    "mynt": {
       "command": "node",
       "args": ["/absolute/path/to/financial-products-mcp/dist/index.js"],
       "env": { "DATABASE_URL": "postgres://...", "FINANCIAL_PRODUCTS_TOKEN": "fpm_..." }
@@ -97,7 +112,7 @@ node dist/index.js serve-http --port 3000 --host 0.0.0.0
 Clients connect to `http://host:3000/mcp` (Streamable HTTP) with `Authorization: Bearer fpm_...`. Requests without a token are served as a guest, and invalid tokens get `401`. Put it behind TLS (e.g. Caddy or nginx) before exposing it publicly.
 
 ```bash
-claude mcp add --transport http financial-products https://your-host/mcp --header "Authorization: Bearer fpm_..."
+claude mcp add --transport http mynt https://your-host/mcp --header "Authorization: Bearer fpm_..."
 ```
 
 ## Whitelist sign-in with Clerk
@@ -119,7 +134,7 @@ node dist/index.js users list
 `users invite` and `users revoke` also update Clerk's allowlist, so people who aren't invited can't sign up at all. Connect a client with just the URL; it will open Clerk's sign-in page:
 
 ```bash
-claude mcp add --transport http financial-products https://mcp.example.com/mcp
+claude mcp add --transport http mynt https://mcp.example.com/mcp
 ```
 
 ## Deploying to a VM with self-hosted Supabase

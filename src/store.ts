@@ -39,9 +39,21 @@ export interface ProductRecord {
   product: FinancialProduct;
   owner_id: string | null; // null = bundled catalog product
   status: ProductStatus;
+  version: number;
   last_test: TestReport | null;
   created_at: string;
   updated_at: string;
+  published_at: string | null;
+}
+
+export interface ProductVersion {
+  product_id: string;
+  version: number;
+  status: "draft" | "published" | "superseded";
+  data: FinancialProduct;
+  changelog: string;
+  last_test: TestReport | null;
+  created_at: string;
   published_at: string | null;
 }
 
@@ -49,9 +61,49 @@ export interface Enrollment {
   id: string;
   user_id: string;
   product_id: string;
+  product_version: number;
   amount: number | null;
   status: "active" | "cancelled";
+  campaign_id: string | null;
+  variant: string | null;
   created_at: string;
+}
+
+export interface SegmentCriteria {
+  enrolled_in?: string[]; // active in any of these products
+  enrolled_in_lines?: string[]; // active in any product of these lines
+  not_enrolled_in?: string[]; // active in none of these products
+}
+
+export interface Segment {
+  id: string;
+  owner_id: string;
+  name: string;
+  criteria: SegmentCriteria;
+  created_at: string;
+}
+
+export interface Variant {
+  key: string;
+  headline: string;
+  body: string;
+  cta: string;
+}
+
+export type CampaignStatus = "draft" | "live" | "paused" | "ended";
+export interface Campaign {
+  id: string;
+  owner_id: string;
+  name: string;
+  product_ids: string[];
+  segment_id: string | null;
+  channels: string[];
+  variants: Variant[];
+  status: CampaignStatus;
+  last_lint: unknown;
+  created_at: string;
+  updated_at: string;
+  launched_at: string | null;
 }
 
 export interface App {
@@ -121,6 +173,47 @@ const TABLES = `
     roles text[] NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now()
   );
+  -- Versioning: products.data/version is the live version; product_versions keeps every published
+  -- version and at most one draft of the next one.
+  ALTER TABLE financial_products.products ADD COLUMN IF NOT EXISTS version integer NOT NULL DEFAULT 1;
+  CREATE TABLE IF NOT EXISTS financial_products.product_versions (
+    product_id text NOT NULL REFERENCES financial_products.products(id),
+    version integer NOT NULL,
+    status text NOT NULL CHECK (status IN ('draft', 'published', 'superseded')),
+    data jsonb NOT NULL,
+    changelog text NOT NULL,
+    last_test jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    published_at timestamptz,
+    PRIMARY KEY (product_id, version)
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS product_versions_one_draft_idx
+    ON financial_products.product_versions (product_id) WHERE status = 'draft';
+  -- GTM: segments over consumers' enrollment behaviour, campaigns with A/B variants, attribution.
+  CREATE TABLE IF NOT EXISTS financial_products.segments (
+    id uuid PRIMARY KEY,
+    owner_id uuid NOT NULL REFERENCES financial_products.users(id),
+    name text NOT NULL,
+    criteria jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE TABLE IF NOT EXISTS financial_products.campaigns (
+    id uuid PRIMARY KEY,
+    owner_id uuid NOT NULL REFERENCES financial_products.users(id),
+    name text NOT NULL,
+    product_ids text[] NOT NULL,
+    segment_id uuid REFERENCES financial_products.segments(id),
+    channels text[] NOT NULL,
+    variants jsonb NOT NULL,
+    status text NOT NULL CHECK (status IN ('draft', 'live', 'paused', 'ended')),
+    last_lint jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    launched_at timestamptz
+  );
+  ALTER TABLE financial_products.enrollments ADD COLUMN IF NOT EXISTS product_version integer NOT NULL DEFAULT 1;
+  ALTER TABLE financial_products.enrollments ADD COLUMN IF NOT EXISTS campaign_id uuid REFERENCES financial_products.campaigns(id);
+  ALTER TABLE financial_products.enrollments ADD COLUMN IF NOT EXISTS variant text;
 `;
 
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -143,9 +236,21 @@ const toProductRecord = (r: Row): ProductRecord => ({
   product: r.data as FinancialProduct,
   owner_id: r.owner_id as string | null,
   status: r.status as ProductStatus,
+  version: Number(r.version ?? 1),
   last_test: (r.last_test as TestReport | null) ?? null,
   created_at: iso(r.created_at)!,
   updated_at: iso(r.updated_at)!,
+  published_at: iso(r.published_at),
+});
+
+const toProductVersion = (r: Row): ProductVersion => ({
+  product_id: r.product_id as string,
+  version: Number(r.version),
+  status: r.status as ProductVersion["status"],
+  data: r.data as FinancialProduct,
+  changelog: r.changelog as string,
+  last_test: (r.last_test as TestReport | null) ?? null,
+  created_at: iso(r.created_at)!,
   published_at: iso(r.published_at),
 });
 
@@ -153,9 +258,35 @@ const toEnrollment = (r: Row): Enrollment => ({
   id: r.id as string,
   user_id: r.user_id as string,
   product_id: r.product_id as string,
+  product_version: Number(r.product_version ?? 1),
   amount: r.amount == null ? null : Number(r.amount),
   status: r.status as Enrollment["status"],
+  campaign_id: (r.campaign_id as string | null) ?? null,
+  variant: (r.variant as string | null) ?? null,
   created_at: iso(r.created_at)!,
+});
+
+const toSegment = (r: Row): Segment => ({
+  id: r.id as string,
+  owner_id: r.owner_id as string,
+  name: r.name as string,
+  criteria: r.criteria as SegmentCriteria,
+  created_at: iso(r.created_at)!,
+});
+
+const toCampaign = (r: Row): Campaign => ({
+  id: r.id as string,
+  owner_id: r.owner_id as string,
+  name: r.name as string,
+  product_ids: r.product_ids as string[],
+  segment_id: (r.segment_id as string | null) ?? null,
+  channels: r.channels as string[],
+  variants: r.variants as Variant[],
+  status: r.status as CampaignStatus,
+  last_lint: r.last_lint ?? null,
+  created_at: iso(r.created_at)!,
+  updated_at: iso(r.updated_at)!,
+  launched_at: iso(r.launched_at),
 });
 
 const toApp = (r: Row): App => ({
@@ -327,19 +458,196 @@ export class Store {
     return toProductRecord(r!);
   }
 
-  // Enrollments
+  // Publishes the product's current data as its current version and records it in the history
+  // (one statement, so the history and the live product never disagree).
+  async publishCurrentVersion(id: string): Promise<ProductRecord> {
+    const r = await this.one(
+      `WITH p AS (
+         UPDATE financial_products.products SET status = 'published', updated_at = now(), published_at = now()
+         WHERE id = $1 RETURNING *
+       ), sup AS (
+         UPDATE financial_products.product_versions SET status = 'superseded'
+         WHERE product_id = $1 AND status = 'published' AND version <> (SELECT version FROM p)
+       ), ins AS (
+         INSERT INTO financial_products.product_versions (product_id, version, status, data, changelog, last_test, published_at)
+         SELECT id, version, 'published', data, 'Initial release', last_test, now() FROM p
+         ON CONFLICT (product_id, version) DO UPDATE
+           SET status = 'published', data = EXCLUDED.data, last_test = EXCLUDED.last_test, published_at = now()
+       )
+       SELECT * FROM p`,
+      [id],
+    );
+    return toProductRecord(r!);
+  }
 
-  async createEnrollment(userId: string, productId: string, amount: number | null): Promise<Enrollment> {
+  // Versions
+
+  async productVersions(id: string): Promise<ProductVersion[]> {
+    return (await this.all("SELECT * FROM financial_products.product_versions WHERE product_id = $1 ORDER BY version", [id])).map(
+      toProductVersion,
+    );
+  }
+
+  async draftVersion(id: string): Promise<ProductVersion | undefined> {
+    const r = await this.one("SELECT * FROM financial_products.product_versions WHERE product_id = $1 AND status = 'draft'", [id]);
+    return r && toProductVersion(r);
+  }
+
+  async createDraftVersion(id: string, data: FinancialProduct, changelog: string): Promise<ProductVersion> {
     try {
       const r = await this.one(
-        "INSERT INTO financial_products.enrollments (id, user_id, product_id, amount, status) VALUES ($1, $2, $3, $4, 'active') RETURNING *",
-        [randomUUID(), userId, productId, amount],
+        `INSERT INTO financial_products.product_versions (product_id, version, status, data, changelog)
+         SELECT $1, GREATEST(p.version, COALESCE(MAX(v.version), 0)) + 1, 'draft', $2, $3
+         FROM financial_products.products p LEFT JOIN financial_products.product_versions v ON v.product_id = p.id
+         WHERE p.id = $1 GROUP BY p.version
+         RETURNING *`,
+        [id, JSON.stringify(data), changelog],
+      );
+      return toProductVersion(r!);
+    } catch (e) {
+      if (isUniqueViolation(e)) throw new DuplicateError(`'${id}' already has a draft version; update, test and publish it first`);
+      throw e;
+    }
+  }
+
+  async saveDraftVersion(id: string, data: FinancialProduct, changelog: string): Promise<ProductVersion> {
+    const r = await this.one(
+      `UPDATE financial_products.product_versions SET data = $2, changelog = $3, last_test = NULL
+       WHERE product_id = $1 AND status = 'draft' RETURNING *`,
+      [id, JSON.stringify(data), changelog],
+    );
+    return toProductVersion(r!);
+  }
+
+  async saveDraftVersionTest(id: string, report: TestReport): Promise<void> {
+    await this.db.query("UPDATE financial_products.product_versions SET last_test = $2 WHERE product_id = $1 AND status = 'draft'", [
+      id,
+      JSON.stringify(report),
+    ]);
+  }
+
+  // The draft version becomes the live product; the previous live version is superseded.
+  async publishDraftVersion(id: string): Promise<ProductRecord> {
+    const r = await this.one(
+      `WITH d AS (
+         SELECT * FROM financial_products.product_versions WHERE product_id = $1 AND status = 'draft'
+       ), sup AS (
+         UPDATE financial_products.product_versions SET status = 'superseded'
+         WHERE product_id = $1 AND status = 'published' AND EXISTS (SELECT 1 FROM d)
+       ), pub AS (
+         UPDATE financial_products.product_versions v SET status = 'published', published_at = now()
+         FROM d WHERE v.product_id = d.product_id AND v.version = d.version RETURNING v.*
+       )
+       UPDATE financial_products.products p
+       SET data = pub.data, version = pub.version, last_test = pub.last_test, status = 'published', updated_at = now(), published_at = now()
+       FROM pub WHERE p.id = pub.product_id RETURNING p.*`,
+      [id],
+    );
+    return toProductRecord(r!);
+  }
+
+  async upgradeEnrollments(productId: string, enrollmentId?: string): Promise<number> {
+    const rows = await this.all(
+      `UPDATE financial_products.enrollments e SET product_version = p.version
+       FROM financial_products.products p
+       WHERE e.product_id = p.id AND p.id = $1 AND e.status = 'active' AND e.product_version < p.version
+         AND ($2::text IS NULL OR e.id::text = $2)
+       RETURNING e.id`,
+      [productId, enrollmentId ?? null],
+    );
+    return rows.length;
+  }
+
+  // Enrollments
+
+  async createEnrollment(
+    userId: string,
+    productId: string,
+    amount: number | null,
+    attribution: { campaign_id: string; variant: string } | null = null,
+  ): Promise<Enrollment> {
+    try {
+      const r = await this.one(
+        `INSERT INTO financial_products.enrollments (id, user_id, product_id, product_version, amount, status, campaign_id, variant)
+         SELECT $1, $2, $3, p.version, $4, 'active', $5, $6 FROM financial_products.products p WHERE p.id = $3
+         RETURNING *`,
+        [randomUUID(), userId, productId, amount, attribution?.campaign_id ?? null, attribution?.variant ?? null],
       );
       return toEnrollment(r!);
     } catch (e) {
       if (isUniqueViolation(e)) throw new DuplicateError(`Already enrolled in '${productId}'`);
       throw e;
     }
+  }
+
+  // Active enrollments with their product line, for segment matching.
+  async activeEnrollmentFacts(): Promise<{ user_id: string; product_id: string; product_line: string }[]> {
+    return (await this.all(
+      `SELECT e.user_id, e.product_id, p.data->>'product_line' AS product_line
+       FROM financial_products.enrollments e JOIN financial_products.products p ON p.id = e.product_id
+       WHERE e.status = 'active'`,
+    )) as { user_id: string; product_id: string; product_line: string }[];
+  }
+
+  async campaignEnrollments(campaignId: string): Promise<Enrollment[]> {
+    return (await this.all("SELECT * FROM financial_products.enrollments WHERE campaign_id::text = $1", [campaignId])).map(toEnrollment);
+  }
+
+  // Segments and campaigns
+
+  async createSegment(ownerId: string, name: string, criteria: SegmentCriteria): Promise<Segment> {
+    const r = await this.one(
+      "INSERT INTO financial_products.segments (id, owner_id, name, criteria) VALUES ($1, $2, $3, $4) RETURNING *",
+      [randomUUID(), ownerId, name, JSON.stringify(criteria)],
+    );
+    return toSegment(r!);
+  }
+
+  async getSegment(id: string): Promise<Segment | undefined> {
+    const r = await this.one("SELECT * FROM financial_products.segments WHERE id::text = $1", [id]);
+    return r && toSegment(r);
+  }
+
+  async segmentsByOwner(ownerId: string): Promise<Segment[]> {
+    return (await this.all("SELECT * FROM financial_products.segments WHERE owner_id = $1 ORDER BY created_at", [ownerId])).map(toSegment);
+  }
+
+  async createCampaign(
+    ownerId: string,
+    c: Pick<Campaign, "name" | "product_ids" | "segment_id" | "channels" | "variants">,
+  ): Promise<Campaign> {
+    const r = await this.one(
+      `INSERT INTO financial_products.campaigns (id, owner_id, name, product_ids, segment_id, channels, variants, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'draft') RETURNING *`,
+      [randomUUID(), ownerId, c.name, c.product_ids, c.segment_id, c.channels, JSON.stringify(c.variants)],
+    );
+    return toCampaign(r!);
+  }
+
+  async getCampaign(id: string): Promise<Campaign | undefined> {
+    const r = await this.one("SELECT * FROM financial_products.campaigns WHERE id::text = $1", [id]);
+    return r && toCampaign(r);
+  }
+
+  async saveCampaign(c: Campaign): Promise<Campaign> {
+    const r = await this.one(
+      `UPDATE financial_products.campaigns
+       SET name = $2, product_ids = $3, segment_id = $4, channels = $5, variants = $6, status = $7, last_lint = $8,
+           updated_at = now(), launched_at = CASE WHEN $7 = 'live' AND launched_at IS NULL THEN now() ELSE launched_at END
+       WHERE id = $1 RETURNING *`,
+      [c.id, c.name, c.product_ids, c.segment_id, c.channels, JSON.stringify(c.variants), c.status, JSON.stringify(c.last_lint)],
+    );
+    return toCampaign(r!);
+  }
+
+  async campaignsByOwner(ownerId: string): Promise<Campaign[]> {
+    return (await this.all("SELECT * FROM financial_products.campaigns WHERE owner_id = $1 ORDER BY created_at", [ownerId])).map(
+      toCampaign,
+    );
+  }
+
+  async liveCampaigns(): Promise<Campaign[]> {
+    return (await this.all("SELECT * FROM financial_products.campaigns WHERE status = 'live' ORDER BY launched_at")).map(toCampaign);
   }
 
   async enrollmentsByUser(userId: string): Promise<Enrollment[]> {

@@ -13,9 +13,19 @@ import { loadCatalog } from "../dist/catalog.js";
 import { runProductTests } from "../dist/product-tests.js";
 
 const CATALOG_TOOLS = ["get_product", "list_apps", "list_categories", "list_products", "whoami"];
-const CONSUMER_TOOLS = ["cancel_enrollment", "enroll_in_product", "list_my_enrollments"];
-const DEVELOPER_TOOLS = ["create_app", "list_my_apps", "preview_app", "publish_app", "update_app"];
-const INNOVATOR_TOOLS = ["create_product", "list_my_products", "publish_product", "test_product", "unpublish_product", "update_product"];
+const CONSUMER_TOOLS = ["cancel_enrollment", "enroll_in_product", "list_my_enrollments", "list_offers", "upgrade_enrollment"];
+const DEVELOPER_TOOLS = [
+  "create_app", "list_my_apps", "preview_app", "publish_app", "update_app",
+  // GTM engineering
+  "create_campaign", "create_segment", "end_campaign", "get_campaign_metrics", "launch_campaign",
+  "lint_campaign", "list_my_campaigns", "list_my_segments", "pause_campaign", "update_campaign",
+];
+const INNOVATOR_TOOLS = [
+  "create_product", "list_my_products", "publish_product", "test_product", "unpublish_product", "update_product",
+  // versioning
+  "create_product_version", "diff_product_versions", "list_product_versions", "restore_product_version",
+  "update_product_version", "upgrade_enrollments",
+];
 
 async function connect(store, user = null) {
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();

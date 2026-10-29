@@ -73,7 +73,7 @@ export class ClerkAuth {
       authorization_servers: [this.issuer],
       bearer_methods_supported: ["header"],
       scopes_supported: ["openid", "profile", "email"],
-      resource_name: "financial-products MCP",
+      resource_name: "Mynt",
     };
   }
 

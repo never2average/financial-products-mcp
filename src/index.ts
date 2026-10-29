@@ -74,7 +74,7 @@ if (values.help) {
   const config = clerkConfigFromEnv();
   const clerk = config ? new ClerkAuth(config, store) : null;
   const http = createMcpHttpServer(store, clerk).listen(port, values.host, () =>
-    console.error(`financial-products MCP listening on http://${values.host}:${port}/mcp${clerk ? " (Clerk whitelist auth)" : ""}`),
+    console.error(`mynt MCP listening on http://${values.host}:${port}/mcp${clerk ? " (Clerk whitelist auth)" : ""}`),
   );
   process.on("SIGTERM", () => http.close(() => process.exit(0)));
 } else if (command === "users" && sub === "invite") {

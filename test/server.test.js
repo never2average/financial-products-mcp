@@ -22,6 +22,9 @@ const DEVELOPER_TOOLS = [
   // GTM engineering
   "create_campaign", "create_segment", "end_campaign", "get_campaign_metrics", "launch_campaign",
   "lint_campaign", "list_my_campaigns", "list_my_segments", "pause_campaign", "update_campaign",
+  // SDKs and experiences
+  "create_sdk", "generate_sdk_release", "get_sdk_release", "list_sdk_releases", "list_sdks",
+  "render_experience_preview", "set_experience",
 ];
 const INNOVATOR_TOOLS = [
   "create_product", "list_my_products", "publish_product", "test_product", "unpublish_product", "update_product",

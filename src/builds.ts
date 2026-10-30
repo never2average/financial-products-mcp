@@ -6,6 +6,7 @@ import { accessStatus, productEntity } from "./access.js";
 import type { BoatClient } from "./boat.js";
 import type { Db } from "./db.js";
 import type { RepoAccess } from "./github.js";
+import { GoogleServiceAccount } from "./google-auth.js";
 import { generateSdk, type SdkProduct } from "./sdk.js";
 import { auditorPrompt, VERIFY_DIR, VERIFY_SCRIPT } from "./verify-script.js";
 import type { Store, User } from "./store.js";
@@ -33,10 +34,26 @@ export type BuildStatus = (typeof BUILD_STATUSES)[number];
 const TERMINAL: BuildStatus[] = ["succeeded", "blocked", "failed", "stopped", "over_budget"];
 const AGENT_PHASES: BuildStatus[] = ["coding", "auditing", "checking", "previewing", "pushing"];
 
+// Where build agents' model calls go, through Mynt's agent proxy. The credentials stay on Mynt's server.
+export type AgentBackend =
+  | { kind: "anthropic"; apiKey: string }
+  | { kind: "vertex"; projectId: string; region: string; auth: { accessToken(): Promise<string> } };
+
+// Vertex AI when a Google service account is configured, else the Anthropic API when there's a key.
+function agentBackendFromEnv(env: NodeJS.ProcessEnv): AgentBackend | null {
+  const google = GoogleServiceAccount.fromEnv(env);
+  if (google) {
+    const projectId = env.VERTEX_PROJECT_ID || google.projectId;
+    if (!projectId) throw new Error("Set VERTEX_PROJECT_ID: the service account key doesn't name a project");
+    return { kind: "vertex", projectId, region: env.VERTEX_REGION || "global", auth: google };
+  }
+  return env.ANTHROPIC_API_KEY ? { kind: "anthropic", apiKey: env.ANTHROPIC_API_KEY } : null;
+}
+
 export interface BuildConfig {
   capUsd: number; // per build
   monthlyCapUsd: number; // per developer per calendar month
-  anthropicApiKey: string | null; // used only by Mynt's agent proxy; never sent to a sandbox
+  agentBackend: AgentBackend | null; // used only by Mynt's agent proxy; never sent to a sandbox
   model: string;
   sandboxType: string;
   ttlSeconds: number;
@@ -48,7 +65,7 @@ export function buildConfigFromEnv(env = process.env): BuildConfig {
   return {
     capUsd: Number(env.BUILD_CAP_USD ?? 10),
     monthlyCapUsd: Number(env.BUILD_MONTHLY_CAP_USD ?? 100),
-    anthropicApiKey: env.ANTHROPIC_API_KEY || null,
+    agentBackend: agentBackendFromEnv(env),
     model: env.BUILD_AGENT_MODEL ?? "claude-opus-5-5",
     sandboxType: env.BUILD_SANDBOX_TYPE ?? "default",
     ttlSeconds: Number(env.BUILD_SANDBOX_TTL_SECONDS ?? 4 * 3600),
@@ -179,7 +196,7 @@ export class BuildService {
   }
 
   get enabled() {
-    return this.boat !== null && !!this.config.anthropicApiKey && !!this.config.publicUrl;
+    return this.boat !== null && !!this.config.agentBackend && !!this.config.publicUrl;
   }
 
   // ---- the agent (Claude Code, run by Mynt in the sandbox) ----
@@ -206,10 +223,27 @@ export class BuildService {
     const config = { prompt: o.prompt, cwd: o.cwd, model: this.config.model, budgetUsd, version: CLAUDE_CODE_VERSION };
     await boat.writeFile(sandbox, `${AGENT_DIR}/runner.mjs`, AGENT_RUNNER);
     await boat.writeFile(sandbox, `${AGENT_DIR}/config.json`, JSON.stringify(config));
-    await boat.writeFile(sandbox, `${AGENT_DIR}/auth.json`, JSON.stringify({ base_url: `${this.config.publicUrl}/agent`, token: await this.mintAgentToken(b.id) }));
+    await boat.writeFile(sandbox, `${AGENT_DIR}/auth.json`, JSON.stringify(this.agentAuth(await this.mintAgentToken(b.id))));
     const run = await boat.exec(sandbox, `node ${AGENT_DIR}/runner.mjs ${AGENT_DIR} >${AGENT_DIR}/runner.log 2>&1`, { detached: true });
     if (run.processId === undefined) throw new Error("Couldn't start the agent");
     return String(run.processId);
+  }
+
+  // How the sandbox's Claude Code reaches Mynt's proxy: the token, and the env that points it there.
+  private agentAuth(token: string) {
+    const backend = this.config.agentBackend!;
+    const base = `${this.config.publicUrl}/agent`;
+    const env: Record<string, string> =
+      backend.kind === "vertex"
+        ? {
+            CLAUDE_CODE_USE_VERTEX: "1",
+            CLAUDE_CODE_SKIP_VERTEX_AUTH: "1", // Mynt signs the calls; the proxy pins the real project
+            ANTHROPIC_VERTEX_BASE_URL: `${base}/t/${token}/v1`,
+            ANTHROPIC_VERTEX_PROJECT_ID: "mynt",
+            CLOUD_ML_REGION: backend.region,
+          }
+        : { ANTHROPIC_BASE_URL: base, ANTHROPIC_AUTH_TOKEN: token };
+    return { token, env };
   }
 
   private async agentState(sandbox: string, processId: string) {

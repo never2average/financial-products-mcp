@@ -1,6 +1,7 @@
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { AdminContext } from "./admin.js";
+import { agentProxy } from "./agent-proxy.js";
 import type { ClerkAuth } from "./auth.js";
 import { createRuntimeApi, type RuntimeApiOptions } from "./runtime-api.js";
 import { createServer } from "./server.js";
@@ -86,6 +87,8 @@ async function handle(
   }
   // The runtime API for developers' apps authenticates with app keys, not Clerk.
   if (url.pathname === "/v1" || url.pathname.startsWith("/v1/")) return runtime(req, res, url);
+  // Build agents reach Anthropic through Mynt with a per-build token (see agent-proxy.ts).
+  if (ctx.builds && url.pathname.startsWith("/agent/")) return agentProxy(ctx.builds, req, res, url);
   if (url.pathname !== "/mcp") return void res.writeHead(404).end();
   if (req.method !== "POST") return void res.writeHead(405, { Allow: "POST" }).end();
 

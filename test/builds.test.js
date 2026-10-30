@@ -10,9 +10,11 @@ import { Store } from "../dist/store.js";
 const SHA = "a".repeat(64);
 const COMMIT = "c".repeat(40);
 const V = "/home/user/mynt-verify";
+const A = "/home/user/mynt-agent";
 
 // A stand-in for boat.dev: sandboxes become ready when told to, files live in memory, the agents' work
-// is simulated by writing files, and shell commands are matched by what they do.
+// is simulated by writing files (the runner's state.json among them), and shell commands are matched by
+// what they do.
 function fakeBoat() {
   const sandboxes = new Map();
   let n = 0;
@@ -22,7 +24,7 @@ function fakeBoat() {
     tamperDuringAudit: false,
     async createSandbox(opts) {
       const id = `sbx_${++n}`;
-      sandboxes.set(id, { id, state: "provisioning", opts, files: new Map(), prompts: [], steers: [], commands: [], stopped: false, interrupted: false, cost: 0, checksRunning: true });
+      sandboxes.set(id, { id, state: "provisioning", opts, files: new Map(), commands: [], stopped: false, cost: 0, checksRunning: true, agentRunning: false });
       return { id, state: "provisioning" };
     },
     async getSandbox(id) {
@@ -33,24 +35,6 @@ function fakeBoat() {
     },
     async readFile(id, path) {
       return sandboxes.get(id).files.get(path) ?? null;
-    },
-    async prompt(id, opts) {
-      const s = sandboxes.get(id);
-      s.prompts.push({ ...opts, status: "running", done: false });
-      return { promptId: `p_${s.prompts.length}`, conversationId: "c1" };
-    },
-    async promptStatus(id) {
-      const p = sandboxes.get(id).prompts.at(-1);
-      return { status: p.status, done: p.done };
-    },
-    async events() {
-      return [{ id: "e1", type: "tool_use", timestamp: Date.now(), data: { tool: "bash", command: "npm test" } }];
-    },
-    async steer(id, message) {
-      sandboxes.get(id).steers.push(message);
-    },
-    async interrupt(id) {
-      sandboxes.get(id).interrupted = true;
     },
     async host(id, port) {
       return { url: `https://${id}-${port}.preview.example?_token=t` };
@@ -70,11 +54,20 @@ function fakeBoat() {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
       if (command.includes("verify.sh")) return { processId: 7, exitCode: null, stdout: "", stderr: "" };
+      if (command.includes("runner.mjs")) {
+        s.agentRunning = true;
+        return { processId: 99, exitCode: null, stdout: "", stderr: "" };
+      }
+      if (command.startsWith("tail -n")) {
+        const line = { type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "npm test" } }] } };
+        return { exitCode: 0, stdout: `${JSON.stringify(line)}\n`, stderr: "" };
+      }
       if (command.includes("git rev-parse")) return boat.branchMatches ? { exitCode: 0, stdout: `${COMMIT}\n`, stderr: "" } : { exitCode: 1, stdout: "", stderr: "" };
       return { exitCode: 0, stdout: "", stderr: "" };
     },
-    async commandStatus(id) {
-      return { running: sandboxes.get(id).checksRunning, exitCode: sandboxes.get(id).checksRunning ? null : 0 };
+    async commandStatus(id, processId) {
+      const running = processId === 99 ? sandboxes.get(id).agentRunning : sandboxes.get(id).checksRunning;
+      return { running, exitCode: running ? null : 0 };
     },
     async downloadUrl(id, path) {
       return `https://files.example/${id}${path}?sig=x`;
@@ -86,10 +79,14 @@ function fakeBoat() {
     write(id, path, value) {
       sandboxes.get(id).files.set(path, typeof value === "string" ? value : JSON.stringify(value));
     },
-    finishPrompt(id, status = "finished") {
-      const p = sandboxes.get(id).prompts.at(-1);
-      p.status = status;
-      p.done = true;
+    // What the runner records when Claude Code exits: "success" or an error subtype, and its spend.
+    finishAgent(id, subtype = "success", cost = 0) {
+      const s = sandboxes.get(id);
+      s.agentRunning = false;
+      s.files.set(`${A}/state.json`, JSON.stringify({ session_id: "s1", cost_usd: cost, turns: 1, sent: 1, last_subtype: subtype, done: true, exit_code: 0, error: null }));
+    },
+    agentConfig(id) {
+      return JSON.parse(sandboxes.get(id).files.get(`${A}/config.json`));
     },
   };
   return boat;
@@ -118,7 +115,7 @@ async function setup({ boat = fakeBoat(), config = {} } = {}) {
   const db = { query: (s, p) => pg.query(s, p), exec: (s) => pg.exec(s), close: () => pg.close() };
   const store = await Store.open(db);
   const repos = fakeRepos();
-  const builds = await BuildService.open(db, store, boat, repos, { ...buildConfigFromEnv({}), publicUrl: "https://mynt.example.com", ...config });
+  const builds = await BuildService.open(db, store, boat, repos, { ...buildConfigFromEnv({}), publicUrl: "https://mynt.example.com", anthropicApiKey: "sk-ant-test", ...config });
   const as = async (name, roles) => (await store.createUser(name, roles)).user;
   const connect = async (user) => {
     const [c, s] = InMemoryTransport.createLinkedPair();
@@ -163,7 +160,7 @@ async function runBuild(ctx, { dev, startArgs, agent = agentReport, verification
   boat.ready(sbx);
   await builds.tick(); // agent prompted
   boat.write(sbx, "/home/user/mynt/result.json", agent);
-  boat.finishPrompt(sbx);
+  boat.finishAgent(sbx);
   await builds.tick(); // source packaged, verifier requested
   const vid = (await builds.get(started.id)).verify_sandbox_id;
   boat.ready(vid);
@@ -173,7 +170,7 @@ async function runBuild(ctx, { dev, startArgs, agent = agentReport, verification
   boat.write(vid, `${V}/report.json`, { checks: verification.checks ?? passingChecks });
   await builds.tick(); // auditor prompted
   if (verification.maxwell !== null) boat.write(vid, `${V}/maxwell.json`, verification.maxwell ?? cleanAudit);
-  boat.finishPrompt(vid, verification.auditStatus ?? "finished");
+  boat.finishAgent(vid, verification.auditStatus ?? "success");
   await builds.tick(); // decided
   return { started, sbx, vid, build: (await call(dev, "get_build", { build_id: started.id })).data };
 }
@@ -192,6 +189,19 @@ test("a build is verified by Mynt in a clean sandbox, then Mynt opens the PR", a
 
   // The coding sandbox: secrets only in its env, the task and SDK in files, no PR from the agent.
   const coding = boat.sandboxes.get(sbx);
+  // Mynt runs a pinned Claude Code itself, budgeted from the build's cap, through Mynt's proxy: no
+  // Anthropic key in the sandbox, and the build's proxy token dies with the build.
+  const config = boat.agentConfig(sbx);
+  assert.equal(config.model, "claude-opus-5-5");
+  assert.ok(config.budgetUsd > 0 && config.budgetUsd <= 10);
+  assert.match(config.version, /^\d+\.\d+\.\d+$/);
+  assert.match(coding.files.get(`${A}/runner.mjs`), /--max-budget-usd/);
+  const auth = JSON.parse(coding.files.get(`${A}/auth.json`));
+  assert.equal(auth.base_url, "https://mynt.example.com/agent");
+  assert.ok(!JSON.stringify(coding.opts.env).includes("sk-ant") && !coding.opts.env.ANTHROPIC_API_KEY);
+  assert.equal(await builds.agentTokenActive(auth.token), false, "the coding agent's token was replaced for the audit");
+  const auditAuth = JSON.parse(boat.sandboxes.get(vid).files.get(`${A}/auth.json`));
+  assert.equal(await builds.agentTokenActive(auditAuth.token), false, "and that one died with the build");
   assert.equal(coding.opts.env.GITHUB_TOKEN, "ghs_short_lived");
   assert.match(coding.opts.env.MYNT_SANDBOX_KEY, /^mynt_test_/);
   const task = coding.files.get("/home/user/mynt/TASK.md");
@@ -204,7 +214,7 @@ test("a build is verified by Mynt in a clean sandbox, then Mynt opens the PR", a
   assert.deepEqual(verifier.opts.env, {});
   assert.match(verifier.files.get(`${V}/verify.sh`), /gitleaks/);
   assert.match(verifier.commands.find((c) => c.detached).command, new RegExp(`verify\\.sh 'https://files\\.example/${sbx}/home/user/mynt-out/app\\.tgz\\?sig=x' ${SHA}`));
-  assert.match(verifier.prompts[0].prompt, /Do not modify anything inside \/home\/user\/app/);
+  assert.match(boat.agentConfig(vid).prompt, /Do not modify anything inside \/home\/user\/app/);
   assert.ok(verifier.stopped, "the verifier is stopped once it has reported");
 
   assert.equal(build.status, "succeeded");
@@ -224,7 +234,7 @@ test("a build is verified by Mynt in a clean sandbox, then Mynt opens the PR", a
 for (const [label, opts, status, pattern] of [
   ["the agent's own report can't hide findings: Mynt's audit decides", { agent: { ...agentReport, maxwell: { counts: { high: 0 } } }, verification: { maxwell: { counts: { critical: 0, high: 2 } } } }, "blocked", /Security gate: 2/],
   ["no independent audit, no ship", { verification: { maxwell: null } }, "blocked", /No independent Maxwell audit/],
-  ["an audit that didn't finish doesn't count", { verification: { auditStatus: "failed" } }, "blocked", /No independent Maxwell audit/],
+  ["an audit that didn't finish doesn't count", { verification: { auditStatus: "error_max_budget_usd" } }, "blocked", /No independent Maxwell audit/],
   ["a failing check from Mynt's script fails the build", { verification: { checks: [...passingChecks, { name: "secrets_scan", status: "fail", detail: "1 secret(s)" }] } }, "failed", /secrets_scan/],
 ]) {
   test(label, async () => {
@@ -287,8 +297,8 @@ test("spend caps count both sandboxes, and the monthly budget refuses new builds
   boat.ready(sbx);
   await builds.tick();
   boat.write(sbx, "/home/user/mynt/result.json", agentReport);
-  boat.finishPrompt(sbx);
-  boat.sandboxes.get(sbx).cost = 3;
+  boat.finishAgent(sbx, "success", 1);
+  boat.sandboxes.get(sbx).cost = 2;
   await builds.tick(); // verifying
   const vid = (await builds.get(started.id)).verify_sandbox_id;
   boat.sandboxes.get(vid).cost = 2.5;
@@ -314,17 +324,123 @@ test("developers track, steer and stop their own builds; admins see all", async 
   await builds.tick();
   let b = (await call(dev, "get_build", { build_id: started.id })).data;
   assert.equal(b.status, "auditing");
-  assert.equal((await call(dev, "get_build_activity", { build_id: started.id })).data.activity[0].type, "tool_use");
+  const activity = (await call(dev, "get_build_activity", { build_id: started.id })).data.activity;
+  assert.deepEqual(activity[0], { type: "tool_use", summary: 'Bash {"command":"npm test"}' });
   assert.equal((await call(dev, "steer_build", { build_id: started.id, message: "Use the existing design system" })).data.steered, true);
+  const inbox = [...boat.sandboxes.get(sbx).files].filter(([path]) => path.startsWith(`${A}/inbox/`));
+  assert.deepEqual(inbox.map(([, v]) => JSON.parse(v)), [{ message: "Use the existing design system" }], "steering goes to the runner's inbox");
+  const token = JSON.parse(boat.sandboxes.get(sbx).files.get(`${A}/auth.json`)).token;
+  assert.equal(await builds.agentTokenActive(token), true);
   assert.equal((await call(other, "get_build", { build_id: started.id })).isError, true);
   assert.equal((await call(other, "stop_build", { build_id: started.id })).isError, true);
   b = (await call(dev, "stop_build", { build_id: started.id })).data;
   assert.equal(b.status, "stopped");
   assert.ok(boat.sandboxes.get(sbx).stopped);
+  assert.equal(await builds.agentTokenActive(token), false, "stopping a build kills its proxy token");
   const all = (await call(admin, "list_all_builds")).data;
   assert.equal(all.builds.length, 1);
   assert.equal(all.builds[0].source_url, undefined);
   assert.match((await call(dev, "steer_build", { build_id: started.id, message: "go on" })).data.error, /only a running agent/);
+});
+
+test("builds stay off without an Anthropic key for the proxy", async () => {
+  const { as, connect, call } = await setup({ config: { anthropicApiKey: null } });
+  const dev = await connect(await as("Dev", ["developer"]));
+  assert.match((await call(dev, "start_build", { goal: "Build a savings page please" })).data.error, /aren't enabled/);
+});
+
+test("the agent proxy forwards only an active build's calls, with Mynt's key", async () => {
+  const { createServer: createHttp } = await import("node:http");
+  const { agentProxy } = await import("../dist/agent-proxy.js");
+  const ctx = await setup();
+  const dev = await ctx.connect(await ctx.as("Dev", ["developer"]));
+  const started = (await ctx.call(dev, "start_build", { goal: "Build a savings page please" })).data;
+  await ctx.builds.tick();
+  const sbx = (await ctx.builds.get(started.id)).sandbox_id;
+  ctx.boat.ready(sbx);
+  await ctx.builds.tick();
+  const token = JSON.parse(ctx.boat.sandboxes.get(sbx).files.get(`${A}/auth.json`)).token;
+
+  const seen = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url, headers: init.headers, body: Buffer.from(init.body).toString() });
+    return new Response('event: message_stop\ndata: {}\n\n', { status: 200, headers: { "content-type": "text/event-stream", "request-id": "req_1" } });
+  };
+  const server = createHttp((req, res) => void agentProxy(ctx.builds, req, res, new URL(req.url, "http://x")));
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}/agent`;
+  const post = (path, auth, body = '{"model":"claude-opus-5-5"}') =>
+    realFetch(`${base}${path}`, { method: "POST", headers: { authorization: auth, "anthropic-version": "2023-06-01", "content-type": "application/json" }, body });
+  try {
+    const ok = await post("/v1/messages?beta=true", `Bearer ${token}`);
+    assert.equal(ok.status, 200);
+    assert.match(await ok.text(), /message_stop/);
+    assert.equal(ok.headers.get("request-id"), "req_1");
+    assert.equal(seen[0].url, "https://api.anthropic.com/v1/messages?beta=true");
+    assert.equal(seen[0].headers["x-api-key"], "sk-ant-test");
+    assert.equal(seen[0].headers["anthropic-version"], "2023-06-01");
+    assert.equal(seen[0].headers.authorization, undefined, "the build token never goes upstream");
+    assert.equal((await post("/v1/messages", "Bearer mynt_agent_wrong")).status, 401);
+    assert.equal((await post("/v1/models", `Bearer ${token}`)).status, 404, "only the messages endpoints");
+    await ctx.call(dev, "stop_build", { build_id: started.id });
+    assert.equal((await post("/v1/messages", `Bearer ${token}`)).status, 401, "a stopped build's token is dead");
+    assert.equal(seen.length, 1);
+  } finally {
+    globalThis.fetch = realFetch;
+    server.close();
+  }
+});
+
+test("the runner drives Claude Code headless, records its spend, steers and exits cleanly", async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { spawn } = await import("node:child_process");
+  const { AGENT_RUNNER } = await import("../dist/agent-runner.js");
+  const home = mkdtempSync(join(tmpdir(), "mynt-runner-"));
+  const dir = join(home, "mynt-agent");
+  mkdirSync(join(home, ".mynt-claude", "node_modules", ".bin"), { recursive: true });
+  // A stand-in for Claude Code: one stream-json turn per user message, and it logs its args and env.
+  const fake = join(home, ".mynt-claude", "node_modules", ".bin", "claude");
+  writeFileSync(
+    fake,
+    `#!/usr/bin/env node
+const fs = require("fs");
+fs.writeFileSync(process.env.HOME + "/claude-args.json", JSON.stringify({ args: process.argv.slice(2), base: process.env.ANTHROPIC_BASE_URL, token: process.env.ANTHROPIC_AUTH_TOKEN, key: process.env.ANTHROPIC_API_KEY ?? null }));
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "sess_1" }));
+let turns = 0, buf = "";
+process.stdin.on("data", (d) => {
+  buf += d;
+  let i;
+  while ((i = buf.indexOf("\\n")) >= 0) {
+    const m = JSON.parse(buf.slice(0, i)); buf = buf.slice(i + 1);
+    if (m.type !== "user") continue;
+    turns++;
+    console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "on it: " + m.message.content }] } }));
+    console.log(JSON.stringify({ type: "result", subtype: "success", total_cost_usd: 0.25 * turns }));
+  }
+});
+`,
+  );
+  chmodSync(fake, 0o755);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "runner.mjs"), AGENT_RUNNER);
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ prompt: "Build it", cwd: join(home, "work"), model: "claude-opus-5-5", budgetUsd: 4.5, version: "0.0.0" }));
+  writeFileSync(join(dir, "auth.json"), JSON.stringify({ base_url: "https://mynt.example.com/agent", token: "mynt_agent_t" }));
+  const child = spawn(process.execPath, [join(dir, "runner.mjs"), dir], { env: { ...process.env, HOME: home, ANTHROPIC_API_KEY: "sk-ant-leak" }, stdio: "ignore" });
+  const code = await new Promise((r) => child.on("exit", r));
+  assert.equal(code, 0);
+  assert.equal(existsSync(join(dir, "auth.json")), false, "the token file is read once and deleted");
+  const state = JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
+  assert.deepEqual({ ...state, exit_code: undefined }, { session_id: "sess_1", cost_usd: 0.25, turns: 1, sent: 1, last_subtype: "success", done: true, exit_code: undefined, error: null });
+  const ran = JSON.parse(readFileSync(join(home, "claude-args.json"), "utf8"));
+  assert.deepEqual(ran.args.slice(ran.args.indexOf("--max-budget-usd"), ran.args.indexOf("--max-budget-usd") + 2), ["--max-budget-usd", "4.5"]);
+  assert.ok(ran.args.includes("--model") && ran.args.includes("stream-json"));
+  assert.equal(ran.base, "https://mynt.example.com/agent");
+  assert.equal(ran.token, "mynt_agent_t");
+  assert.equal(ran.key, null, "an Anthropic key in the sandbox is never passed to the agent");
+  assert.match(readFileSync(join(dir, "agent.jsonl"), "utf8"), /on it: Build it/);
 });
 
 test("without a boat.dev key builds are disabled cleanly, and agents never connect outside services", async () => {

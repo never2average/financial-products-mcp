@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ClerkAdmin } from "./auth.js";
+import type { BuildService } from "./builds.js";
 import { PRODUCT_LINES } from "./catalog.js";
 import { runProductTests } from "./product-tests.js";
 import {
@@ -24,6 +25,7 @@ const fail = (error: string) => ({ ...json({ error }), isError: true });
 
 export interface AdminContext {
   clerkAdmin?: ClerkAdmin | null; // keeps Clerk's allowlist in step with the whitelist
+  builds?: BuildService | null; // coding-agent builds, when enabled
 }
 
 // Admin: everything is managed through Mynt itself, and every change is written to the audit log.

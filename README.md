@@ -86,6 +86,28 @@ Each product also has **build terms**:
 - A campaign over the launcher's own (or their firm's) products, or the open reference catalogue, goes live once its copy passes the lint.
 - A campaign over **another innovator's** products becomes `pending_approval` and lands in that innovator's inbox. It goes live when every product's innovator approves, and goes back to draft on any rejection.
 
+### Coding-agent builds (developers)
+
+A developer can have Mynt **build and ship** one of their experiences. `start_build` runs a coding agent in a fresh [boat.dev](https://boat.dev) sandbox. The agent:
+1. writes the code against the app's products and their build terms, using a freshly generated SDK for them and a Mynt **sandbox key** (simulated hand-offs) for end-to-end tests; the key is revoked if the build doesn't ship
+2. runs the **[Maxwell](https://github.com/OnFinance/Maxwell)** static security probes (secure code review, CI/CD, agent code, schemas, infrastructure as code) and fixes what it can
+3. works through a **production-readiness checklist**: tests, lint and types, secrets scan, dependency audit, SBOM, required disclosures, permitted actions only, no financial-data collection, docs
+4. deploys a token-gated **preview**
+5. with a connected repository, pushes a branch and opens a **pull request**; never to the default branch
+
+**Gates:**
+- **critical or high** Maxwell findings, or no audit at all → `blocked`
+- an unmet readiness check → `failed`
+- otherwise → `succeeded`, with the preview URL and PR
+
+**Tracking:** developers follow builds with `get_build` (phase, timeline, cost against the cap, Maxwell summary, readiness, links), see the agent's live activity with `get_build_activity`, `steer_build` it, or `stop_build` it. `list_builds` shows this month's spend. Admins see every build and total spend with `list_all_builds`.
+
+**Spend** is capped per build (`BUILD_CAP_USD`, default 10) and per developer per month (`BUILD_MONTHLY_CAP_USD`, default 100). Mynt reads the sandbox's machine and model cost as it runs, and stops a build that passes its cap.
+
+**Repositories:** developers install the Mynt GitHub App on a repository and run `connect_repository`. Each build gets an installation token limited to that one repository, with contents and pull-request write access for an hour. No long-lived credential enters the sandbox.
+
+**Configuration:** `BOAT_API_KEY` (builds are disabled without it); `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` and `GITHUB_APP_SLUG` (pushing is disabled without them); optional `BUILD_AGENT_PROVIDER` (default `claude-code`), `BUILD_AGENT_MODEL`, `BUILD_SANDBOX_TYPE` and `BUILD_SANDBOX_TTL_SECONDS`.
+
 ### SDKs and experiences (developers)
 
 **SDKs.** `create_sdk(name, languages, product_ids)` defines an SDK over products you can build on: open or approval products, or private ones you were invited to. `generate_sdk_release(sdk_id, version, changelog)` then writes an immutable, semver-versioned bundle:

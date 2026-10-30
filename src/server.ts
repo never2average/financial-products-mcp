@@ -12,6 +12,7 @@ import {
 } from "./catalog.js";
 import { attributionFor, offersFor, registerGtmTools } from "./gtm.js";
 import { registerAdminTools, type AdminContext } from "./admin.js";
+import { registerCodingAgentAdminTools, registerCodingAgentTools } from "./builds.js";
 import { accessStatus, BuildTermsSchema, coveringLicenses, EXPERIENCE_ACTIONS, lintExperience, productEntity } from "./access.js";
 import { runProductTests } from "./product-tests.js";
 import { COURT_LEVELS, findLicenses, LEGISLATIVE_KINDS, normalizeModel, PRODUCT_ACTIONS, summarizeModel, type Regulator } from "./regulatory.js";
@@ -75,7 +76,11 @@ export function createServer(store: Store, user: User | null = null, ctx: AdminC
     registerMarketplaceTools(server, store, user!);
     registerRuntimeInnovatorTools(server, store, user!);
   }
-  if (has("admin")) registerAdminTools(server, store, user!, ctx);
+  if (has("developer") && ctx.builds) registerCodingAgentTools(server, store, user!, ctx.builds);
+  if (has("admin")) {
+    registerAdminTools(server, store, user!, ctx);
+    if (ctx.builds) registerCodingAgentAdminTools(server, ctx.builds);
+  }
 
   return server;
 }

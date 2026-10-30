@@ -374,6 +374,12 @@ test("experience definitions are validated", async () => {
   assert.equal(ok.isError, false);
   const other = await ctx.connect(await ctx.as("Other", ["developer"]));
   assert.equal((await ctx.call(other, "set_experience", { app_id: app.id, experience: { screens: [screen("home", [{ type: "text", content: "x" }])] } })).isError, true);
+
+  // A saved experience that stops validating fails the check instead of skipping it.
+  await ctx.store.setAppExperience(app.id, { screens: [{ id: "home", title: "Home", components: [{ type: "hologram" }] }] });
+  const checked = (await ctx.call(ctx.dev, "check_experience", { app_id: app.id })).data;
+  assert.equal(checked.ready, false);
+  assert.equal(checked.structure.checks[0].name, "experience_valid");
 });
 
 test("structural checks: each one fails, then passes, and publish_app enforces them", async () => {

@@ -225,6 +225,16 @@ export function registerBuildTools(server: McpServer, store: Store, user: User) 
 
 // Structure of an app's stored experience, for check_experience and publish_app.
 export async function experienceStructure(store: Store, app: { id: string; product_ids: string[] }, published: ProductRecord[]) {
-  const parsed = ExperienceSchema.safeParse(await store.appExperience(app.id));
+  const stored = await store.appExperience(app.id);
+  const parsed = ExperienceSchema.safeParse(stored);
+  // A saved experience that no longer validates fails, rather than skipping the structural checks.
+  if (stored != null && !parsed.success) {
+    return {
+      defined: true,
+      passed: false,
+      checks: [{ product_id: "*", name: "experience_valid", status: "fail" as const, message: "The saved experience no longer validates; set it again with set_experience" }],
+      rendered_disclosures: [],
+    };
+  }
   return checkStructure(app, parsed.success ? parsed.data : null, published);
 }

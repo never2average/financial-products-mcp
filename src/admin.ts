@@ -18,6 +18,7 @@ import {
   type RegulatoryModel,
 } from "./regulatory.js";
 import { ROLES, type Role, type Store, type User } from "./store.js";
+import { emitProductEvent } from "./runtime.js";
 
 const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] });
 const fail = (error: string) => ({ ...json({ error }), isError: true });
@@ -472,6 +473,7 @@ export function registerAdminTools(server: McpServer, store: Store, user: User, 
       }
       const saved = status === "published" ? await store.publishCurrentVersion(id) : await store.setProductStatus(id, "unpublished");
       await audit("admin_set_product_status", id, { status, reason, owner_id: record.owner_id });
+      if (status === "unpublished") await emitProductEvent(store, id, "product.unpublished");
       return json(saved);
     },
   );

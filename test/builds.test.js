@@ -137,6 +137,8 @@ test("a build runs end to end: sandbox, agent, tracked phases, Maxwell and readi
   const sbx = boat.sandboxes.get(b.sandbox_id);
   assert.equal(sbx.opts.env.GITHUB_TOKEN, "ghs_short_lived", "a repo-scoped token, only as an env var");
   assert.equal(sbx.opts.env.GITHUB_REPOSITORY, "acme/savings-app");
+  assert.match(sbx.opts.env.MYNT_SANDBOX_KEY, /^mynt_test_/, "a Mynt sandbox key for the app");
+  assert.equal(sbx.opts.env.MYNT_API_BASE, "https://mynt.example.com/v1");
 
   await builds.tick();
   assert.equal((await call(dev, "get_build", { build_id: started.id })).data.status, "provisioning", "waits for the sandbox");
@@ -149,6 +151,9 @@ test("a build runs end to end: sandbox, agent, tracked phases, Maxwell and readi
   assert.match(task, /critical and high finding/);
   assert.match(task, /never moves money/);
   assert.doesNotMatch(task, /ghs_short_lived/, "the token is never written into files");
+  assert.ok(sbx.files.has("/root/mynt/sdk/openapi.json"), "a generated SDK for the app's products");
+  assert.ok([...sbx.files.keys()].some((p) => p.startsWith("/root/mynt/sdk/typescript/")));
+  assert.ok(![...sbx.files.values()].some((c) => c.includes(sbx.opts.env.MYNT_SANDBOX_KEY)), "the sandbox key stays in the env");
   const spec = JSON.parse(sbx.files.get("/root/mynt/build.json"));
   assert.equal(spec.products[0].id, "fixed-deposit");
   assert.ok(spec.products[0].build_terms);
@@ -205,6 +210,23 @@ for (const [label, result, status, pattern] of [
     assert.equal(b.pr_url, null);
   });
 }
+
+test("a build that doesn't ship revokes its Mynt sandbox key", async () => {
+  const { store, builds, boat, as, connect, call } = await setup();
+  const dev = await connect(await as("Dev", ["developer"]));
+  const app = (await call(dev, "create_app", { name: "Saver", description: "Savings ideas", audience: "Savers", product_ids: ["fixed-deposit"] })).data;
+  const started = (await call(dev, "start_build", { goal: "Build a savings page please", app_id: app.id })).data;
+  await builds.tick();
+  const b = await builds.get(started.id);
+  assert.equal((await store.getApiKey(b.sandbox_key_id)).status, "active");
+  boat.ready(b.sandbox_id);
+  await builds.tick();
+  boat.agentWrites(b.sandbox_id, "/root/mynt/result.json", { ...goodResult, maxwell: { counts: { critical: 1 } } });
+  boat.agentFinishes(b.sandbox_id);
+  await builds.tick();
+  assert.equal((await builds.get(started.id)).status, "blocked");
+  assert.equal((await store.getApiKey(b.sandbox_key_id)).status, "revoked");
+});
 
 test("spend caps: a build stops when it passes its cap, and the monthly budget refuses new builds", async () => {
   const { builds, boat, as, connect, call } = await setup({ config: { capUsd: 5, monthlyCapUsd: 8 } });

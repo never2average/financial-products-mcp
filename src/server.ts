@@ -12,7 +12,7 @@ import {
 } from "./catalog.js";
 import { attributionFor, offersFor, registerGtmTools } from "./gtm.js";
 import { registerAdminTools, type AdminContext } from "./admin.js";
-import { registerBuildAdminTools, registerBuildTools } from "./builds.js";
+import { registerCodingAgentAdminTools, registerCodingAgentTools } from "./builds.js";
 import { accessStatus, BuildTermsSchema, coveringLicenses, EXPERIENCE_ACTIONS, lintExperience, productEntity } from "./access.js";
 import { runProductTests } from "./product-tests.js";
 import { COURT_LEVELS, findLicenses, LEGISLATIVE_KINDS, normalizeModel, PRODUCT_ACTIONS, summarizeModel, type Regulator } from "./regulatory.js";
@@ -30,6 +30,9 @@ import {
 } from "./store.js";
 import { registerMarketplaceTools } from "./marketplace.js";
 import { registerVersioningTools } from "./versions.js";
+import { emitProductEvent, ensureRelease, registerRuntimeInnovatorTools, registerRuntimeTools } from "./runtime.js";
+// SDKs and experiences (developer build layer)
+import { experienceStructure, registerBuildTools } from "./build.js";
 
 // The name MCP clients show for this server.
 export const SERVER_NAME = "mynt";
@@ -64,17 +67,19 @@ export function createServer(store: Store, user: User | null = null, ctx: AdminC
   if (has("consumer")) registerConsumerTools(server, store, user!);
   if (has("developer")) {
     registerDeveloperTools(server, store, user!);
+    registerBuildTools(server, store, user!);
     registerGtmTools(server, store, user!);
   }
   if (has("innovator")) {
     registerInnovatorTools(server, store, user!);
     registerVersioningTools(server, store, user!, productFields);
     registerMarketplaceTools(server, store, user!);
+    registerRuntimeInnovatorTools(server, store, user!);
   }
-  if (has("developer") && ctx.builds) registerBuildTools(server, store, user!, ctx.builds);
+  if (has("developer") && ctx.builds) registerCodingAgentTools(server, store, user!, ctx.builds);
   if (has("admin")) {
     registerAdminTools(server, store, user!, ctx);
-    if (ctx.builds) registerBuildAdminTools(server, ctx.builds);
+    if (ctx.builds) registerCodingAgentAdminTools(server, ctx.builds);
   }
 
   return server;
@@ -577,6 +582,7 @@ function registerDeveloperTools(server: McpServer, store: Store, user: User) {
           ),
           hand_off:
             "Onboarding, KYC and payments happen in the innovator's own regulated flow: deep_link or initiate_onboarding pass the user there. Experiences never collect funds or financial data themselves.",
+          generated_clients: "create_sdk with this product, then generate_sdk_release, for an OpenAPI document and typed TypeScript/Python clients.",
         },
       });
     },
@@ -649,7 +655,10 @@ function registerDeveloperTools(server: McpServer, store: Store, user: User) {
         return { product_id: id, granted: a.granted, status: a.via, request_id: a.request_id };
       }),
     );
-    return { access, lint: lintExperience(app, records.filter((r) => r.status === "published")) };
+    const published = records.filter((r) => r.status === "published");
+    // A structured experience's disclosure blocks render the products' required disclosures.
+    const structure = await experienceStructure(store, app, published);
+    return { access, lint: lintExperience({ ...app, disclosures: [...app.disclosures, ...structure.rendered_disclosures] }, published), structure };
   };
 
   server.registerTool(
@@ -657,7 +666,7 @@ function registerDeveloperTools(server: McpServer, store: Store, user: User) {
     {
       title: "Check an experience against the products' terms",
       description:
-        "Developer: for one of your apps, whether you have access to each product and whether the experience meets each product's build terms (permitted actions, required disclosures, banned wording). Both must pass to publish.",
+        "Developer: for one of your apps, whether you have access to each product and whether the experience meets each product's build terms (permitted actions, required disclosures, banned wording), plus structural checks of its experience definition (see set_experience). All must pass to publish.",
       inputSchema: { app_id: z.string() },
       annotations: { readOnlyHint: true },
     },
@@ -665,7 +674,7 @@ function registerDeveloperTools(server: McpServer, store: Store, user: User) {
       const app = await ownApp(app_id);
       if (!app) return fail(`No app with id '${app_id}'`);
       const r = await readiness(app);
-      return json({ ready: r.access.every((a) => a.granted) && r.lint.passed, ...r });
+      return json({ ready: r.access.every((a) => a.granted) && r.lint.passed && r.structure.passed, ...r });
     },
   );
 
@@ -731,19 +740,24 @@ function registerDeveloperTools(server: McpServer, store: Store, user: User) {
       if (!app) return fail(`No app with id '${app_id}'`);
       const r = await readiness(app);
       const blocked = r.access.filter((a) => !a.granted);
-      if (blocked.length || !r.lint.passed) {
+      if (blocked.length || !r.lint.passed || !r.structure.passed) {
         return {
           ...json({
             error: "Cannot publish yet",
             access_needed: blocked.map((b) => ({ product_id: b.product_id, status: b.status })),
-            failed_checks: r.lint.checks.filter((c) => c.status === "fail"),
+            failed_checks: [...r.lint.checks, ...r.structure.checks].filter((c) => c.status === "fail"),
           }),
           isError: true,
         };
       }
-      return json(await store.saveApp({ ...app, status: "published" }));
+      const published = await store.saveApp({ ...app, status: "published" });
+      await ensureRelease(store, published, user.id);
+      return json(published);
     },
   );
+
+  // Runtime layer: API keys, webhooks, sandbox, releases, metrics.
+  registerRuntimeTools(server, store, user, readiness);
 }
 
 function registerInnovatorTools(server: McpServer, store: Store, user: User) {
@@ -855,8 +869,10 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User) {
       const notLive = [];
       for (const u of record.underlying_product_ids) if ((await store.getProduct(u))?.status !== "published") notLive.push(u);
       if (notLive.length) return fail(`Underlying products aren't published: ${notLive.join(", ")}`);
+      const live = draft ? await store.publishDraftVersion(id) : await store.publishCurrentVersion(id);
+      await emitProductEvent(store, id, "product.version_published", { version: live.version });
       return json({
-        ...(draft ? await store.publishDraftVersion(id) : await store.publishCurrentVersion(id)),
+        ...live,
         licensed_under: held.map((h) => ({ regulator: h.regulator_id, license: h.license_id, registration_number: h.registration_number })),
       });
     },
@@ -874,7 +890,9 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User) {
       const record = await ownProduct(id);
       if (!record) return fail(`No product of yours with id '${id}'`);
       if (record.status !== "published") return fail("Product is not published");
-      return json(await store.setProductStatus(id, "unpublished"));
+      const unpublished = await store.setProductStatus(id, "unpublished");
+      await emitProductEvent(store, id, "product.unpublished");
+      return json(unpublished);
     },
   );
 

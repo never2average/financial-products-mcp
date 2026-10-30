@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { accessStatus } from "./access.js";
+import { accessStatus, productEntity } from "./access.js";
 import type { BoatClient } from "./boat.js";
 import type { Db } from "./db.js";
 import type { RepoAccess } from "./github.js";
+import { generateSdk, type SdkProduct } from "./sdk.js";
 import type { Store, User } from "./store.js";
 
 // Coding-agent builds: a developer asks Mynt to build or ship one of their experiences; Mynt runs a coding
@@ -62,6 +63,7 @@ export interface Build {
   status: BuildStatus;
   phase_message: string | null;
   sandbox_id: string | null;
+  sandbox_key_id: string | null; // the app's Mynt sandbox key this build uses
   prompt_id: string | null;
   preview_url: string | null;
   pr_url: string | null;
@@ -102,6 +104,7 @@ const TABLES = `
     finished_at timestamptz
   );
   CREATE INDEX IF NOT EXISTS build_runs_developer_idx ON financial_products.build_runs (developer_id, created_at DESC);
+  ALTER TABLE financial_products.build_runs ADD COLUMN IF NOT EXISTS sandbox_key_id text;
   CREATE TABLE IF NOT EXISTS financial_products.build_events (
     id uuid PRIMARY KEY,
     build_id uuid NOT NULL REFERENCES financial_products.build_runs(id),
@@ -133,7 +136,7 @@ const toBuild = (r: Row): Build => ({
 
 // Files the agent reads and writes inside the sandbox.
 const HOME = "/root/mynt";
-const FILES = { task: `${HOME}/TASK.md`, spec: `${HOME}/build.json`, status: `${HOME}/status.json`, result: `${HOME}/result.json` };
+const FILES = { task: `${HOME}/TASK.md`, spec: `${HOME}/build.json`, status: `${HOME}/status.json`, result: `${HOME}/result.json`, sdk: `${HOME}/sdk` };
 
 export class BuildService {
   private timer: NodeJS.Timeout | null = null;
@@ -252,8 +255,13 @@ export class BuildService {
     return (await this.get(id))!;
   }
 
+  private async retireKey(build: Build) {
+    if (build.sandbox_key_id) await this.store.revokeApiKey(build.sandbox_key_id).catch(() => {});
+  }
+
   async stop(build: Build, reason: string, status: BuildStatus = "stopped") {
     if (TERMINAL.includes(build.status)) return build;
+    await this.retireKey(build);
     if (build.sandbox_id && this.boat) {
       await this.boat.interrupt(build.sandbox_id).catch(() => {});
       await this.boat.stop(build.sandbox_id).catch(() => {});
@@ -299,6 +307,7 @@ export class BuildService {
       try {
         await this.advance(build);
       } catch (e) {
+        await this.retireKey((await this.get(build.id)) ?? build);
         await this.update(build.id, { status: "failed", error: (e as Error).message });
         await this.event(build.id, "failed", (e as Error).message);
       }
@@ -309,6 +318,18 @@ export class BuildService {
     const boat = this.boat!;
     if (b.status === "queued") {
       const env: Record<string, string> = { MYNT_BUILD_ID: b.id };
+      // A sandbox key for the app, so the agent tests against Mynt's sandbox (simulated hand-offs).
+      let sandboxKeyId: string | null = null;
+      if (b.app_id) {
+        const { key, secret } = await this.store.createApiKey(b.developer_id, {
+          app_id: b.app_id,
+          environment: "sandbox",
+          label: `build ${b.id.slice(0, 8)}`,
+          allowed_origins: [],
+        });
+        sandboxKeyId = key.id;
+        Object.assign(env, { MYNT_SANDBOX_KEY: secret, ...(this.config.publicUrl ? { MYNT_API_BASE: `${this.config.publicUrl}/v1` } : {}) });
+      }
       if (b.repository && this.repos) {
         const installation = await this.installation(b.developer_id, b.repository);
         const { token } = await this.repos.tokenFor(b.repository, installation!);
@@ -321,7 +342,7 @@ export class BuildService {
         labels: { mynt_build: b.id },
         env,
       });
-      await this.update(b.id, { status: "provisioning", sandbox_id: sandbox.id, branch: env.MYNT_BRANCH ?? null });
+      await this.update(b.id, { status: "provisioning", sandbox_id: sandbox.id, sandbox_key_id: sandboxKeyId, branch: env.MYNT_BRANCH ?? null });
       await this.event(b.id, "provisioning", "Sandbox requested", { sandbox_id: sandbox.id });
       return;
     }
@@ -331,6 +352,7 @@ export class BuildService {
       if (s.state === "error" || s.state === "cancelled") throw new Error(`Sandbox ${s.state}: ${s.error ?? "no detail"}`);
       if (!["ready", "idle", "running"].includes(s.state)) return;
       await boat.writeFile(b.sandbox_id!, FILES.spec, JSON.stringify(await this.spec(b), null, 2));
+      for (const file of await this.sdkFiles(b)) await boat.writeFile(b.sandbox_id!, `${FILES.sdk}/${file.path}`, file.content);
       await boat.writeFile(b.sandbox_id!, FILES.task, this.task(b));
       const run = await boat.prompt(b.sandbox_id!, {
         provider: this.config.provider,
@@ -369,6 +391,7 @@ export class BuildService {
     const counts = result.maxwell?.counts ?? {};
     const serious = (counts.critical ?? 0) + (counts.high ?? 0);
     await this.update(b.id, { maxwell: result.maxwell ?? null, readiness: result.readiness ?? [] });
+    if (!result.maxwell || serious > 0 || (result.readiness ?? []).some((c) => c.status === "fail")) await this.retireKey(b);
     if (!result.maxwell) {
       await this.update(b.id, { status: "blocked", error: "No Maxwell audit result; a build can't ship without one" });
       await this.event(b.id, "blocked", "Missing Maxwell audit");
@@ -410,6 +433,29 @@ export class BuildService {
       products.push({ ...record.product, version: record.version, build_terms: record.build_terms, access: access.via });
     }
     return { build_id: b.id, goal: b.goal, app: app ?? null, products, mynt_api: this.config.publicUrl ? `${this.config.publicUrl}/v1` : null };
+  }
+
+  // A typed SDK for the app's products, generated fresh for this build.
+  private async sdkFiles(b: Build) {
+    if (!b.app_id) return [];
+    const app = await this.store.getApp(b.app_id);
+    const developer = await this.store.getUser(b.developer_id);
+    if (!app || !developer) return [];
+    const products: SdkProduct[] = [];
+    for (const id of app.product_ids) {
+      const record = await this.store.getProduct(id);
+      if (record?.status !== "published") continue;
+      if (!(await accessStatus(this.store, developer, record, app.id)).granted) continue;
+      products.push({ record, issuer: (await productEntity(this.store, record))?.name ?? null });
+    }
+    if (products.length === 0) return [];
+    return generateSdk({
+      name: app.name,
+      version: "0.0.0",
+      languages: ["typescript", "python"],
+      baseUrl: this.config.publicUrl || "https://mynt.example.com",
+      products,
+    });
   }
 
   private task(b: Build) {
@@ -454,6 +500,10 @@ At each phase, overwrite ${o.files.status} with {"phase": "<coding|auditing|chec
 ## 1. Code (phase: coding)
 ${o.repository ? `Clone ${o.repository} into ~/workspace/app (authenticate git with $GITHUB_TOKEN through a credential helper, never in the URL) and create branch ${o.branch}.` : "Create the project in ~/workspace/app."}
 Implement the goal with tests. Prefer the project's existing stack; otherwise TypeScript.
+If ${o.files.sdk} exists, it holds a typed Mynt SDK for this app's products (OpenAPI, TypeScript and Python clients
+with each product's permitted hand-offs, disclosures and branding): build on it. $MYNT_SANDBOX_KEY and $MYNT_API_BASE,
+when set, reach Mynt's sandbox (simulated hand-offs, no real customers); use them for end-to-end tests and never
+commit them.
 
 ## 2. Security audit with Maxwell (phase: auditing)
 - git clone ${o.maxwellRepo} ~/maxwell, then in ~/maxwell run: npm ci && npm run validate
@@ -493,7 +543,7 @@ Then stop.
 const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] });
 const fail = (error: string) => ({ ...json({ error }), isError: true });
 
-export function registerBuildTools(server: McpServer, store: Store, user: User, builds: BuildService) {
+export function registerCodingAgentTools(server: McpServer, store: Store, user: User, builds: BuildService) {
   const own = async (id: string) => {
     const b = await builds.get(id);
     return b && b.developer_id === user.id ? b : undefined;
@@ -631,7 +681,7 @@ export function registerBuildTools(server: McpServer, store: Store, user: User, 
   );
 }
 
-export function registerBuildAdminTools(server: McpServer, builds: BuildService) {
+export function registerCodingAgentAdminTools(server: McpServer, builds: BuildService) {
   server.registerTool(
     "list_all_builds",
     {

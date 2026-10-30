@@ -248,6 +248,7 @@ export async function ensureRelease(store: Store, app: App, userId: string) {
 export type Readiness = (app: App) => Promise<{
   access: { product_id: string; granted: boolean; status: string }[];
   lint: { passed: boolean; checks: ExperienceCheck[] };
+  structure?: { passed: boolean; checks: { status: string }[] };
 }>;
 
 // ---- developer tools ----
@@ -270,12 +271,13 @@ export function registerRuntimeTools(server: McpServer, store: Store, user: User
   };
   const notReady = (r: Awaited<ReturnType<Readiness>>) => {
     const blocked = r.access.filter((a) => !a.granted);
-    if (!blocked.length && r.lint.passed) return null;
+    const structureOk = r.structure?.passed ?? true;
+    if (!blocked.length && r.lint.passed && structureOk) return null;
     return {
       ...json({
         error: "The experience doesn't meet its products' terms",
         access_needed: blocked.map((b) => ({ product_id: b.product_id, status: b.status })),
-        failed_checks: r.lint.checks.filter((c) => c.status === "fail"),
+        failed_checks: [...r.lint.checks, ...(r.structure?.checks ?? [])].filter((c) => c.status === "fail"),
       }),
       isError: true,
     };

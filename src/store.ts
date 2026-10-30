@@ -322,6 +322,34 @@ export interface App {
   updated_at: string;
 }
 
+// --- SDKs and experiences (developer build layer) ---
+export interface Sdk {
+  id: string;
+  owner_id: string;
+  name: string;
+  languages: string[];
+  product_ids: string[];
+  created_at: string;
+}
+
+// What a release was generated from, per product, so later changes can flag it stale.
+export interface SdkReleaseSource {
+  product_id: string;
+  version: number;
+  terms_hash: string;
+  access: string;
+}
+
+export interface SdkRelease {
+  sdk_id: string;
+  version: string;
+  changelog: string;
+  sources: SdkReleaseSource[];
+  files: { path: string; content: string }[];
+  created_at: string;
+}
+// --- end SDKs and experiences ---
+
 export class DuplicateError extends Error {}
 
 // Kept out of `public` so Supabase's auto-generated REST API never exposes these tables.
@@ -603,6 +631,35 @@ const TABLES = `
     decided_at timestamptz
   );
   CREATE INDEX IF NOT EXISTS requests_product_idx ON financial_products.requests (product_id, status);
+  -- SDKs and experiences (developer build layer).
+  ALTER TABLE financial_products.apps ADD COLUMN IF NOT EXISTS experience jsonb;
+  CREATE TABLE IF NOT EXISTS financial_products.sdks (
+    id uuid PRIMARY KEY,
+    owner_id uuid NOT NULL REFERENCES financial_products.users(id),
+    name text NOT NULL,
+    languages text[] NOT NULL,
+    product_ids text[] NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS sdks_owner_idx ON financial_products.sdks (owner_id);
+  CREATE TABLE IF NOT EXISTS financial_products.sdk_releases (
+    sdk_id uuid NOT NULL REFERENCES financial_products.sdks(id),
+    version text NOT NULL,
+    changelog text NOT NULL,
+    sources jsonb NOT NULL,
+    files jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (sdk_id, version)
+  );
+  -- Releases are immutable: a published bundle never changes under its version.
+  CREATE OR REPLACE FUNCTION financial_products.sdk_releases_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+  BEGIN
+    RAISE EXCEPTION 'SDK releases are immutable';
+  END $$;
+  DROP TRIGGER IF EXISTS sdk_releases_immutable ON financial_products.sdk_releases;
+  CREATE TRIGGER sdk_releases_immutable BEFORE UPDATE ON financial_products.sdk_releases
+    FOR EACH ROW EXECUTE FUNCTION financial_products.sdk_releases_immutable();
+  -- end SDKs and experiences
 `;
 
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -806,6 +863,26 @@ const toApp = (r: Row): App => ({
   created_at: iso(r.created_at)!,
   updated_at: iso(r.updated_at)!,
 });
+
+// --- SDKs and experiences (developer build layer) ---
+const toSdk = (r: Row): Sdk => ({
+  id: r.id as string,
+  owner_id: r.owner_id as string,
+  name: r.name as string,
+  languages: r.languages as string[],
+  product_ids: r.product_ids as string[],
+  created_at: iso(r.created_at)!,
+});
+
+const toSdkRelease = (r: Row): SdkRelease => ({
+  sdk_id: r.sdk_id as string,
+  version: r.version as string,
+  changelog: r.changelog as string,
+  sources: r.sources as SdkReleaseSource[],
+  files: r.files as SdkRelease["files"],
+  created_at: iso(r.created_at)!,
+});
+// --- end SDKs and experiences ---
 
 export class Store {
   private constructor(private readonly db: Db) {}
@@ -1687,4 +1764,58 @@ export class Store {
   async publishedApps(): Promise<App[]> {
     return (await this.all("SELECT * FROM financial_products.apps WHERE status = 'published' ORDER BY created_at")).map(toApp);
   }
+
+  // --- SDKs and experiences (developer build layer) ---
+
+  async appExperience(appId: string): Promise<unknown | null> {
+    const r = await this.one("SELECT experience FROM financial_products.apps WHERE id::text = $1", [appId]);
+    return (r?.experience as unknown) ?? null;
+  }
+
+  async setAppExperience(appId: string, experience: unknown): Promise<void> {
+    await this.db.query("UPDATE financial_products.apps SET experience = $2, updated_at = now() WHERE id::text = $1", [
+      appId,
+      experience == null ? null : JSON.stringify(experience),
+    ]);
+  }
+
+  async createSdk(ownerId: string, fields: Pick<Sdk, "name" | "languages" | "product_ids">): Promise<Sdk> {
+    const r = await this.one(
+      "INSERT INTO financial_products.sdks (id, owner_id, name, languages, product_ids) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+      [randomUUID(), ownerId, fields.name, fields.languages, fields.product_ids],
+    );
+    return toSdk(r!);
+  }
+
+  async getSdk(id: string): Promise<Sdk | undefined> {
+    const r = await this.one("SELECT * FROM financial_products.sdks WHERE id::text = $1", [id]);
+    return r && toSdk(r);
+  }
+
+  async sdksByOwner(ownerId: string): Promise<Sdk[]> {
+    return (await this.all("SELECT * FROM financial_products.sdks WHERE owner_id = $1 ORDER BY created_at", [ownerId])).map(toSdk);
+  }
+
+  async createSdkRelease(release: Omit<SdkRelease, "created_at">): Promise<SdkRelease> {
+    try {
+      const r = await this.one(
+        `INSERT INTO financial_products.sdk_releases (sdk_id, version, changelog, sources, files)
+         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+        [release.sdk_id, release.version, release.changelog, JSON.stringify(release.sources), JSON.stringify(release.files)],
+      );
+      return toSdkRelease(r!);
+    } catch (e) {
+      if (isUniqueViolation(e)) throw new DuplicateError(`Release ${release.version} already exists`);
+      throw e;
+    }
+  }
+
+  // Newest first.
+  async sdkReleases(sdkId: string): Promise<SdkRelease[]> {
+    return (await this.all("SELECT * FROM financial_products.sdk_releases WHERE sdk_id::text = $1 ORDER BY created_at DESC", [sdkId])).map(
+      toSdkRelease,
+    );
+  }
+
+  // --- end SDKs and experiences ---
 }

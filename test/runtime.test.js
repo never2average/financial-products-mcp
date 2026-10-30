@@ -602,3 +602,23 @@ test("developers can't touch each other's keys, webhooks or deliveries", async (
     ctx.close();
   }
 });
+
+test("releases enforce the experience structure checks, like publish_app", async () => {
+  const ctx = await setup();
+  try {
+    await publishedBy(ctx, "Ines");
+    const { client: dev, app } = await devWithApp(ctx, "Dev", { name: "Saver" });
+    // A screen showing green-fd without its disclosure block.
+    const set = await ctx.call(dev, "set_experience", {
+      app_id: app.id,
+      experience: { screens: [{ id: "home", title: "Home", components: [{ type: "product_card", product_id: "green-fd" }] }] },
+    });
+    assert.equal(set.isError, false, JSON.stringify(set.data));
+    const refused = await ctx.call(dev, "release_app", { app_id: app.id, version: "1.0.0", changelog: "First" });
+    assert.equal(refused.isError, true);
+    assert.ok(refused.data.failed_checks.some((c) => /disclosure/.test(c.name)), JSON.stringify(refused.data));
+    assert.equal((await ctx.call(dev, "publish_app", { app_id: app.id })).isError, true);
+  } finally {
+    ctx.close();
+  }
+});

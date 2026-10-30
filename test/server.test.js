@@ -26,6 +26,9 @@ const DEVELOPER_TOOLS = [
   "create_api_key", "list_api_keys", "revoke_api_key", "rotate_api_key",
   "create_webhook", "delete_webhook", "list_webhook_deliveries", "list_webhooks", "rotate_webhook_secret",
   "create_test_consumer", "simulate_handoff", "list_app_releases", "release_app", "rollback_app", "get_app_metrics",
+  // SDKs and experiences
+  "create_sdk", "generate_sdk_release", "get_sdk_release", "list_sdk_releases", "list_sdks",
+  "render_experience_preview", "set_experience",
 ];
 const INNOVATOR_TOOLS = [
   "create_product", "list_my_products", "publish_product", "test_product", "unpublish_product", "update_product",

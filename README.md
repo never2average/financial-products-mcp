@@ -86,6 +86,23 @@ Each product also has **build terms**:
 - A campaign over the launcher's own (or their firm's) products, or the open reference catalogue, goes live once its copy passes the lint.
 - A campaign over **another innovator's** products becomes `pending_approval` and lands in that innovator's inbox. It goes live when every product's innovator approves, and goes back to draft on any rejection.
 
+### SDKs and experiences (developers)
+
+**SDKs.** `create_sdk(name, languages, product_ids)` defines an SDK over products you can build on: open or approval products, or private ones you were invited to. `generate_sdk_release(sdk_id, version, changelog)` then writes an immutable, semver-versioned bundle:
+- `openapi.json`: an OpenAPI 3.1 document for the app API (`GET /v1/products`, `GET /v1/products/{id}`, `POST /v1/handoffs`, `POST /v1/events`, signed webhooks), with a schema per product built from its fields.
+- `typescript/`: a zero-dependency, fetch-based client with typed product models, `listProducts`, `getProduct`, `startHandoff` (typed to each product's permitted hand-offs), `trackEvent`, `verifyWebhook`, and constants for every product's required disclosures and branding (`disclosuresFor(id)`).
+- `python/`: the same surface on the standard library (urllib, dataclasses, hmac).
+
+`list_sdks`, `list_sdk_releases` and `get_sdk_release` (files as `{path, content}`) flag a release **stale**, with reasons, when a product has published a newer version, changed its build terms, been unpublished, or your access was revoked. Generate a new release to pick the changes up. `get_product_sdk` still describes a single product.
+
+**Experiences.** `set_experience(app_id, experience)` gives an app a structured definition: screens of `product_card`, `comparison_table`, `calculator` (maturity, emi, sip), `disclosure_block`, `handoff_cta` and `text` components. On top of the terms lint, `check_experience` and `publish_app` then require:
+- every screen showing a product also carries that product's `disclosure_block`, which renders its required disclosures verbatim
+- CTAs use only hand-offs the product permits, and comparisons only products that permit `compare`
+- components reference only the app's products
+- no banned phrase in any title, text or label
+
+`render_experience_preview(app_id)` returns a self-contained HTML page (no scripts or external assets, everything escaped) with product data, disclosures and branding, for review.
+
 ### GTM engineering (campaigns)
 
 - **Segments** pick consumers by what they currently hold: `enrolled_in`, `enrolled_in_lines`, and `not_enrolled_in` for cross-sell.

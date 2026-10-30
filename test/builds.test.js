@@ -526,3 +526,23 @@ test("Mynt's Google service account signs a JWT for a cloud-platform token, and 
   assert.ok(createVerify("RSA-SHA256").update(`${head}.${body}`).verify(publicKey, Buffer.from(sig, "base64url")));
   assert.equal(sa.projectId, "acme-prod");
 });
+
+test("boat's file API: a file that isn't there yet reads as null, other errors still throw", async () => {
+  const { HttpBoatClient } = await import("../dist/boat.js");
+  const boat = new HttpBoatClient("boat_test", "https://boat.example/api/v1");
+  const realFetch = globalThis.fetch;
+  let answer;
+  globalThis.fetch = async () => new Response(JSON.stringify(answer.body), { status: answer.status });
+  try {
+    answer = { status: 500, body: { ok: false, message: "ENOENT: no such file or directory, stat '/home/user/mynt/status.json'" } };
+    assert.equal(await boat.readFile("sbx", "/home/user/mynt/status.json"), null);
+    answer = { status: 404, body: { ok: false, message: "Not found" } };
+    assert.equal(await boat.readFile("sbx", "/home/user/x"), null);
+    answer = { status: 200, body: { content: "hi" } };
+    assert.equal(await boat.readFile("sbx", "/home/user/x"), "hi");
+    answer = { status: 403, body: { ok: false, message: "Path must resolve under /home/user or /tmp" } };
+    await assert.rejects(boat.readFile("sbx", "/root/x"), /Path must resolve/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

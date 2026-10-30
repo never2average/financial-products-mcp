@@ -1,8 +1,8 @@
 // The script Mynt runs to verify a build, in a fresh sandbox the coding agent never touched. Its
 // report, not the agent's own, decides whether a build ships.
 
-export const VERIFY_DIR = "/root/mynt-verify";
-export const VERIFY_APP = "/root/app";
+export const VERIFY_DIR = "/home/user/mynt-verify";
+export const VERIFY_APP = "/home/user/app";
 const GITLEAKS_VERSION = "8.21.2";
 const SYFT_VERSION = "1.18.1";
 
@@ -134,7 +134,7 @@ export function auditorPrompt(maxwellRepo: string) {
   return `You are an independent security auditor for a Mynt build. The application under review is in ${VERIFY_APP}; another
 agent produced it. Do not modify anything inside ${VERIFY_APP}: no edits, new files or deletions, and no fixes.
 
-1. git clone ${maxwellRepo} /root/maxwell, then in /root/maxwell run: npm ci && npm run validate
+1. git clone ${maxwellRepo} ~/maxwell, then in ~/maxwell run: npm ci && npm run validate
 2. Register a company "mynt-verify" and an application whose source is the local checkout at ${VERIFY_APP}, with this
    machine as the scan executor.
 3. Run only its static workflows, headless: execute-scr, probe-cicd-env, probe-agent-graph and probe-schemas, plus

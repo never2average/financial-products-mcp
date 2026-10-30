@@ -120,7 +120,7 @@ export function registerBuildTools(server: McpServer, store: Store, user: User) 
         sources.push({ product_id: id, version: record.version, terms_hash: termsHash(record.build_terms), access: a.granted ? a.via : "building" });
       }
       if (bad.length) return fail(`No longer available to you: ${bad.join(", ")}. Create a new SDK without them.`);
-      const files = generateSdk({ name: sdk.name, version, languages: sdk.languages as never, baseUrl: baseUrl(), products });
+      const files = await generateSdk({ name: sdk.name, version, languages: sdk.languages as never, baseUrl: baseUrl(), products });
       try {
         const release = await store.createSdkRelease({ sdk_id: sdk.id, version, changelog, sources, files });
         return json({ ...release, files: release.files.map((f) => ({ path: f.path, bytes: f.content.length })) });

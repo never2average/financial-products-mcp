@@ -645,7 +645,7 @@ At each phase, overwrite ${o.files.status} with {"phase": "<coding|auditing|chec
 ## 1. Code (phase: coding)
 ${o.repository ? `Clone ${o.repository} into ~/workspace/app (authenticate git with $GITHUB_TOKEN through a credential helper, never in the URL) and create branch ${o.branch}.` : "Create the project in ~/workspace/app."}
 Implement the goal with tests. Prefer the project's existing stack; otherwise TypeScript.
-If ${o.files.sdk} exists, it holds a typed Mynt SDK for this app's products (OpenAPI, TypeScript and Python clients
+If ${o.files.sdk} exists, it holds a typed Mynt SDK for this app's products (OpenAPI, a TypeScript client, Python helpers and python/generate.sh for the Python client,
 with each product's permitted hand-offs, disclosures and branding): build on it. $MYNT_SANDBOX_KEY and $MYNT_API_BASE,
 when set, reach Mynt's sandbox (simulated hand-offs, no real customers); use them for end-to-end tests and never
 commit them.

@@ -38,6 +38,10 @@ export interface BoatClient {
   host(id: string, port: number): Promise<{ url: string }>;
   costDollars(id: string): Promise<number>;
   stop(id: string): Promise<void>;
+  // Runs a shell command; detached commands return a processId to poll.
+  exec(id: string, command: string, opts?: { timeoutSeconds?: number; detached?: boolean }): Promise<{ processId?: number; exitCode: number | null; stdout: string; stderr: string }>;
+  commandStatus(id: string, processId: number): Promise<{ running: boolean; exitCode: number | null }>;
+  downloadUrl(id: string, path: string, ttlSeconds?: number): Promise<string>;
 }
 
 export class BoatApiError extends Error {
@@ -145,5 +149,24 @@ export class HttpBoatClient implements BoatClient {
 
   async stop(id: string) {
     await this.call("POST", `/sandboxes/${encodeURIComponent(id)}/stop`, {});
+  }
+
+  async exec(id: string, command: string, opts: { timeoutSeconds?: number; detached?: boolean } = {}) {
+    const r = await this.call<{ processId?: number; exitCode: number | null; stdout?: string; stderr?: string }>(
+      "POST",
+      `/sandboxes/${encodeURIComponent(id)}/commands`,
+      { command, timeoutSeconds: opts.timeoutSeconds ?? 600, detached: opts.detached ?? false },
+    );
+    return { processId: r.processId, exitCode: r.exitCode ?? null, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  }
+
+  async commandStatus(id: string, processId: number) {
+    const r = await this.call<{ running: boolean; exitCode: number | null }>("GET", `/sandboxes/${encodeURIComponent(id)}/commands/${processId}`);
+    return { running: r.running, exitCode: r.exitCode ?? null };
+  }
+
+  async downloadUrl(id: string, path: string, ttlSeconds = 3600) {
+    const r = await this.call<{ url: string }>("POST", `/sandboxes/${encodeURIComponent(id)}/files/download-url`, { path, ttlSeconds });
+    return r.url;
   }
 }

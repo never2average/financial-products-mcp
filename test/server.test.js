@@ -22,6 +22,10 @@ const DEVELOPER_TOOLS = [
   // GTM engineering
   "create_campaign", "create_segment", "end_campaign", "get_campaign_metrics", "launch_campaign",
   "lint_campaign", "list_my_campaigns", "list_my_segments", "pause_campaign", "update_campaign",
+  // runtime layer: keys, webhooks, sandbox, releases, metrics
+  "create_api_key", "list_api_keys", "revoke_api_key", "rotate_api_key",
+  "create_webhook", "delete_webhook", "list_webhook_deliveries", "list_webhooks", "rotate_webhook_secret",
+  "create_test_consumer", "simulate_handoff", "list_app_releases", "release_app", "rollback_app", "get_app_metrics",
 ];
 const INNOVATOR_TOOLS = [
   "create_product", "list_my_products", "publish_product", "test_product", "unpublish_product", "update_product",
@@ -31,6 +35,8 @@ const INNOVATOR_TOOLS = [
   // firm, licences, and who may build on its products
   "create_entity", "get_my_entity", "invite_developer", "list_experiences", "list_requests", "register_license",
   "review_request", "revoke_access", "set_product_access", "suspend_product_experiences",
+  // runtime layer
+  "get_product_distribution_metrics", "report_handoff_outcome",
 ];
 
 async function connect(store, user = null) {

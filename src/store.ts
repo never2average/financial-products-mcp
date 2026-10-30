@@ -60,6 +60,71 @@ export interface AuditEntry {
   created_at: string;
 }
 
+// ---- Runtime layer: per-app API keys, hand-offs, analytics events, webhooks, app releases ----
+
+export type KeyEnvironment = "live" | "sandbox";
+export interface ApiKey {
+  id: string;
+  app_id: string;
+  environment: KeyEnvironment;
+  label: string;
+  prefix: string; // the first characters of the key, to recognise it by
+  allowed_origins: string[];
+  status: "active" | "revoked";
+  created_at: string;
+  last_used_at: string | null;
+  rotated_at: string | null;
+  revoked_at: string | null;
+}
+
+export interface Handoff {
+  id: string;
+  app_id: string;
+  product_id: string;
+  action: string;
+  consumer_ref: string | null;
+  sandbox: boolean;
+  status: "started" | "completed" | "failed";
+  redirect_url: string;
+  created_at: string;
+  resolved_at: string | null;
+}
+
+export interface Webhook {
+  id: string;
+  app_id: string;
+  url: string;
+  events: string[];
+  created_at: string;
+}
+
+export interface WebhookDelivery {
+  id: string;
+  webhook_id: string;
+  event_id: string;
+  type: string;
+  payload: unknown;
+  sandbox: boolean;
+  status: "pending" | "delivered" | "failed";
+  attempts: number;
+  last_response_code: number | null;
+  last_error: string | null;
+  next_attempt_at: string | null;
+  created_at: string;
+  delivered_at: string | null;
+}
+
+export interface AppRelease {
+  app_id: string;
+  version: string;
+  changelog: string;
+  snapshot: Record<string, unknown>;
+  released_by: string | null;
+  created_at: string;
+}
+
+// ---- end runtime layer ----
+
 const KNOWN_REGIONS: Record<string, { name: string; regulators: string[] }> = {
   global: { name: "Global", regulators: [] },
   IN: { name: "India", regulators: ["RBI", "SEBI", "IRDAI", "PFRDA", "EPFO", "Ministry of Finance"] },
@@ -136,6 +201,7 @@ export interface BuildTerms {
   allowed_personas?: string[];
   branding?: string;
   commercials?: { model: string; value?: number; notes?: string };
+  handoff_url?: string; // where the runtime API sends deep_link / initiate_onboarding hand-offs
 }
 
 export interface Entity {
@@ -395,6 +461,93 @@ const TABLES = `
     created_at timestamptz NOT NULL DEFAULT now()
   );
   CREATE INDEX IF NOT EXISTS audit_log_created_idx ON financial_products.audit_log (created_at DESC);
+  -- ---- Runtime layer: per-app API keys, hand-offs, analytics events, webhooks, app releases ----
+  CREATE TABLE IF NOT EXISTS financial_products.api_keys (
+    id uuid PRIMARY KEY,
+    app_id uuid NOT NULL REFERENCES financial_products.apps(id),
+    environment text NOT NULL CHECK (environment IN ('live', 'sandbox')),
+    label text NOT NULL,
+    prefix text NOT NULL,
+    key_hash text NOT NULL UNIQUE,
+    allowed_origins text[] NOT NULL DEFAULT '{}',
+    status text NOT NULL CHECK (status IN ('active', 'revoked')),
+    created_by uuid REFERENCES financial_products.users(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    last_used_at timestamptz,
+    rotated_at timestamptz,
+    revoked_at timestamptz
+  );
+  CREATE INDEX IF NOT EXISTS api_keys_app_idx ON financial_products.api_keys (app_id);
+  CREATE TABLE IF NOT EXISTS financial_products.handoffs (
+    id uuid PRIMARY KEY,
+    app_id uuid NOT NULL REFERENCES financial_products.apps(id),
+    key_id uuid REFERENCES financial_products.api_keys(id),
+    product_id text NOT NULL REFERENCES financial_products.products(id),
+    action text NOT NULL,
+    consumer_ref text,
+    sandbox boolean NOT NULL,
+    status text NOT NULL CHECK (status IN ('started', 'completed', 'failed')),
+    redirect_url text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    resolved_at timestamptz
+  );
+  CREATE INDEX IF NOT EXISTS handoffs_app_idx ON financial_products.handoffs (app_id, created_at);
+  CREATE INDEX IF NOT EXISTS handoffs_product_idx ON financial_products.handoffs (product_id, created_at);
+  CREATE TABLE IF NOT EXISTS financial_products.app_events (
+    id uuid PRIMARY KEY,
+    app_id uuid NOT NULL REFERENCES financial_products.apps(id),
+    product_id text NOT NULL REFERENCES financial_products.products(id),
+    type text NOT NULL CHECK (type IN ('view', 'click', 'handoff_started')),
+    screen text,
+    sandbox boolean NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS app_events_app_idx ON financial_products.app_events (app_id, created_at);
+  CREATE INDEX IF NOT EXISTS app_events_product_idx ON financial_products.app_events (product_id, created_at);
+  CREATE TABLE IF NOT EXISTS financial_products.test_consumers (
+    consumer_ref text PRIMARY KEY,
+    app_id uuid NOT NULL REFERENCES financial_products.apps(id),
+    label text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE TABLE IF NOT EXISTS financial_products.webhooks (
+    id uuid PRIMARY KEY,
+    app_id uuid NOT NULL REFERENCES financial_products.apps(id),
+    url text NOT NULL,
+    events text[] NOT NULL,
+    secret text NOT NULL,
+    created_by uuid REFERENCES financial_products.users(id),
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS webhooks_app_idx ON financial_products.webhooks (app_id);
+  CREATE TABLE IF NOT EXISTS financial_products.webhook_deliveries (
+    id uuid PRIMARY KEY,
+    webhook_id uuid NOT NULL REFERENCES financial_products.webhooks(id) ON DELETE CASCADE,
+    event_id uuid NOT NULL,
+    type text NOT NULL,
+    payload jsonb NOT NULL,
+    sandbox boolean NOT NULL DEFAULT false,
+    status text NOT NULL CHECK (status IN ('pending', 'delivered', 'failed')),
+    attempts integer NOT NULL DEFAULT 0,
+    last_response_code integer,
+    last_error text,
+    next_attempt_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    delivered_at timestamptz
+  );
+  CREATE INDEX IF NOT EXISTS webhook_deliveries_due_idx ON financial_products.webhook_deliveries (next_attempt_at) WHERE status = 'pending';
+  CREATE INDEX IF NOT EXISTS webhook_deliveries_hook_idx ON financial_products.webhook_deliveries (webhook_id, created_at DESC);
+  -- Snapshots of the whole app row (as jsonb, so columns added later are captured too).
+  CREATE TABLE IF NOT EXISTS financial_products.app_releases (
+    app_id uuid NOT NULL REFERENCES financial_products.apps(id),
+    version text NOT NULL,
+    changelog text NOT NULL,
+    snapshot jsonb NOT NULL,
+    released_by uuid REFERENCES financial_products.users(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (app_id, version)
+  );
+  -- ---- end runtime layer ----
   -- Entities (licensed firms) and the licences they hold; admins verify licences.
   CREATE TABLE IF NOT EXISTS financial_products.entities (
     id uuid PRIMARY KEY,
@@ -468,6 +621,73 @@ const toUser = (r: Row): User => ({
 });
 
 const toInvite = (r: Row): Invite => ({ email: r.email as string, roles: r.roles as Role[], created_at: iso(r.created_at)! });
+
+// ---- Runtime layer mappers ----
+
+// App API keys: mynt_live_... or mynt_test_..., shown once and stored hashed like users' tokens.
+const newApiKey = (env: KeyEnvironment) => `mynt_${env === "live" ? "live" : "test"}_${randomBytes(24).toString("base64url")}`;
+
+const toApiKey = (r: Row): ApiKey => ({
+  id: r.id as string,
+  app_id: r.app_id as string,
+  environment: r.environment as KeyEnvironment,
+  label: r.label as string,
+  prefix: r.prefix as string,
+  allowed_origins: (r.allowed_origins as string[]) ?? [],
+  status: r.status as ApiKey["status"],
+  created_at: iso(r.created_at)!,
+  last_used_at: iso(r.last_used_at),
+  rotated_at: iso(r.rotated_at),
+  revoked_at: iso(r.revoked_at),
+});
+
+const toHandoff = (r: Row): Handoff => ({
+  id: r.id as string,
+  app_id: r.app_id as string,
+  product_id: r.product_id as string,
+  action: r.action as string,
+  consumer_ref: (r.consumer_ref as string | null) ?? null,
+  sandbox: r.sandbox as boolean,
+  status: r.status as Handoff["status"],
+  redirect_url: r.redirect_url as string,
+  created_at: iso(r.created_at)!,
+  resolved_at: iso(r.resolved_at),
+});
+
+const toWebhook = (r: Row): Webhook => ({
+  id: r.id as string,
+  app_id: r.app_id as string,
+  url: r.url as string,
+  events: r.events as string[],
+  created_at: iso(r.created_at)!,
+});
+
+const toDelivery = (r: Row): WebhookDelivery => ({
+  id: r.id as string,
+  webhook_id: r.webhook_id as string,
+  event_id: r.event_id as string,
+  type: r.type as string,
+  payload: r.payload,
+  sandbox: r.sandbox as boolean,
+  status: r.status as WebhookDelivery["status"],
+  attempts: Number(r.attempts),
+  last_response_code: r.last_response_code == null ? null : Number(r.last_response_code),
+  last_error: (r.last_error as string | null) ?? null,
+  next_attempt_at: iso(r.next_attempt_at),
+  created_at: iso(r.created_at)!,
+  delivered_at: iso(r.delivered_at),
+});
+
+const toRelease = (r: Row): AppRelease => ({
+  app_id: r.app_id as string,
+  version: r.version as string,
+  changelog: r.changelog as string,
+  snapshot: r.snapshot as Record<string, unknown>,
+  released_by: (r.released_by as string | null) ?? null,
+  created_at: iso(r.created_at)!,
+});
+
+// ---- end runtime layer mappers ----
 
 const toProductRecord = (r: Row): ProductRecord => ({
   product: r.data as FinancialProduct,
@@ -701,6 +921,244 @@ export class Store {
   async allCampaigns(): Promise<Campaign[]> {
     return (await this.all("SELECT * FROM financial_products.campaigns ORDER BY created_at DESC")).map(toCampaign);
   }
+
+  // ---- Runtime layer: API keys, hand-offs, events, webhooks, releases ----
+
+  async createApiKey(
+    createdBy: string,
+    k: Pick<ApiKey, "app_id" | "environment" | "label" | "allowed_origins">,
+  ): Promise<{ key: ApiKey; secret: string }> {
+    const secret = newApiKey(k.environment);
+    const r = await this.one(
+      `INSERT INTO financial_products.api_keys (id, app_id, environment, label, prefix, key_hash, allowed_origins, status, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8) RETURNING *`,
+      [randomUUID(), k.app_id, k.environment, k.label, secret.slice(0, 14), hashToken(secret), k.allowed_origins, createdBy],
+    );
+    return { key: toApiKey(r!), secret };
+  }
+
+  async getApiKey(id: string): Promise<ApiKey | undefined> {
+    const r = await this.one("SELECT * FROM financial_products.api_keys WHERE id::text = $1", [id]);
+    return r && toApiKey(r);
+  }
+
+  async apiKeysForApp(appId: string): Promise<ApiKey[]> {
+    return (await this.all("SELECT * FROM financial_products.api_keys WHERE app_id::text = $1 ORDER BY created_at", [appId])).map(toApiKey);
+  }
+
+  // The active key with this secret, and its app; marks it used (at most once a minute).
+  async apiKeyBySecret(secret: string): Promise<{ key: ApiKey; app: App } | undefined> {
+    const r = await this.one(
+      `UPDATE financial_products.api_keys SET last_used_at = CASE
+         WHEN last_used_at IS NULL OR last_used_at < now() - interval '1 minute' THEN now() ELSE last_used_at END
+       WHERE key_hash = $1 AND status = 'active' RETURNING *`,
+      [hashToken(secret)],
+    );
+    if (!r) return undefined;
+    const app = await this.getApp(r.app_id as string);
+    return app && { key: toApiKey(r), app };
+  }
+
+  // A new secret for the same key; the old secret stops working at once.
+  async rotateApiKey(id: string, environment: KeyEnvironment): Promise<{ key: ApiKey; secret: string }> {
+    const secret = newApiKey(environment);
+    const r = await this.one(
+      "UPDATE financial_products.api_keys SET key_hash = $2, prefix = $3, rotated_at = now() WHERE id::text = $1 RETURNING *",
+      [id, hashToken(secret), secret.slice(0, 14)],
+    );
+    return { key: toApiKey(r!), secret };
+  }
+
+  async revokeApiKey(id: string): Promise<ApiKey> {
+    const r = await this.one("UPDATE financial_products.api_keys SET status = 'revoked', revoked_at = now() WHERE id::text = $1 RETURNING *", [id]);
+    return toApiKey(r!);
+  }
+
+  // Whether any active key lists `origin`, for CORS preflights (which carry no key).
+  async originAllowed(origin: string): Promise<boolean> {
+    return !!(await this.one("SELECT 1 FROM financial_products.api_keys WHERE status = 'active' AND $1 = ANY(allowed_origins) LIMIT 1", [origin]));
+  }
+
+  async createHandoff(h: Omit<Handoff, "status" | "created_at" | "resolved_at"> & { key_id: string | null }): Promise<Handoff> {
+    const r = await this.one(
+      `INSERT INTO financial_products.handoffs (id, app_id, key_id, product_id, action, consumer_ref, sandbox, status, redirect_url)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'started', $8) RETURNING *`,
+      [h.id, h.app_id, h.key_id, h.product_id, h.action, h.consumer_ref, h.sandbox, h.redirect_url],
+    );
+    return toHandoff(r!);
+  }
+
+  async getHandoff(id: string): Promise<Handoff | undefined> {
+    const r = await this.one("SELECT * FROM financial_products.handoffs WHERE id::text = $1", [id]);
+    return r && toHandoff(r);
+  }
+
+  // Resolves a hand-off that is still open; undefined if it was already resolved.
+  async resolveHandoff(id: string, status: "completed" | "failed"): Promise<Handoff | undefined> {
+    const r = await this.one(
+      "UPDATE financial_products.handoffs SET status = $2, resolved_at = now() WHERE id::text = $1 AND status = 'started' RETURNING *",
+      [id, status],
+    );
+    return r && toHandoff(r);
+  }
+
+  async recordAppEvent(e: { app_id: string; product_id: string; type: string; screen: string | null; sandbox: boolean }): Promise<string> {
+    const id = randomUUID();
+    await this.db.query(
+      "INSERT INTO financial_products.app_events (id, app_id, product_id, type, screen, sandbox) VALUES ($1, $2, $3, $4, $5, $6)",
+      [id, e.app_id, e.product_id, e.type, e.screen, e.sandbox],
+    );
+    return id;
+  }
+
+  // Counts per app, product, UTC day and kind: app events (view, click, handoff_started) and
+  // hand-offs (handoff:started, handoff:completed, handoff:failed). `from` inclusive, `to` exclusive.
+  async runtimeCounts(q: { app_ids?: string[]; product_ids?: string[]; from: string; to: string; include_sandbox: boolean }) {
+    const rows = await this.all(
+      `SELECT app_id::text AS app_id, product_id, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, kind, count(*)::int AS n FROM (
+         SELECT app_id, product_id, created_at, type AS kind, sandbox FROM financial_products.app_events
+         UNION ALL
+         SELECT app_id, product_id, created_at, 'handoff:started', sandbox FROM financial_products.handoffs
+         UNION ALL
+         SELECT app_id, product_id, created_at, 'handoff:' || status, sandbox FROM financial_products.handoffs WHERE status <> 'started'
+       ) x
+       WHERE ($1::text[] IS NULL OR app_id::text = ANY($1)) AND ($2::text[] IS NULL OR product_id = ANY($2))
+         AND created_at >= $3::timestamptz AND created_at < $4::timestamptz AND (NOT sandbox OR $5)
+       GROUP BY 1, 2, 3, 4 ORDER BY 3, 2`,
+      [q.app_ids ?? null, q.product_ids ?? null, q.from, q.to, q.include_sandbox],
+    );
+    return rows as { app_id: string; product_id: string; day: string; kind: string; n: number }[];
+  }
+
+  async createTestConsumer(appId: string, label: string): Promise<{ consumer_ref: string; app_id: string; label: string; created_at: string }> {
+    const r = await this.one(
+      "INSERT INTO financial_products.test_consumers (consumer_ref, app_id, label) VALUES ($1, $2, $3) RETURNING *",
+      [`tc_${randomBytes(12).toString("base64url")}`, appId, label],
+    );
+    return { consumer_ref: r!.consumer_ref as string, app_id: r!.app_id as string, label: r!.label as string, created_at: iso(r!.created_at)! };
+  }
+
+  async appsUsingProduct(productId: string): Promise<App[]> {
+    return (await this.all("SELECT * FROM financial_products.apps WHERE $1 = ANY(product_ids) ORDER BY created_at", [productId])).map(toApp);
+  }
+
+  async createWebhook(createdBy: string, w: Pick<Webhook, "app_id" | "url" | "events">): Promise<{ webhook: Webhook; secret: string }> {
+    const secret = `whsec_${randomBytes(24).toString("base64url")}`;
+    const r = await this.one(
+      "INSERT INTO financial_products.webhooks (id, app_id, url, events, secret, created_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
+      [randomUUID(), w.app_id, w.url, w.events, secret, createdBy],
+    );
+    return { webhook: toWebhook(r!), secret };
+  }
+
+  async getWebhook(id: string): Promise<Webhook | undefined> {
+    const r = await this.one("SELECT * FROM financial_products.webhooks WHERE id::text = $1", [id]);
+    return r && toWebhook(r);
+  }
+
+  async webhooksForApps(appIds: string[]): Promise<Webhook[]> {
+    if (appIds.length === 0) return [];
+    return (await this.all("SELECT * FROM financial_products.webhooks WHERE app_id::text = ANY($1) ORDER BY created_at", [appIds])).map(toWebhook);
+  }
+
+  async rotateWebhookSecret(id: string): Promise<string> {
+    const secret = `whsec_${randomBytes(24).toString("base64url")}`;
+    await this.db.query("UPDATE financial_products.webhooks SET secret = $2 WHERE id::text = $1", [id, secret]);
+    return secret;
+  }
+
+  async deleteWebhook(id: string): Promise<void> {
+    await this.db.query("DELETE FROM financial_products.webhooks WHERE id::text = $1", [id]);
+  }
+
+  // Queues one delivery of an event to every webhook of `appIds` subscribed to its type, with the
+  // receiving app's id in the payload's data.
+  async enqueueEvent(appIds: string[], payload: { id: string; type: string }, sandbox: boolean): Promise<number> {
+    if (appIds.length === 0) return 0;
+    const rows = await this.all(
+      `INSERT INTO financial_products.webhook_deliveries (id, webhook_id, event_id, type, payload, sandbox, status, next_attempt_at)
+       SELECT gen_random_uuid(), w.id, $2::uuid, $3, jsonb_set($4::jsonb, '{data,app_id}', to_jsonb(w.app_id::text)), $5, 'pending', now()
+       FROM financial_products.webhooks w WHERE w.app_id::text = ANY($1) AND $3 = ANY(w.events)
+       RETURNING id`,
+      [appIds, payload.id, payload.type, JSON.stringify(payload), sandbox],
+    );
+    return rows.length;
+  }
+
+  // Claims due deliveries with their webhook's url and secret, leasing them for `leaseSeconds` so
+  // another worker doesn't send them at the same time.
+  async claimDueDeliveries(now: Date, limit: number, leaseSeconds = 60): Promise<(WebhookDelivery & { url: string; secret: string })[]> {
+    const rows = await this.all(
+      `WITH due AS (
+         SELECT id FROM financial_products.webhook_deliveries
+         WHERE status = 'pending' AND next_attempt_at <= $1::timestamptz ORDER BY next_attempt_at LIMIT $2 FOR UPDATE SKIP LOCKED
+       ), claimed AS (
+         UPDATE financial_products.webhook_deliveries d SET next_attempt_at = $1::timestamptz + make_interval(secs => $3)
+         FROM due WHERE d.id = due.id RETURNING d.*
+       )
+       SELECT claimed.*, w.url, w.secret FROM claimed JOIN financial_products.webhooks w ON w.id = claimed.webhook_id`,
+      [now.toISOString(), limit, leaseSeconds],
+    );
+    return rows.map((r) => ({ ...toDelivery(r), url: r.url as string, secret: r.secret as string }));
+  }
+
+  // next_attempt_at null on a failure gives up on the delivery.
+  async recordDeliveryAttempt(id: string, a: { ok: boolean; code: number | null; error: string | null; next_attempt_at: Date | null }): Promise<void> {
+    await this.db.query(
+      `UPDATE financial_products.webhook_deliveries SET attempts = attempts + 1, last_response_code = $2, last_error = $3,
+         status = CASE WHEN $4 THEN 'delivered' WHEN $5::timestamptz IS NULL THEN 'failed' ELSE 'pending' END,
+         next_attempt_at = CASE WHEN $4 THEN NULL ELSE $5::timestamptz END,
+         delivered_at = CASE WHEN $4 THEN now() ELSE delivered_at END
+       WHERE id = $1`,
+      [id, a.code, a.error, a.ok, a.next_attempt_at?.toISOString() ?? null],
+    );
+  }
+
+  async webhookDeliveries(webhookId: string, limit = 50): Promise<WebhookDelivery[]> {
+    return (
+      await this.all("SELECT * FROM financial_products.webhook_deliveries WHERE webhook_id::text = $1 ORDER BY created_at DESC LIMIT $2", [webhookId, limit])
+    ).map(toDelivery);
+  }
+
+  async appReleases(appId: string): Promise<AppRelease[]> {
+    return (await this.all("SELECT * FROM financial_products.app_releases WHERE app_id::text = $1 ORDER BY created_at", [appId])).map(toRelease);
+  }
+
+  // Snapshots the app's whole row as a release.
+  async createAppRelease(appId: string, version: string, changelog: string, releasedBy: string): Promise<AppRelease> {
+    try {
+      const r = await this.one(
+        `INSERT INTO financial_products.app_releases (app_id, version, changelog, snapshot, released_by)
+         SELECT a.id, $2, $3, to_jsonb(a), $4 FROM financial_products.apps a WHERE a.id::text = $1 RETURNING *`,
+        [appId, version, changelog, releasedBy],
+      );
+      return toRelease(r!);
+    } catch (e) {
+      if (isUniqueViolation(e)) throw new DuplicateError(`Version ${version} is already released`);
+      throw e;
+    }
+  }
+
+  // Overwrites the app's definition with a snapshot: every column except identity, ownership, status
+  // and timestamps. Columns the snapshot predates keep their current value.
+  async restoreAppSnapshot(appId: string, snapshot: Record<string, unknown>): Promise<App> {
+    const keep = new Set(["id", "owner_id", "status", "created_at", "updated_at"]);
+    const cols = (
+      await this.all("SELECT column_name FROM information_schema.columns WHERE table_schema = 'financial_products' AND table_name = 'apps'")
+    )
+      .map((c) => c.column_name as string)
+      .filter((c) => !keep.has(c) && c in snapshot);
+    const set = [...cols.map((c) => `"${c.replace(/"/g, '""')}" = r."${c.replace(/"/g, '""')}"`), "updated_at = now()"].join(", ");
+    const r = await this.one(
+      `UPDATE financial_products.apps a SET ${set}
+       FROM (SELECT (jsonb_populate_record(x, $2::jsonb)).* FROM financial_products.apps x WHERE x.id::text = $1) r
+       WHERE a.id::text = $1 RETURNING a.*`,
+      [appId, JSON.stringify(snapshot)],
+    );
+    return toApp(r!);
+  }
+
+  // ---- end runtime layer ----
 
   close(): Promise<void> {
     return this.db.close();

@@ -4,6 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { ClerkAdmin, ClerkAuth, clerkConfigFromEnv } from "./auth.js";
 import { connectPostgres } from "./db.js";
 import { createMcpHttpServer } from "./http.js";
+import { startWebhookWorker } from "./runtime.js";
 import { createServer } from "./server.js";
 import { ROLES, Store, type Role } from "./store.js";
 
@@ -76,7 +77,12 @@ if (values.help) {
   const http = createMcpHttpServer(store, clerk, { clerkAdmin: clerkAdmin() }).listen(port, values.host, () =>
     console.error(`mynt MCP listening on http://${values.host}:${port}/mcp${clerk ? " (Clerk whitelist auth)" : ""}`),
   );
-  process.on("SIGTERM", () => http.close(() => process.exit(0)));
+  // Sends queued webhook deliveries (events from any process sharing the database).
+  const webhooks = startWebhookWorker(store);
+  process.on("SIGTERM", () => {
+    webhooks.stop();
+    http.close(() => process.exit(0));
+  });
 } else if (command === "users" && sub === "invite") {
   const email = parseEmail();
   const roles = parseRoles();

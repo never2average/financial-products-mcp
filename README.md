@@ -5,8 +5,8 @@
 | User type | Can | Tools (in addition to the catalog tools) |
 | --- | --- | --- |
 | **Consumer** | Use financial products and respond to offers | `enroll_in_product`, `list_my_enrollments`, `cancel_enrollment`, `list_offers`, `upgrade_enrollment` |
-| **Developer** | Build app experiences and do GTM engineering around financial products | Apps: `create_app`, `update_app`, `list_my_apps`, `preview_app`, `publish_app`. GTM: `create_segment`, `list_my_segments`, `create_campaign`, `update_campaign`, `lint_campaign`, `launch_campaign`, `pause_campaign`, `end_campaign`, `list_my_campaigns`, `get_campaign_metrics` |
-| **Innovator** | Create, test, publish, version and upgrade financial products | `create_product`, `update_product`, `test_product`, `publish_product`, `unpublish_product`, `list_my_products`, `create_product_version`, `update_product_version`, `list_product_versions`, `diff_product_versions`, `restore_product_version`, `upgrade_enrollments` |
+| **Developer** | Build app experiences and do GTM engineering around financial products | Apps: `create_app`, `update_app`, `list_my_apps`, `preview_app`, `publish_app`. GTM: `create_segment`, `list_my_segments`, `create_campaign`, `update_campaign`, `lint_campaign`, `launch_campaign`, `pause_campaign`, `end_campaign`, `list_my_campaigns`, `get_campaign_metrics`. Runtime: `create_api_key`, `list_api_keys`, `rotate_api_key`, `revoke_api_key`, `create_webhook`, `list_webhooks`, `delete_webhook`, `rotate_webhook_secret`, `list_webhook_deliveries`, `create_test_consumer`, `simulate_handoff`, `release_app`, `list_app_releases`, `rollback_app`, `get_app_metrics` |
+| **Innovator** | Create, test, publish, version and upgrade financial products | `create_product`, `update_product`, `test_product`, `publish_product`, `unpublish_product`, `list_my_products`, `create_product_version`, `update_product_version`, `list_product_versions`, `diff_product_versions`, `restore_product_version`, `upgrade_enrollments`, `get_product_distribution_metrics`, `report_handoff_outcome` |
 | **Admin** | Run Mynt: geographies, product types, the whitelist, and oversight, all from Mynt itself | `define_region`, `define_product_category`, `list_whitelist`, `invite_user`, `revoke_user`, `list_all_campaigns`, `admin_pause_campaign`, `admin_set_product_status`, `audit_log` |
 
 Everyone (including guests without a token) gets the catalog tools: `whoami`, `list_products`, `get_product`, `list_categories`, `list_regions`, `list_product_categories`, `list_apps`, plus the resource `mynt://catalog`.
@@ -70,6 +70,7 @@ Each product also has **build terms**:
 - **allowed customer personas**
 - **branding**
 - **commercials:** none, referral fee or revenue share
+- **handoff_url:** where runtime API hand-offs send the user (https)
 
 **The developer side:**
 - **Find products:** `list_buildable_products` and `get_product_sdk` (data shape, sandbox sample, permitted actions, hand-offs).
@@ -99,6 +100,73 @@ A published product isn't edited in place:
 - `list_product_versions` and `diff_product_versions` show the history.
 - `restore_product_version` drafts a rollback as a new version, so history stays linear.
 - Enrollments remember the version they joined on. `upgrade_enrollments` moves all of them to the live version, and a consumer can `upgrade_enrollment` their own.
+
+### Runtime API, webhooks and sandbox (developers)
+
+The MCP tools are for building; a shipped app talks to Mynt's **runtime API** under `/v1`. It is separate from `/mcp`: requests authenticate with a per-app key, not a Clerk sign-in.
+
+**Keys.** `create_api_key(app_id, environment, label, allowed_origins?)` returns a key once (Mynt stores only its SHA-256 hash). Manage keys with `list_api_keys`, `rotate_api_key` (the old secret stops working at once) and `revoke_api_key`; each of these is audit-logged.
+- `mynt_live_…` keys work only once the app is published.
+- `mynt_test_…` (sandbox) keys work on drafts too.
+
+Send the key as `Authorization: Bearer mynt_live_…`.
+
+| Endpoint | Does |
+| --- | --- |
+| `GET /v1/products` | `{ products: [...] }`: the products this app may show right now (published, and access granted for the app), each with its fields, `version` and `build_terms`. Revoked or suspended products drop out immediately |
+| `GET /v1/products/{id}` | One of those, else `404` |
+| `POST /v1/handoffs` | `{ product_id, action: "deep_link" \| "initiate_onboarding", consumer_ref? }` → `201 { handoff_id, redirect_url, sandbox }`. Only if the product's build terms permit the action (`403`). Live: `redirect_url` is the innovator's `handoff_url` with `?handoff_id=…&app_id=…`, or `409 handoff_not_configured` if it has none |
+| `POST /v1/events` | `{ type: "view" \| "click" \| "handoff_started", product_id, screen? }` → `202` |
+| `POST /v1/sandbox/handoffs/{id}` | Sandbox key only: `{ outcome: "completed" \| "failed" }` resolves a simulated hand-off |
+
+The API never takes or returns consumer financial data:
+- `consumer_ref` is the app's own opaque id (letters, digits, `_`, `-`, up to 64 characters). Anything that looks like a phone, account or card number is refused.
+- Unknown body fields are refused.
+
+**Errors** are JSON `{ error, message }`, with status `400`, `401`, `403`, `404`, `405`, `409`, `413`, `429` or `500`.
+
+**Limits.**
+- Each key gets 60 requests a minute (a token bucket). Past that, the API answers `429` with `Retry-After`.
+- Request bodies are limited to 16 KiB.
+
+**CORS.** No wildcard: a browser may call the API only from the origins listed on the key (`allowed_origins`). A key with no origins is for server-side use only.
+
+**Hand-offs.** Innovators set `handoff_url` (https) in a product's build terms with `set_product_access`. When their onboarding finishes or is abandoned, they call `report_handoff_outcome(handoff_id, outcome)`. Only the outcome is shared, never customer data.
+
+**Webhooks.** Each app can register webhooks:
+- **Tools:** `create_webhook(app_id, url, events[])` returns the signing secret once. Then `list_webhooks`, `rotate_webhook_secret`, `delete_webhook`, and `list_webhook_deliveries(webhook_id)` (status, attempts, last response code).
+- **Events:** `product.version_published`, `product.unpublished`, `product.suspended`, `access.approved`, `access.revoked`, `request.decided`, `handoff.completed`, `handoff.failed`. Each goes to every webhook of every app affected.
+- **URLs:** must be https and publicly reachable in production. Plain `http://127.0.0.1` is allowed only outside production, for local testing.
+- **Delivery:** each body is `{ id, type, created_at, data }`, where `data` includes the receiving `app_id`. A delivery that fails is retried with exponential backoff (30 s, 1 m, 2 m and so on, doubling each time, 8 attempts in all). `serve-http` runs the delivery worker.
+
+Verify the `Mynt-Signature: t=<unix>,v1=<hex>` header against the raw body:
+
+```js
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+function verifyMynt(secret, header, rawBody, toleranceSec = 300) {
+  const { t, v1 } = Object.fromEntries(header.split(",").map((p) => p.split("=")));
+  if (Math.abs(Date.now() / 1000 - Number(t)) > toleranceSec) return false;
+  const expected = createHmac("sha256", secret).update(`${t}.${rawBody}`).digest("hex");
+  return v1?.length === expected.length && timingSafeEqual(Buffer.from(v1), Buffer.from(expected));
+}
+```
+
+**Sandbox.** Sandbox keys see the same product data as live keys. Hand-offs are simulated:
+- `redirect_url` points at a Mynt sandbox page.
+- Resolve a hand-off with `simulate_handoff(handoff_id, outcome)` or `POST /v1/sandbox/handoffs/{id}`. Either one sends `handoff.completed` or `handoff.failed` to your webhooks.
+- `create_test_consumer(app_id, label)` gives you an opaque `consumer_ref` to test with.
+- Sandbox events and hand-offs are stored but flagged, and are left out of live analytics.
+
+**Releases.** `release_app(app_id, version, changelog)` runs `publish_app`'s checks, publishes the app, and snapshots the whole app definition.
+- Versions are semver and must increase.
+- `list_app_releases` shows the history.
+- `rollback_app(app_id, version)` makes an earlier snapshot current again, if it still passes the products' current terms.
+- `publish_app` records a first release (`1.0.0`) if an app has none.
+
+**Analytics.**
+- Developers: `get_app_metrics(app_id, from?, to?, include_sandbox?)` gives views, clicks and hand-offs (started, completed, failed) per product and per day. It also gives conversion (completed hand-offs per view) and the hand-off completion rate. Only live traffic counts unless you set `include_sandbox`.
+- Innovators: `get_product_distribution_metrics(product_id)` shows how one of their products performs across every app that shows it.
 
 Roles nest: **every admin is also an innovator, every innovator a developer, and every developer a consumer**. Each role gets its own tools plus everything below it. Tools are registered per user, so a client only *sees* the tools its roles allow. `whoami` shows both the granted and the effective roles.
 

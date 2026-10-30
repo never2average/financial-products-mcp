@@ -11,6 +11,13 @@
 	handle /healthz {
 		reverse_proxy 127.0.0.1:@PORT@
 	}
+	# Runtime API for developers' apps (app API keys, not Clerk).
+	handle /v1/* {
+		request_body {
+			max_size 64KB
+		}
+		reverse_proxy 127.0.0.1:@PORT@
+	}
 	# OAuth discovery for MCP clients (sign-in is with Clerk).
 	handle /.well-known/oauth-* {
 		reverse_proxy 127.0.0.1:@PORT@

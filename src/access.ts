@@ -20,6 +20,10 @@ export const BuildTermsSchema = z.object({
       notes: z.string().optional(),
     })
     .default({ model: "none" }),
+  handoff_url: z
+    .url({ protocol: /^https$/ })
+    .optional()
+    .describe("Your onboarding entry point: runtime API hand-offs (deep_link, initiate_onboarding) redirect here with ?handoff_id=…&app_id=…"),
 });
 
 const today = () => new Date().toISOString().slice(0, 10);

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { BuildTermsSchema, productsAnsweredBy } from "./access.js";
 import { lintCampaign } from "./gtm.js";
 import { normalizeModel } from "./regulatory.js";
+import { emitProductEvent, emitRequestEvent } from "./runtime.js";
 import { ACCESS_MODES, type AccessRequest, type Store, type User } from "./store.js";
 
 const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] });
@@ -150,6 +151,8 @@ export function registerMarketplaceTools(server: McpServer, store: Store, user: 
       if (r.status !== "pending") return fail(`Request is already ${r.status}`);
       const decided = await store.decideRequest(r.id, decision === "approve" ? "approved" : "rejected", user.id, note ?? null);
       await audit(`review_${r.kind}`, r.id, { decision, product_id: r.product_id });
+      if (r.app_id) await emitRequestEvent(store, decided, "request.decided", { kind: r.kind, decision: decided.status, note: decided.decision_note });
+      if (r.kind === "product_access" && decided.status === "approved") await emitRequestEvent(store, decided, "access.approved");
       let campaign_status: string | undefined;
       if (r.kind === "campaign_launch" && r.campaign_id) campaign_status = await settleCampaign(store, r.campaign_id);
       return json({ ...decided, ...(campaign_status ? { campaign_status } : {}) });
@@ -169,6 +172,7 @@ export function registerMarketplaceTools(server: McpServer, store: Store, user: 
       if (!dev) return fail(`${developer_email} hasn't signed in to Mynt yet`);
       const grant = await store.createRequest({ kind: "product_access", product_id, app_id: null, campaign_id: null, requester_id: dev.id, status: "approved", note, decided_by: user.id });
       await audit("invite_developer", product_id, { developer: dev.email });
+      await emitRequestEvent(store, grant, "access.approved");
       return json(grant);
     },
   );
@@ -187,6 +191,7 @@ export function registerMarketplaceTools(server: McpServer, store: Store, user: 
       if (r.status !== "approved") return fail(`Request is ${r.status}, not approved`);
       const revoked = await store.decideRequest(r.id, "revoked", user.id, reason);
       await audit("revoke_access", r.id, { product_id: r.product_id, reason });
+      await emitRequestEvent(store, revoked, "access.revoked", { reason });
       return json(revoked);
     },
   );
@@ -219,6 +224,7 @@ export function registerMarketplaceTools(server: McpServer, store: Store, user: 
         }
       }
       await audit("suspend_product_experiences", product_id, { reason, revoked, paused });
+      await emitProductEvent(store, product_id, "product.suspended", { reason });
       return json({ product_id, access_mode: "private", grants_revoked: revoked, campaigns_paused: paused });
     },
   );

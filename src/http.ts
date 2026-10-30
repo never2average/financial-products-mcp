@@ -2,6 +2,7 @@ import { createServer as createHttpServer, type IncomingMessage, type Server, ty
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { AdminContext } from "./admin.js";
 import type { ClerkAuth } from "./auth.js";
+import { createRuntimeApi, type RuntimeApiOptions } from "./runtime-api.js";
 import { createServer } from "./server.js";
 import type { Store, User } from "./store.js";
 
@@ -68,6 +69,7 @@ async function handle(
   clerk: ClerkAuth | null,
   meta: (() => Promise<unknown>) | null,
   ctx: AdminContext,
+  runtime: ReturnType<typeof createRuntimeApi>,
   req: IncomingMessage,
   res: ServerResponse,
 ) {
@@ -82,6 +84,8 @@ async function handle(
   if (meta && req.method === "GET" && url.pathname.startsWith("/.well-known/oauth-authorization-server")) {
     return sendJson(res, 200, await meta(), { "Cache-Control": "public, max-age=3600" });
   }
+  // The runtime API for developers' apps authenticates with app keys, not Clerk.
+  if (url.pathname === "/v1" || url.pathname.startsWith("/v1/")) return runtime(req, res, url);
   if (url.pathname !== "/mcp") return void res.writeHead(404).end();
   if (req.method !== "POST") return void res.writeHead(405, { Allow: "POST" }).end();
 
@@ -104,10 +108,16 @@ async function handle(
   await transport.handleRequest(req, res, body);
 }
 
-export function createMcpHttpServer(store: Store, clerk: ClerkAuth | null = null, ctx: AdminContext = {}): Server {
+export function createMcpHttpServer(
+  store: Store,
+  clerk: ClerkAuth | null = null,
+  ctx: AdminContext = {},
+  runtimeOptions: RuntimeApiOptions = {},
+): Server {
   const meta = clerk ? authServerMetadata(clerk.issuer) : null;
+  const runtime = createRuntimeApi(store, runtimeOptions);
   return createHttpServer((req, res) =>
-    handle(store, clerk, meta, ctx, req, res).catch((err) => {
+    handle(store, clerk, meta, ctx, runtime, req, res).catch((err) => {
       console.error(err);
       if (!res.headersSent) res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Internal server error" }));

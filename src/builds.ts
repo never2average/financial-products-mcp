@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { AGENT_RUNNER, CLAUDE_CODE_VERSION, type AgentState } from "./agent-runner.js";
+import { AGENT_DIR, agentState, launchAgent, type AgentBackend } from "./agent-host.js";
+import { CLAUDE_CODE_VERSION, type AgentState } from "./agent-runner.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { accessStatus, productEntity } from "./access.js";
@@ -34,10 +35,7 @@ export type BuildStatus = (typeof BUILD_STATUSES)[number];
 const TERMINAL: BuildStatus[] = ["succeeded", "blocked", "failed", "stopped", "over_budget"];
 const AGENT_PHASES: BuildStatus[] = ["coding", "auditing", "checking", "previewing", "pushing"];
 
-// Where build agents' model calls go, through Mynt's agent proxy. The credentials stay on Mynt's server.
-export type AgentBackend =
-  | { kind: "anthropic"; apiKey: string }
-  | { kind: "vertex"; projectId: string; region: string; auth: { accessToken(): Promise<string> } };
+export type { AgentBackend };
 
 // Vertex AI when a Google service account is configured, else the Anthropic API when there's a key.
 function agentBackendFromEnv(env: NodeJS.ProcessEnv): AgentBackend | null {
@@ -175,7 +173,6 @@ const toBuild = ({ agent_token_hash: _, ...r }: Row): Build => ({
 const HOME = "/home/user/mynt";
 const FILES = { task: `${HOME}/TASK.md`, spec: `${HOME}/build.json`, status: `${HOME}/status.json`, result: `${HOME}/result.json`, sdk: `${HOME}/sdk` };
 const WORKSPACE = "/home/user/workspace/app";
-const AGENT_DIR = "/home/user/mynt-agent";
 const hashToken = (t: string) => createHash("sha256").update(t).digest("hex");
 const OUT = "/home/user/mynt-out";
 
@@ -216,40 +213,13 @@ export class BuildService {
     return !!r;
   }
 
-  // Starts Claude Code in `sandbox` through the runner; returns the runner's process id.
+  // Claude Code in one of the build's sandboxes, with a fresh proxy token for the build.
   private async startAgent(b: Build, sandbox: string, o: { prompt: string; cwd: string; budgetUsd: number }) {
-    const boat = this.boat!;
-    const budgetUsd = Math.max(0.5, Math.floor(o.budgetUsd * 100) / 100);
-    const config = { prompt: o.prompt, cwd: o.cwd, model: this.config.model, budgetUsd, version: CLAUDE_CODE_VERSION };
-    await boat.writeFile(sandbox, `${AGENT_DIR}/runner.mjs`, AGENT_RUNNER);
-    await boat.writeFile(sandbox, `${AGENT_DIR}/config.json`, JSON.stringify(config));
-    await boat.writeFile(sandbox, `${AGENT_DIR}/auth.json`, JSON.stringify(this.agentAuth(await this.mintAgentToken(b.id))));
-    const run = await boat.exec(sandbox, `node ${AGENT_DIR}/runner.mjs ${AGENT_DIR} >${AGENT_DIR}/runner.log 2>&1`, { detached: true });
-    if (run.processId === undefined) throw new Error("Couldn't start the agent");
-    return String(run.processId);
+    return launchAgent(this.boat!, this.config, sandbox, { ...o, token: await this.mintAgentToken(b.id) });
   }
 
-  // How the sandbox's Claude Code reaches Mynt's proxy: the token, and the env that points it there.
-  private agentAuth(token: string) {
-    const backend = this.config.agentBackend!;
-    const base = `${this.config.publicUrl}/agent`;
-    const env: Record<string, string> =
-      backend.kind === "vertex"
-        ? {
-            CLAUDE_CODE_USE_VERTEX: "1",
-            CLAUDE_CODE_SKIP_VERTEX_AUTH: "1", // Mynt signs the calls; the proxy pins the real project
-            ANTHROPIC_VERTEX_BASE_URL: `${base}/t/${token}/v1`,
-            ANTHROPIC_VERTEX_PROJECT_ID: "mynt",
-            CLOUD_ML_REGION: backend.region,
-          }
-        : { ANTHROPIC_BASE_URL: base, ANTHROPIC_AUTH_TOKEN: token };
-    return { token, env };
-  }
-
-  private async agentState(sandbox: string, processId: string) {
-    const state = parseJson<AgentState>(await this.boat!.readFile(sandbox, `${AGENT_DIR}/state.json`));
-    const running = state?.done ? false : (await this.boat!.commandStatus(sandbox, Number(processId))).running;
-    return { state, running, cost: state?.cost_usd ?? 0, ok: !running && state?.last_subtype === "success" };
+  private agentState(sandbox: string, processId: string) {
+    return agentState(this.boat!, sandbox, processId);
   }
 
   // ---- persistence ----

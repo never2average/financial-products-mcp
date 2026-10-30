@@ -3,6 +3,7 @@ import { parseArgs } from "node:util";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { ClerkAdmin, ClerkAuth, clerkConfigFromEnv } from "./auth.js";
 import { HttpBoatClient } from "./boat.js";
+import { BdService, bdConfigFromEnv } from "./bd.js";
 import { BuildService, buildConfigFromEnv } from "./builds.js";
 import { connectPostgres } from "./db.js";
 import { createMcpHttpServer } from "./http.js";
@@ -29,6 +30,7 @@ Environment:
   FINANCIAL_PRODUCTS_TOKEN  User token for stdio mode; omit to browse as a guest
   BOAT_API_KEY              With PUBLIC_URL and a model backend: coding-agent builds in boat.dev sandboxes (BUILD_CAP_USD, ...)
   GOOGLE_APPLICATION_CREDENTIALS  Service account key file: build agents use Claude on Vertex AI (VERTEX_PROJECT_ID, VERTEX_REGION=global)
+  BD_ENABLED=1              Runs Mynt's connector agent (business development) on the same harness (BD_DAILY_CAP, BD_RUN_CAP_USD, ...)
   ANTHROPIC_API_KEY         Otherwise, build agents use the Anthropic API. Either way the credentials stay on Mynt's server
   GITHUB_APP_ID             With GITHUB_APP_PRIVATE_KEY and GITHUB_APP_SLUG: builds push branches and open PRs`;
 
@@ -57,8 +59,11 @@ const openServices = async () => {
   const db = openDb();
   const store = await Store.open(db);
   const boat = process.env.BOAT_API_KEY ? new HttpBoatClient(process.env.BOAT_API_KEY) : null;
-  const builds = await BuildService.open(db, store, boat, GitHubApp.fromEnv(), buildConfigFromEnv());
-  return { store, builds };
+  const buildConfig = buildConfigFromEnv();
+  const builds = await BuildService.open(db, store, boat, GitHubApp.fromEnv(), buildConfig);
+  // The connector agent shares the builds' sandbox host and model backend. Channels plug in later.
+  const bd = await BdService.open(db, boat, bdConfigFromEnv(buildConfig));
+  return { store, builds, bd };
 };
 
 const parseRoles = (): Role[] => {
@@ -81,17 +86,18 @@ const [command = "serve", sub] = positionals;
 if (values.help) {
   console.log(USAGE);
 } else if (command === "serve") {
-  const { store, builds } = await openServices();
+  const { store, builds, bd } = await openServices();
   const token = process.env.FINANCIAL_PRODUCTS_TOKEN;
   const user = token ? ((await store.userByToken(token)) ?? die("FINANCIAL_PRODUCTS_TOKEN is not a valid token")) : null;
-  await createServer(store, user, { clerkAdmin: clerkAdmin(), builds }).connect(new StdioServerTransport());
+  await createServer(store, user, { clerkAdmin: clerkAdmin(), builds, bd }).connect(new StdioServerTransport());
 } else if (command === "serve-http") {
   const port = Number(values.port);
-  const { store, builds } = await openServices();
+  const { store, builds, bd } = await openServices();
   builds.startWorker();
+  bd.startWorker();
   const config = clerkConfigFromEnv();
   const clerk = config ? new ClerkAuth(config, store) : null;
-  const http = createMcpHttpServer(store, clerk, { clerkAdmin: clerkAdmin(), builds }).listen(port, values.host, () =>
+  const http = createMcpHttpServer(store, clerk, { clerkAdmin: clerkAdmin(), builds, bd }).listen(port, values.host, () =>
     console.error(`mynt MCP listening on http://${values.host}:${port}/mcp${clerk ? " (Clerk whitelist auth)" : ""}`),
   );
   // Sends queued webhook deliveries (events from any process sharing the database).
@@ -99,6 +105,7 @@ if (values.help) {
   process.on("SIGTERM", () => {
     webhooks.stop();
     builds.stopWorker();
+    bd.stopWorker();
     http.close(() => process.exit(0));
   });
 } else if (command === "users" && sub === "invite") {

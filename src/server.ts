@@ -13,6 +13,7 @@ import {
 import { attributionFor, offersFor, registerGtmTools } from "./gtm.js";
 import { registerAdminTools, type AdminContext } from "./admin.js";
 import { registerCodingAgentAdminTools, registerCodingAgentTools } from "./builds.js";
+import { registerBdAdminTools, registerBdAgentTools, registerConnectTools } from "./bd.js";
 import { accessStatus, BuildTermsSchema, coveringLicenses, EXPERIENCE_ACTIONS, lintExperience, productEntity } from "./access.js";
 import { runProductTests } from "./product-tests.js";
 import { COURT_LEVELS, findLicenses, LEGISLATIVE_KINDS, normalizeModel, PRODUCT_ACTIONS, summarizeModel, type Regulator } from "./regulatory.js";
@@ -64,6 +65,12 @@ export function createServer(store: Store, user: User | null = null, ctx: AdminC
   const has = (role: Role) => roles.includes(role);
 
   registerCatalogTools(server, store, user);
+  // A connector agent run: the public catalogue plus its own tools, nothing a person's role would give.
+  if (ctx.bdRun && ctx.bd) {
+    registerBdAgentTools(server, ctx.bd, ctx.bdRun.id);
+    return server;
+  }
+  if (user && ctx.bd) registerConnectTools(server, ctx.bd, user);
   if (has("consumer")) registerConsumerTools(server, store, user!);
   if (has("developer")) {
     registerDeveloperTools(server, store, user!);
@@ -80,6 +87,7 @@ export function createServer(store: Store, user: User | null = null, ctx: AdminC
   if (has("admin")) {
     registerAdminTools(server, store, user!, ctx);
     if (ctx.builds) registerCodingAgentAdminTools(server, ctx.builds);
+    if (ctx.bd) registerBdAdminTools(server, ctx.bd, (action, target, details = {}) => store.audit(user!.id, action, target, details));
   }
 
   return server;

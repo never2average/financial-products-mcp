@@ -4,8 +4,8 @@
 // enters the sandbox.
 //
 // Mynt writes <dir>/config.json ({ prompt, cwd, model, budgetUsd, version }) and <dir>/auth.json (the
-// build token and the env pointing Claude Code at Mynt's proxy, for the Anthropic API or Vertex AI;
-// read once, then deleted), then runs `node <dir>/runner.mjs <dir>` detached. The
+// build token and the env pointing Claude Code at Mynt's proxy, for the Anthropic API or Vertex AI, and
+// optionally Mynt's MCP server as the agent's tools; read once, then deleted), then runs `node <dir>/runner.mjs <dir>` detached. The
 // runner keeps <dir>/state.json up to date and copies Claude Code's stream-json output to
 // <dir>/agent.jsonl. To steer, Mynt drops a file into <dir>/inbox/: the runner interrupts the current
 // turn and sends the message as the next one.
@@ -21,6 +21,7 @@ export interface AgentState {
   done: boolean;
   exit_code: number | null;
   error: string | null;
+  summary: string | null; // the agent's final message
 }
 
 export const AGENT_RUNNER = String.raw`
@@ -34,7 +35,7 @@ const cfg = JSON.parse(readFileSync(join(dir, "config.json"), "utf8"));
 const auth = JSON.parse(readFileSync(join(dir, "auth.json"), "utf8"));
 unlinkSync(join(dir, "auth.json"));
 
-const state = { session_id: null, cost_usd: 0, turns: 0, sent: 0, last_subtype: null, done: false, exit_code: null, error: null };
+const state = { session_id: null, cost_usd: 0, turns: 0, sent: 0, last_subtype: null, done: false, exit_code: null, error: null, summary: null };
 const save = () => {
   writeFileSync(join(dir, "state.tmp"), JSON.stringify(state));
   renameSync(join(dir, "state.tmp"), join(dir, "state.json"));
@@ -61,6 +62,12 @@ for (const k of ["ANTHROPIC_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS"]) delete 
 const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
   "--dangerously-skip-permissions", "--max-budget-usd", String(cfg.budgetUsd)];
 if (cfg.model) args.push("--model", cfg.model);
+// Mynt's MCP server, when the run gets one: the config holds the token, so it's private to this user.
+if (auth.mcp) {
+  const mcpFile = join(dir, "mcp.json");
+  writeFileSync(mcpFile, JSON.stringify({ mcpServers: { mynt: { type: "http", url: auth.mcp.url, headers: { Authorization: "Bearer " + auth.mcp.token } } } }), { mode: 0o600 });
+  args.push("--mcp-config", mcpFile, "--strict-mcp-config");
+}
 const child = spawn(bin, args, { cwd: cfg.cwd, env, stdio: ["pipe", "pipe", "pipe"] });
 
 const send = (m) => child.stdin.write(JSON.stringify(m) + "\n");
@@ -101,6 +108,7 @@ child.stdout.on("data", (d) => {
     if (m.type === "result") {
       state.turns++;
       state.last_subtype = m.subtype ?? null;
+      if (typeof m.result === "string") state.summary = m.result.slice(0, 4000);
       if (typeof m.total_cost_usd === "number") state.cost_usd = Math.max(state.cost_usd, m.total_cost_usd);
       save();
       maybeEnd();

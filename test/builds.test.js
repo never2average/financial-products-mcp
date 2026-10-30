@@ -368,7 +368,7 @@ test("the agent proxy forwards only an active build's calls, with Mynt's key", a
     seen.push({ url, headers: init.headers, body: Buffer.from(init.body).toString() });
     return new Response('event: message_stop\ndata: {}\n\n', { status: 200, headers: { "content-type": "text/event-stream", "request-id": "req_1" } });
   };
-  const server = createHttp((req, res) => void agentProxy(ctx.builds, req, res, new URL(req.url, "http://x")));
+  const server = createHttp((req, res) => void agentProxy(ctx.builds.config.agentBackend, (t) => ctx.builds.agentTokenActive(t), req, res, new URL(req.url, "http://x")));
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${server.address().port}/agent`;
   const post = (path, auth, body = '{"model":"claude-opus-5-5"}') =>
@@ -419,7 +419,7 @@ test("on Vertex AI, the agent's calls carry its token in the path and Mynt signs
     seen.push({ url, headers: init.headers });
     return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
   };
-  const server = createHttp((req, res) => void agentProxy(ctx.builds, req, res, new URL(req.url, "http://x")));
+  const server = createHttp((req, res) => void agentProxy(ctx.builds.config.agentBackend, (t) => ctx.builds.agentTokenActive(t), req, res, new URL(req.url, "http://x")));
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${server.address().port}`;
   const post = (path) => realFetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json", "anthropic-beta": "x-2026" }, body: "{}" });
@@ -481,7 +481,7 @@ process.stdin.on("data", (d) => {
   assert.equal(code, 0);
   assert.equal(existsSync(join(dir, "auth.json")), false, "the token file is read once and deleted");
   const state = JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
-  assert.deepEqual({ ...state, exit_code: undefined }, { session_id: "sess_1", cost_usd: 0.25, turns: 1, sent: 1, last_subtype: "success", done: true, exit_code: undefined, error: null });
+  assert.deepEqual({ ...state, exit_code: undefined }, { session_id: "sess_1", cost_usd: 0.25, turns: 1, sent: 1, last_subtype: "success", done: true, exit_code: undefined, error: null, summary: null });
   const ran = JSON.parse(readFileSync(join(home, "claude-args.json"), "utf8"));
   assert.deepEqual(ran.args.slice(ran.args.indexOf("--max-budget-usd"), ran.args.indexOf("--max-budget-usd") + 2), ["--max-budget-usd", "4.5"]);
   assert.ok(ran.args.includes("--model") && ran.args.includes("stream-json"));

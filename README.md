@@ -109,6 +109,25 @@ A developer can have Mynt **build and ship** one of their experiences. `start_bu
 
 **Configuration:** `BOAT_API_KEY`, `PUBLIC_URL` and a model backend for the agent proxy (builds are disabled without them): either `GOOGLE_APPLICATION_CREDENTIALS` (a service account key file with Vertex AI User on a project where the Claude models are enabled; optional `VERTEX_PROJECT_ID`, `VERTEX_REGION`, default `global`) or `ANTHROPIC_API_KEY` (a dedicated key with a spend limit); `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` and `GITHUB_APP_SLUG` (pushing is disabled without them); optional `BUILD_AGENT_MODEL` (default `claude-opus-5-5`), `BUILD_SANDBOX_TYPE` and `BUILD_SANDBOX_TTL_SECONDS`.
 
+### The connector: business development by an agent
+
+Mynt's **connector** is an AI agent that grows Mynt. It finds innovators (licensed firms that could offer products) and developers (who could build on them), talks with them, and introduces people who should work together. It runs on its own schedule on the same harness as builds: Claude Code in a sandbox, using the model through Mynt's agent proxy. Its only tools are Mynt's MCP server: the `bd_*` tools and the public catalogue. Prospects, conversations and introductions live only in Mynt's database.
+
+Everything the connector does to a person goes through one path, and Mynt enforces the rules there, whatever the agent intends:
+- **First contact is by email only.** It can go to an address the person or their firm published for business contact (the source is recorded), or to someone a Mynt user referred. WhatsApp and calls are only for people who asked for them.
+- **Every message says who's writing** (an AI agent for Mynt) and carries an opt-out. Email gets a one-click unsubscribe link and `List-Unsubscribe` headers. Replying STOP, the link, or an admin's `bd_suppress` ends contact for good. Opted-out addresses are kept as hashes so they can't be re-added.
+- **Caps:**
+  - a few unanswered messages at most, days apart;
+  - weekday working hours where the person is;
+  - a daily message cap;
+  - a spend cap per run and per month.
+- **Introductions share each person's details only once both said yes.**
+- Replies, web pages and emails are data to the agent, never instructions.
+
+Anyone signed in can talk to the connector from their MCP client: `connect_with_mynt` (what you do and who you'd like to meet), `connect_refer`, and `connect_my_intros` / `connect_answer_intro`. Admins have `bd_overview`, `bd_prospects`, `bd_run_now`, `bd_suppress` and the kill switch `bd_pause`, which also stops a running agent.
+
+**Configuration:** `BD_ENABLED=1`, on top of what builds need (a boat.dev key, `PUBLIC_URL` and a model backend). Optional: `BD_DAILY_CAP` (default 40), `BD_MAX_UNANSWERED` (3), `BD_FOLLOW_UP_GAP_DAYS` (3), `BD_RUN_CAP_USD` (3), `BD_MONTHLY_CAP_USD` (60), `BD_RUN_EVERY_HOURS` (6) and `BD_SENDER_NAME`. Sending providers for email, WhatsApp and voice plug into `ChannelSender`. Until a channel has one, its messages are kept as drafts for admins to review.
+
 ### SDKs and experiences (developers)
 
 **SDKs.** `create_sdk(name, languages, product_ids)` defines an SDK over products you can build on: open or approval products, or private ones you were invited to. `generate_sdk_release(sdk_id, version, changelog)` then writes an immutable, semver-versioned bundle:

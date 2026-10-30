@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { AGENT_RUNNER, CLAUDE_CODE_VERSION, type AgentState } from "./agent-runner.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { accessStatus, productEntity } from "./access.js";
@@ -10,7 +11,7 @@ import { auditorPrompt, VERIFY_DIR, VERIFY_SCRIPT } from "./verify-script.js";
 import type { Store, User } from "./store.js";
 
 // Coding-agent builds: a developer asks Mynt to build or ship one of their experiences; Mynt runs a coding
-// agent in a boat.dev sandbox that writes the code, passes a Maxwell security audit and a production-
+// agent (Claude Code, run by Mynt itself) in a boat.dev sandbox that writes the code, passes a Maxwell security audit and a production-
 // readiness checklist, deploys a preview and opens a pull request. Developers track every step.
 
 export const BUILD_STATUSES = [
@@ -35,8 +36,8 @@ const AGENT_PHASES: BuildStatus[] = ["coding", "auditing", "checking", "previewi
 export interface BuildConfig {
   capUsd: number; // per build
   monthlyCapUsd: number; // per developer per calendar month
-  provider: string; // boat integrated agent harness
-  model: string | null;
+  anthropicApiKey: string | null; // used only by Mynt's agent proxy; never sent to a sandbox
+  model: string;
   sandboxType: string;
   ttlSeconds: number;
   maxwellRepo: string;
@@ -47,8 +48,8 @@ export function buildConfigFromEnv(env = process.env): BuildConfig {
   return {
     capUsd: Number(env.BUILD_CAP_USD ?? 10),
     monthlyCapUsd: Number(env.BUILD_MONTHLY_CAP_USD ?? 100),
-    provider: env.BUILD_AGENT_PROVIDER ?? "claude-code",
-    model: env.BUILD_AGENT_MODEL ?? null,
+    anthropicApiKey: env.ANTHROPIC_API_KEY || null,
+    model: env.BUILD_AGENT_MODEL ?? "claude-opus-5-5",
     sandboxType: env.BUILD_SANDBOX_TYPE ?? "default",
     ttlSeconds: Number(env.BUILD_SANDBOX_TTL_SECONDS ?? 4 * 3600),
     maxwellRepo: env.BUILD_MAXWELL_REPO ?? "https://github.com/OnFinance/Maxwell",
@@ -69,11 +70,11 @@ export interface Build {
   verify_sandbox_id: string | null; // the clean sandbox Mynt verifies the build in
   verify_step: "provisioning" | "checks" | "audit" | null;
   verify_process_id: number | null;
-  verify_prompt_id: string | null;
+  verify_prompt_id: string | null; // the auditor's runner process in the verify sandbox
   source_sha256: string | null;
   source_url: string | null; // signed, short-lived; never shown to users
   agent_report: unknown; // the coding agent's own report: advisory only
-  prompt_id: string | null;
+  prompt_id: string | null; // the coding agent's runner process in the build sandbox
   preview_url: string | null;
   pr_url: string | null;
   branch: string | null;
@@ -121,6 +122,8 @@ const TABLES = `
   ALTER TABLE financial_products.build_runs ADD COLUMN IF NOT EXISTS source_sha256 text;
   ALTER TABLE financial_products.build_runs ADD COLUMN IF NOT EXISTS source_url text;
   ALTER TABLE financial_products.build_runs ADD COLUMN IF NOT EXISTS agent_report jsonb;
+  -- sha256 of the token the build's agent uses with Mynt's agent proxy; cleared when the build ends.
+  ALTER TABLE financial_products.build_runs ADD COLUMN IF NOT EXISTS agent_token_hash text;
   CREATE TABLE IF NOT EXISTS financial_products.build_events (
     id uuid PRIMARY KEY,
     build_id uuid NOT NULL REFERENCES financial_products.build_runs(id),
@@ -141,7 +144,7 @@ const TABLES = `
 
 const iso = (v: unknown) => (v == null ? null : new Date(v as string).toISOString());
 type Row = Record<string, unknown>;
-const toBuild = (r: Row): Build => ({
+const toBuild = ({ agent_token_hash: _, ...r }: Row): Build => ({
   ...(r as unknown as Build),
   cost_usd: Number(r.cost_usd ?? 0),
   cap_usd: Number(r.cap_usd),
@@ -155,6 +158,8 @@ const toBuild = (r: Row): Build => ({
 const HOME = "/home/user/mynt";
 const FILES = { task: `${HOME}/TASK.md`, spec: `${HOME}/build.json`, status: `${HOME}/status.json`, result: `${HOME}/result.json`, sdk: `${HOME}/sdk` };
 const WORKSPACE = "/home/user/workspace/app";
+const AGENT_DIR = "/home/user/mynt-agent";
+const hashToken = (t: string) => createHash("sha256").update(t).digest("hex");
 const OUT = "/home/user/mynt-out";
 
 export class BuildService {
@@ -174,7 +179,43 @@ export class BuildService {
   }
 
   get enabled() {
-    return this.boat !== null;
+    return this.boat !== null && !!this.config.anthropicApiKey && !!this.config.publicUrl;
+  }
+
+  // ---- the agent (Claude Code, run by Mynt in the sandbox) ----
+
+  // A fresh proxy token for the build; it replaces any earlier one, so only the current agent can call.
+  private async mintAgentToken(buildId: string) {
+    const token = `mynt_agent_${randomBytes(24).toString("base64url")}`;
+    await this.db.query("UPDATE financial_products.build_runs SET agent_token_hash = $2 WHERE id = $1", [buildId, hashToken(token)]);
+    return token;
+  }
+
+  async agentTokenActive(token: string) {
+    const r = await this.one(
+      "SELECT 1 FROM financial_products.build_runs WHERE agent_token_hash = $1 AND status <> ALL($2)",
+      [hashToken(token), TERMINAL],
+    );
+    return !!r;
+  }
+
+  // Starts Claude Code in `sandbox` through the runner; returns the runner's process id.
+  private async startAgent(b: Build, sandbox: string, o: { prompt: string; cwd: string; budgetUsd: number }) {
+    const boat = this.boat!;
+    const budgetUsd = Math.max(0.5, Math.floor(o.budgetUsd * 100) / 100);
+    const config = { prompt: o.prompt, cwd: o.cwd, model: this.config.model, budgetUsd, version: CLAUDE_CODE_VERSION };
+    await boat.writeFile(sandbox, `${AGENT_DIR}/runner.mjs`, AGENT_RUNNER);
+    await boat.writeFile(sandbox, `${AGENT_DIR}/config.json`, JSON.stringify(config));
+    await boat.writeFile(sandbox, `${AGENT_DIR}/auth.json`, JSON.stringify({ base_url: `${this.config.publicUrl}/agent`, token: await this.mintAgentToken(b.id) }));
+    const run = await boat.exec(sandbox, `node ${AGENT_DIR}/runner.mjs ${AGENT_DIR} >${AGENT_DIR}/runner.log 2>&1`, { detached: true });
+    if (run.processId === undefined) throw new Error("Couldn't start the agent");
+    return String(run.processId);
+  }
+
+  private async agentState(sandbox: string, processId: string) {
+    const state = parseJson<AgentState>(await this.boat!.readFile(sandbox, `${AGENT_DIR}/state.json`));
+    const running = state?.done ? false : (await this.boat!.commandStatus(sandbox, Number(processId))).running;
+    return { state, running, cost: state?.cost_usd ?? 0, ok: !running && state?.last_subtype === "success" };
   }
 
   // ---- persistence ----
@@ -275,6 +316,7 @@ export class BuildService {
   }
 
   private async retireKey(build: Build) {
+    await this.db.query("UPDATE financial_products.build_runs SET agent_token_hash = NULL WHERE id = $1", [build.id]);
     if (build.sandbox_key_id) await this.store.revokeApiKey(build.sandbox_key_id).catch(() => {});
   }
 
@@ -282,7 +324,6 @@ export class BuildService {
     if (TERMINAL.includes(build.status)) return build;
     await this.retireKey(build);
     if (build.sandbox_id && this.boat) {
-      await this.boat.interrupt(build.sandbox_id).catch(() => {});
       await this.boat.stop(build.sandbox_id).catch(() => {});
     }
     if (build.verify_sandbox_id && this.boat) await this.boat.stop(build.verify_sandbox_id).catch(() => {});
@@ -293,18 +334,21 @@ export class BuildService {
 
   async steer(build: Build, message: string) {
     if (!build.sandbox_id || !AGENT_PHASES.includes(build.status)) throw new Error(`Build is ${build.status}; only a running agent can be steered`);
-    await this.boat!.steer(build.sandbox_id, message);
+    // The runner interrupts the current turn and sends this as the next one.
+    await this.boat!.writeFile(build.sandbox_id, `${AGENT_DIR}/inbox/${Date.now()}-${randomUUID().slice(0, 8)}.json`, JSON.stringify({ message }));
     await this.event(build.id, build.status, "Steered by the developer", { message });
   }
 
   async activity(build: Build, limit = 30) {
     if (!build.sandbox_id || !this.boat) return [];
-    const events = await this.boat.events(build.sandbox_id, { limit });
-    return events.map((e) => ({
-      at: new Date(e.timestamp).toISOString(),
-      type: e.type,
-      summary: JSON.stringify(e.data ?? {}).slice(0, 400),
-    }));
+    const n = Math.max(1, Math.min(200, Math.floor(limit)));
+    const tail = await this.boat.exec(build.sandbox_id, `tail -n ${n} ${AGENT_DIR}/agent.jsonl 2>/dev/null || true`, { timeoutSeconds: 30 });
+    return tail.stdout
+      .split("\n")
+      .map((line) => parseJson<Record<string, unknown>>(line))
+      .filter((m): m is Record<string, unknown> => !!m)
+      .flatMap(summarizeAgentLine)
+      .reverse();
   }
 
   // Background loop; tests call tick() directly.
@@ -374,20 +418,21 @@ export class BuildService {
       await boat.writeFile(b.sandbox_id!, FILES.spec, JSON.stringify(await this.spec(b), null, 2));
       for (const file of await this.sdkFiles(b)) await boat.writeFile(b.sandbox_id!, `${FILES.sdk}/${file.path}`, file.content);
       await boat.writeFile(b.sandbox_id!, FILES.task, this.task(b));
-      const run = await boat.prompt(b.sandbox_id!, {
-        provider: this.config.provider,
-        model: this.config.model,
+      const processId = await this.startAgent(b, b.sandbox_id!, {
         prompt: `Read ${FILES.task} and carry out the build it describes, start to finish.`,
+        cwd: "/home/user",
+        budgetUsd: b.cap_usd - b.cost_usd,
       });
-      await this.update(b.id, { status: "coding", prompt_id: run.promptId, phase_message: "Agent started" });
-      await this.event(b.id, "coding", "Coding agent started", { provider: this.config.provider });
+      await this.update(b.id, { status: "coding", prompt_id: processId, phase_message: "Agent started" });
+      await this.event(b.id, "coding", "Coding agent started", { agent: "claude-code", version: CLAUDE_CODE_VERSION, model: this.config.model });
       return;
     }
 
     if (b.status === "verifying") return this.verify(b);
 
-    // The agent is working: follow its status file, its cost, and its prompt run.
-    const cost = await boat.costDollars(b.sandbox_id!);
+    // The agent is working: follow its status file, its cost, and its runner.
+    const agent = await this.agentState(b.sandbox_id!, b.prompt_id!);
+    const cost = (await boat.costDollars(b.sandbox_id!)) + agent.cost;
     if (cost !== b.cost_usd) await this.update(b.id, { cost_usd: cost });
     if (cost > b.cap_usd) {
       await this.stop({ ...b, cost_usd: cost }, `Stopped at US$${cost.toFixed(2)}: over the US$${b.cap_usd} cap`, "over_budget");
@@ -399,9 +444,8 @@ export class BuildService {
       await this.update(b.id, { status: phase, phase_message: status?.message ?? null });
       await this.event(b.id, phase, status?.message ?? phase);
     }
-    const run = await boat.promptStatus(b.sandbox_id!, b.prompt_id!);
-    if (!run.done) return;
-    if (run.status !== "finished") throw new Error(`Coding agent ${run.status}`);
+    if (agent.running) return;
+    if (!agent.ok) throw new Error(`Coding agent ${agent.state?.error ?? agent.state?.last_subtype ?? `exited with code ${agent.state?.exit_code ?? "unknown"}`}`);
     await this.startVerification(b);
   }
 
@@ -442,7 +486,10 @@ export class BuildService {
   private async verify(b: Build) {
     const boat = this.boat!;
     const vid = b.verify_sandbox_id!;
-    const cost = (await boat.costDollars(b.sandbox_id!)) + (await boat.costDollars(vid));
+    // Both sandboxes' machine time, plus what the coding agent and the auditor spent on the model.
+    const coder = parseJson<AgentState>(await boat.readFile(b.sandbox_id!, `${AGENT_DIR}/state.json`));
+    const auditor = b.verify_step === "audit" ? await this.agentState(vid, b.verify_prompt_id!) : null;
+    const cost = (await boat.costDollars(b.sandbox_id!)) + (await boat.costDollars(vid)) + (coder?.cost_usd ?? 0) + (auditor?.cost ?? 0);
     if (cost !== b.cost_usd) await this.update(b.id, { cost_usd: cost });
     if (cost > b.cap_usd) {
       await this.stop({ ...b, cost_usd: cost }, `Stopped at US$${cost.toFixed(2)}: over the US$${b.cap_usd} cap`, "over_budget");
@@ -463,15 +510,14 @@ export class BuildService {
 
     if (b.verify_step === "checks") {
       if ((await boat.commandStatus(vid, b.verify_process_id!)).running) return;
-      const prompt = await boat.prompt(vid, { provider: this.config.provider, model: this.config.model, prompt: auditorPrompt(this.config.maxwellRepo) });
-      await this.update(b.id, { verify_step: "audit", verify_prompt_id: prompt.promptId });
+      const processId = await this.startAgent(b, vid, { prompt: auditorPrompt(this.config.maxwellRepo), cwd: "/home/user", budgetUsd: b.cap_usd - cost });
+      await this.update(b.id, { verify_step: "audit", verify_prompt_id: processId });
       await this.event(b.id, "verifying", "Checks finished; independent Maxwell audit started");
       return;
     }
 
     if (b.verify_step === "audit") {
-      const run = await boat.promptStatus(vid, b.verify_prompt_id!);
-      if (!run.done) return;
+      if (auditor!.running) return;
       await boat.exec(vid, `bash ${VERIFY_DIR}/verify.sh --rehash`, { timeoutSeconds: 300 });
       const [report, maxwell, before, after] = await Promise.all([
         boat.readFile(vid, `${VERIFY_DIR}/report.json`).then((t) => parseJson<{ checks: Check[] }>(t)),
@@ -480,7 +526,7 @@ export class BuildService {
         boat.readFile(vid, `${VERIFY_DIR}/after.sha`),
       ]);
       await boat.stop(vid).catch(() => {});
-      await this.decide(b, { report, maxwell, unchanged: !!before && before.trim() === after?.trim(), auditFinished: run.status === "finished" });
+      await this.decide(b, { report, maxwell, unchanged: !!before && before.trim() === after?.trim(), auditFinished: auditor!.ok });
     }
   }
 
@@ -843,5 +889,16 @@ export function registerCodingAgentAdminTools(server: McpServer, builds: BuildSe
       const all = await builds.listFor(null, status);
       return json({ builds: all.map(({ source_url, agent_report, ...b }) => b), total_cost_usd: all.reduce((s, b) => s + b.cost_usd, 0) });
     },
+  );
+}
+
+// One line of Claude Code's stream-json output, as activity a developer can follow.
+function summarizeAgentLine(m: Record<string, unknown>): { type: string; summary: string }[] {
+  const clip = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v ?? "")).replace(/\s+/g, " ").slice(0, 400);
+  if (m.type === "result") return [{ type: "turn_finished", summary: `${clip(m.subtype)}, US$${Number(m.total_cost_usd ?? 0).toFixed(2)}` }];
+  const content = (m.message as { content?: unknown } | undefined)?.content;
+  if (m.type !== "assistant" || !Array.isArray(content)) return [];
+  return content.flatMap((c: Record<string, unknown>) =>
+    c.type === "text" ? [{ type: "message", summary: clip(c.text) }] : c.type === "tool_use" ? [{ type: "tool_use", summary: `${clip(c.name)} ${clip(c.input)}` }] : [],
   );
 }

@@ -18,6 +18,15 @@
 		}
 		reverse_proxy 127.0.0.1:@PORT@
 	}
+	# Build agents' model calls, proxied by Mynt with per-build tokens.
+	handle /agent/* {
+		request_body {
+			max_size 32MB
+		}
+		reverse_proxy 127.0.0.1:@PORT@ {
+			flush_interval -1
+		}
+	}
 	# OAuth discovery for MCP clients (sign-in is with Clerk).
 	handle /.well-known/oauth-* {
 		reverse_proxy 127.0.0.1:@PORT@

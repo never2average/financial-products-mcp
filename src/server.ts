@@ -29,6 +29,7 @@ import {
 } from "./store.js";
 import { registerMarketplaceTools } from "./marketplace.js";
 import { registerVersioningTools } from "./versions.js";
+import { emitProductEvent, ensureRelease, registerRuntimeInnovatorTools, registerRuntimeTools } from "./runtime.js";
 // SDKs and experiences (developer build layer)
 import { experienceStructure, registerBuildTools } from "./build.js";
 
@@ -72,6 +73,7 @@ export function createServer(store: Store, user: User | null = null, ctx: AdminC
     registerInnovatorTools(server, store, user!);
     registerVersioningTools(server, store, user!, productFields);
     registerMarketplaceTools(server, store, user!);
+    registerRuntimeInnovatorTools(server, store, user!);
   }
   if (has("admin")) registerAdminTools(server, store, user!, ctx);
 
@@ -743,9 +745,14 @@ function registerDeveloperTools(server: McpServer, store: Store, user: User) {
           isError: true,
         };
       }
-      return json(await store.saveApp({ ...app, status: "published" }));
+      const published = await store.saveApp({ ...app, status: "published" });
+      await ensureRelease(store, published, user.id);
+      return json(published);
     },
   );
+
+  // Runtime layer: API keys, webhooks, sandbox, releases, metrics.
+  registerRuntimeTools(server, store, user, readiness);
 }
 
 function registerInnovatorTools(server: McpServer, store: Store, user: User) {
@@ -857,8 +864,10 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User) {
       const notLive = [];
       for (const u of record.underlying_product_ids) if ((await store.getProduct(u))?.status !== "published") notLive.push(u);
       if (notLive.length) return fail(`Underlying products aren't published: ${notLive.join(", ")}`);
+      const live = draft ? await store.publishDraftVersion(id) : await store.publishCurrentVersion(id);
+      await emitProductEvent(store, id, "product.version_published", { version: live.version });
       return json({
-        ...(draft ? await store.publishDraftVersion(id) : await store.publishCurrentVersion(id)),
+        ...live,
         licensed_under: held.map((h) => ({ regulator: h.regulator_id, license: h.license_id, registration_number: h.registration_number })),
       });
     },
@@ -876,7 +885,9 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User) {
       const record = await ownProduct(id);
       if (!record) return fail(`No product of yours with id '${id}'`);
       if (record.status !== "published") return fail("Product is not published");
-      return json(await store.setProductStatus(id, "unpublished"));
+      const unpublished = await store.setProductStatus(id, "unpublished");
+      await emitProductEvent(store, id, "product.unpublished");
+      return json(unpublished);
     },
   );
 

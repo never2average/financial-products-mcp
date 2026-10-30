@@ -8,6 +8,8 @@ export interface RepoAccess {
   installationFor(repo: string): Promise<number | null>;
   tokenFor(repo: string, installationId: number): Promise<{ token: string; expires_at: string }>;
   installUrl(): string;
+  // Opened by Mynt, only after a build passes its gates.
+  openPullRequest(repo: string, installationId: number, pr: { head: string; title: string; body: string }): Promise<string>;
 }
 
 const b64url = (b: Buffer | string) => Buffer.from(b).toString("base64").replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_");
@@ -59,5 +61,23 @@ export class GitHubApp implements RepoAccess {
 
   installUrl() {
     return `https://github.com/apps/${this.slug}/installations/new`;
+  }
+
+  async openPullRequest(repo: string, installationId: number, pr: { head: string; title: string; body: string }) {
+    const { token } = await this.tokenFor(repo, installationId);
+    const call = async (method: string, path: string, body?: unknown) => {
+      const res = await fetch(`${this.api}${path}`, {
+        method,
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "User-Agent": "mynt", "X-GitHub-Api-Version": "2022-11-28" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      return { status: res.status, data: (await res.json()) as Record<string, unknown> };
+    };
+    const info = await call("GET", `/repos/${repo}`);
+    const base = info.data.default_branch as string;
+    if (pr.head === base) throw new Error("Refusing to open a pull request from the default branch");
+    const created = await call("POST", `/repos/${repo}/pulls`, { head: pr.head, base, title: pr.title, body: pr.body });
+    if (created.status !== 201) throw new Error(`GitHub refused the pull request (${created.status})`);
+    return created.data.html_url as string;
   }
 }

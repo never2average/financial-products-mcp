@@ -88,17 +88,17 @@ Each product also has **build terms**:
 
 ### Coding-agent builds (developers)
 
-A developer can have Mynt **build and ship** one of their experiences. `start_build` runs a coding agent in a fresh [boat.dev](https://boat.dev) sandbox. The agent:
-1. writes the code against the app's products and their build terms, using a freshly generated SDK for them and a Mynt **sandbox key** (simulated hand-offs) for end-to-end tests; the key is revoked if the build doesn't ship
-2. runs the **[Maxwell](https://github.com/OnFinance/Maxwell)** static security probes (secure code review, CI/CD, agent code, schemas, infrastructure as code) and fixes what it can
-3. works through a **production-readiness checklist**: tests, lint and types, secrets scan, dependency audit, SBOM, required disclosures, permitted actions only, no financial-data collection, docs
-4. deploys a token-gated **preview**
-5. with a connected repository, pushes a branch and opens a **pull request**; never to the default branch
+A developer can have Mynt **build and ship** one of their experiences. `start_build` runs a coding agent (Claude Code, as [boat.dev](https://boat.dev)'s integrated agent) in a fresh sandbox. The agent writes the code against the app's products and their build terms, using a freshly generated SDK and a Mynt **sandbox key** (simulated hand-offs) for end-to-end tests. It runs the [Maxwell](https://github.com/OnFinance/Maxwell) static probes to find and fix issues, starts a preview, and pushes a branch.
 
-**Gates:**
-- **critical or high** Maxwell findings, or no audit at all → `blocked`
-- an unmet readiness check → `failed`
-- otherwise → `succeeded`, with the preview URL and PR
+**The agent doesn't grade its own work.** When it finishes, Mynt verifies the build itself, in a **fresh sandbox the agent never touched**, with no secrets:
+1. **Package:** Mynt packages the workspace source (without dependencies), records its SHA-256, and the verifier downloads it and checks the checksum.
+2. **Mynt's own checks** (`src/verify-script.ts`): tests; lint and types; a secrets scan with `gitleaks`; a dependency audit; a CycloneDX SBOM with `syft`; and every required disclosure present in the source. `gitleaks` and `syft` are pinned versions, checked against their releases' published checksums.
+3. **Independent audit:** a separate, audit-only Claude Code run executes the Maxwell static workflows. Mynt then re-hashes the source tree to prove the audit changed nothing.
+4. **Decision**, from Mynt's results only. The agent's own report is kept, as advice:
+   - the source changed during the audit, no audit, or **critical or high** findings → `blocked`
+   - a failing check → `failed`
+   - with a repository, the pushed branch must be exactly the verified source, or the build is `blocked`
+5. **Ship:** on success, Mynt exposes the token-gated **preview** and **opens the pull request itself**, through its GitHub App, with the verified results in the description. The agent never opens PRs.
 
 **Tracking:** developers follow builds with `get_build` (phase, timeline, cost against the cap, Maxwell summary, readiness, links), see the agent's live activity with `get_build_activity`, `steer_build` it, or `stop_build` it. `list_builds` shows this month's spend. Admins see every build and total spend with `list_all_builds`.
 

@@ -6,6 +6,7 @@ import type { BoatClient } from "./boat.js";
 import type { Db } from "./db.js";
 import type { RepoAccess } from "./github.js";
 import { generateSdk, type SdkProduct } from "./sdk.js";
+import { auditorPrompt, VERIFY_DIR, VERIFY_SCRIPT } from "./verify-script.js";
 import type { Store, User } from "./store.js";
 
 // Coding-agent builds: a developer asks Mynt to build or ship one of their experiences; Mynt runs a coding
@@ -20,6 +21,7 @@ export const BUILD_STATUSES = [
   "checking",
   "previewing",
   "pushing",
+  "verifying",
   "succeeded",
   "blocked",
   "failed",
@@ -64,6 +66,13 @@ export interface Build {
   phase_message: string | null;
   sandbox_id: string | null;
   sandbox_key_id: string | null; // the app's Mynt sandbox key this build uses
+  verify_sandbox_id: string | null; // the clean sandbox Mynt verifies the build in
+  verify_step: "provisioning" | "checks" | "audit" | null;
+  verify_process_id: number | null;
+  verify_prompt_id: string | null;
+  source_sha256: string | null;
+  source_url: string | null; // signed, short-lived; never shown to users
+  agent_report: unknown; // the coding agent's own report: advisory only
   prompt_id: string | null;
   preview_url: string | null;
   pr_url: string | null;
@@ -105,6 +114,13 @@ const TABLES = `
   );
   CREATE INDEX IF NOT EXISTS build_runs_developer_idx ON financial_products.build_runs (developer_id, created_at DESC);
   ALTER TABLE financial_products.build_runs ADD COLUMN IF NOT EXISTS sandbox_key_id text;
+  ALTER TABLE financial_products.build_runs ADD COLUMN IF NOT EXISTS verify_sandbox_id text;
+  ALTER TABLE financial_products.build_runs ADD COLUMN IF NOT EXISTS verify_step text;
+  ALTER TABLE financial_products.build_runs ADD COLUMN IF NOT EXISTS verify_process_id integer;
+  ALTER TABLE financial_products.build_runs ADD COLUMN IF NOT EXISTS verify_prompt_id text;
+  ALTER TABLE financial_products.build_runs ADD COLUMN IF NOT EXISTS source_sha256 text;
+  ALTER TABLE financial_products.build_runs ADD COLUMN IF NOT EXISTS source_url text;
+  ALTER TABLE financial_products.build_runs ADD COLUMN IF NOT EXISTS agent_report jsonb;
   CREATE TABLE IF NOT EXISTS financial_products.build_events (
     id uuid PRIMARY KEY,
     build_id uuid NOT NULL REFERENCES financial_products.build_runs(id),
@@ -137,6 +153,8 @@ const toBuild = (r: Row): Build => ({
 // Files the agent reads and writes inside the sandbox.
 const HOME = "/root/mynt";
 const FILES = { task: `${HOME}/TASK.md`, spec: `${HOME}/build.json`, status: `${HOME}/status.json`, result: `${HOME}/result.json`, sdk: `${HOME}/sdk` };
+const WORKSPACE = "/root/workspace/app";
+const OUT = "/root/mynt-out";
 
 export class BuildService {
   private timer: NodeJS.Timeout | null = null;
@@ -199,7 +217,7 @@ export class BuildService {
     const keys = Object.keys(fields) as (keyof Build)[];
     if (keys.length === 0) return;
     const sets = keys.map((k, i) => `${k} = $${i + 2}`);
-    const values = keys.map((k) => (k === "maxwell" || k === "readiness" ? JSON.stringify(fields[k]) : fields[k]));
+    const values = keys.map((k) => (k === "maxwell" || k === "readiness" || k === "agent_report" ? JSON.stringify(fields[k]) : fields[k]));
     const terminal = fields.status && TERMINAL.includes(fields.status);
     await this.db.query(
       `UPDATE financial_products.build_runs SET ${sets.join(", ")}, updated_at = now()${terminal ? ", finished_at = now()" : ""} WHERE id = $1`,
@@ -266,6 +284,7 @@ export class BuildService {
       await this.boat.interrupt(build.sandbox_id).catch(() => {});
       await this.boat.stop(build.sandbox_id).catch(() => {});
     }
+    if (build.verify_sandbox_id && this.boat) await this.boat.stop(build.verify_sandbox_id).catch(() => {});
     await this.update(build.id, { status, error: reason });
     await this.event(build.id, status, reason);
     return (await this.get(build.id))!;
@@ -364,6 +383,8 @@ export class BuildService {
       return;
     }
 
+    if (b.status === "verifying") return this.verify(b);
+
     // The agent is working: follow its status file, its cost, and its prompt run.
     const cost = await boat.costDollars(b.sandbox_id!);
     if (cost !== b.cost_usd) await this.update(b.id, { cost_usd: cost });
@@ -380,45 +401,146 @@ export class BuildService {
     const run = await boat.promptStatus(b.sandbox_id!, b.prompt_id!);
     if (!run.done) return;
     if (run.status !== "finished") throw new Error(`Coding agent ${run.status}`);
-    await this.finish(b);
+    await this.startVerification(b);
   }
 
-  // Gates: Maxwell critical/high findings block; unmet readiness fails; otherwise preview and record.
-  private async finish(b: Build) {
+  // The coding agent doesn't grade its own work: Mynt packages the source and verifies it in a fresh
+  // sandbox the agent never touched. The agent's report is kept, but only as advice.
+  private async startVerification(b: Build) {
     const boat = this.boat!;
-    const result = parseJson<AgentResult>(await boat.readFile(b.sandbox_id!, FILES.result));
-    if (!result) throw new Error("The agent finished without writing its result file");
-    const counts = result.maxwell?.counts ?? {};
-    const serious = (counts.critical ?? 0) + (counts.high ?? 0);
-    await this.update(b.id, { maxwell: result.maxwell ?? null, readiness: result.readiness ?? [] });
-    if (!result.maxwell || serious > 0 || (result.readiness ?? []).some((c) => c.status === "fail")) await this.retireKey(b);
-    if (!result.maxwell) {
-      await this.update(b.id, { status: "blocked", error: "No Maxwell audit result; a build can't ship without one" });
-      await this.event(b.id, "blocked", "Missing Maxwell audit");
-      return;
-    }
-    if (serious > 0) {
-      await this.update(b.id, { status: "blocked", error: `Security gate: ${serious} critical/high Maxwell finding(s) remain` });
-      await this.event(b.id, "blocked", "Blocked by the security gate", counts);
-      return;
-    }
-    const unmet = (result.readiness ?? []).filter((c) => c.status === "fail");
-    if (unmet.length) {
-      await this.update(b.id, { status: "failed", error: `Not production-ready: ${unmet.map((c) => c.name).join(", ")}` });
-      await this.event(b.id, "failed", "Production-readiness checks failed", unmet);
-      return;
-    }
-    let preview: string | null = null;
-    if (result.preview?.port) preview = (await boat.host(b.sandbox_id!, result.preview.port)).url;
-    await this.update(b.id, {
-      status: "succeeded",
-      preview_url: preview,
-      pr_url: result.push?.pr_url ?? null,
-      commit_sha: result.push?.commit ?? null,
-      branch: result.push?.branch ?? b.branch,
-      phase_message: "Done",
+    const report = parseJson<AgentResult>(await boat.readFile(b.sandbox_id!, FILES.result));
+    const pack = await boat.exec(
+      b.sandbox_id!,
+      `set -e; mkdir -p ${OUT}; cd ${WORKSPACE}; tar --exclude=./node_modules -czf ${OUT}/app.tgz .; sha256sum ${OUT}/app.tgz`,
+      { timeoutSeconds: 300 },
+    );
+    const sha = pack.stdout.trim().split(/\s+/)[0];
+    if (pack.exitCode !== 0 || !/^[0-9a-f]{64}$/.test(sha ?? "")) throw new Error(`Couldn't package the build's source: ${pack.stderr.slice(0, 300)}`);
+    const url = await boat.downloadUrl(b.sandbox_id!, `${OUT}/app.tgz`, 3 * 3600);
+    if (!/^https:\/\/[^\s'"`$\\]+$/.test(url)) throw new Error("Unexpected source URL from the sandbox host");
+    // No secrets: the verifier needs none.
+    const v = await boat.createSandbox({
+      name: `mynt-verify-${b.id}`,
+      type: this.config.sandboxType,
+      ttlSeconds: 2 * 3600,
+      labels: { mynt_build: b.id, mynt_role: "verify" },
+      env: {},
     });
-    await this.event(b.id, "succeeded", "Build passed its gates", { preview_url: preview, pr_url: result.push?.pr_url, maxwell: counts });
+    await this.update(b.id, {
+      status: "verifying",
+      verify_step: "provisioning",
+      verify_sandbox_id: v.id,
+      source_sha256: sha,
+      source_url: url,
+      agent_report: report ?? null,
+      phase_message: "Verifying in a clean sandbox",
+    });
+    await this.event(b.id, "verifying", "Source packaged; independent verification started", { source_sha256: sha, verify_sandbox_id: v.id });
+  }
+
+  private async verify(b: Build) {
+    const boat = this.boat!;
+    const vid = b.verify_sandbox_id!;
+    const cost = (await boat.costDollars(b.sandbox_id!)) + (await boat.costDollars(vid));
+    if (cost !== b.cost_usd) await this.update(b.id, { cost_usd: cost });
+    if (cost > b.cap_usd) {
+      await this.stop({ ...b, cost_usd: cost }, `Stopped at US$${cost.toFixed(2)}: over the US$${b.cap_usd} cap`, "over_budget");
+      return;
+    }
+
+    if (b.verify_step === "provisioning") {
+      const state = (await boat.getSandbox(vid)).state;
+      if (state === "error" || state === "cancelled") throw new Error(`Verification sandbox ${state}`);
+      if (!["ready", "idle", "running"].includes(state)) return;
+      await boat.writeFile(vid, `${VERIFY_DIR}/verify.sh`, VERIFY_SCRIPT);
+      await boat.writeFile(vid, `${VERIFY_DIR}/disclosures.json`, JSON.stringify(await this.requiredDisclosures(b)));
+      const run = await boat.exec(vid, `bash ${VERIFY_DIR}/verify.sh '${b.source_url}' ${b.source_sha256}`, { detached: true });
+      await this.update(b.id, { verify_step: "checks", verify_process_id: run.processId ?? null });
+      await this.event(b.id, "verifying", "Running Mynt's checks: tests, lint and types, secrets, dependencies, SBOM, disclosures");
+      return;
+    }
+
+    if (b.verify_step === "checks") {
+      if ((await boat.commandStatus(vid, b.verify_process_id!)).running) return;
+      const prompt = await boat.prompt(vid, { provider: this.config.provider, model: this.config.model, prompt: auditorPrompt(this.config.maxwellRepo) });
+      await this.update(b.id, { verify_step: "audit", verify_prompt_id: prompt.promptId });
+      await this.event(b.id, "verifying", "Checks finished; independent Maxwell audit started");
+      return;
+    }
+
+    if (b.verify_step === "audit") {
+      const run = await boat.promptStatus(vid, b.verify_prompt_id!);
+      if (!run.done) return;
+      await boat.exec(vid, `bash ${VERIFY_DIR}/verify.sh --rehash`, { timeoutSeconds: 300 });
+      const [report, maxwell, before, after] = await Promise.all([
+        boat.readFile(vid, `${VERIFY_DIR}/report.json`).then((t) => parseJson<{ checks: Check[] }>(t)),
+        boat.readFile(vid, `${VERIFY_DIR}/maxwell.json`).then((t) => parseJson<NonNullable<AgentResult["maxwell"]>>(t)),
+        boat.readFile(vid, `${VERIFY_DIR}/before.sha`),
+        boat.readFile(vid, `${VERIFY_DIR}/after.sha`),
+      ]);
+      await boat.stop(vid).catch(() => {});
+      await this.decide(b, { report, maxwell, unchanged: !!before && before.trim() === after?.trim(), auditFinished: run.status === "finished" });
+    }
+  }
+
+  // Ship only what Mynt itself verified: the source unchanged through the audit, no critical or high
+  // findings, every check passing, and a pushed branch identical to the verified source.
+  private async decide(
+    b: Build,
+    v: { report: { checks: Check[] } | null; maxwell: AgentResult["maxwell"] | null; unchanged: boolean; auditFinished: boolean },
+  ) {
+    const boat = this.boat!;
+    const counts = v.maxwell?.counts ?? {};
+    const serious = (counts.critical ?? 0) + (counts.high ?? 0);
+    const checks = v.report?.checks ?? [];
+    await this.update(b.id, { maxwell: v.maxwell ?? null, readiness: checks });
+    const end = async (status: BuildStatus, error: string, data: unknown = {}) => {
+      await this.retireKey(b);
+      await this.update(b.id, { status, error });
+      await this.event(b.id, status, error, data);
+    };
+    if (!v.report) return end("failed", "Verification didn't produce a report");
+    if (!v.unchanged) return end("blocked", "The source changed during the audit; the result can't be trusted");
+    if (!v.auditFinished || !v.maxwell) return end("blocked", "No independent Maxwell audit result; a build can't ship without one");
+    if (serious > 0) return end("blocked", `Security gate: ${serious} critical/high Maxwell finding(s)`, counts);
+    const failed = checks.filter((c) => c.status === "fail");
+    if (failed.length) return end("failed", `Not production-ready: ${failed.map((c) => c.name).join(", ")}`, failed);
+
+    let commit: string | null = null;
+    let pr: string | null = null;
+    if (b.repository && b.branch && this.repos) {
+      // The branch the agent pushed must be exactly the source Mynt verified.
+      const head = await boat.exec(
+        b.sandbox_id!,
+        `cd ${WORKSPACE} && test -z "$(git status --porcelain)" && git fetch -q origin ${b.branch} && test "$(git rev-parse HEAD)" = "$(git rev-parse FETCH_HEAD)" && git rev-parse HEAD`,
+        { timeoutSeconds: 120 },
+      );
+      commit = head.stdout.trim();
+      if (head.exitCode !== 0 || !/^[0-9a-f]{40}$/.test(commit)) return end("blocked", "The pushed branch doesn't match the verified source");
+      const installation = await this.installation(b.developer_id, b.repository);
+      pr = await this.repos.openPullRequest(b.repository, installation!, {
+        head: b.branch,
+        title: `Mynt build: ${b.goal.slice(0, 72)}`,
+        body: prBody(b, checks, counts),
+      });
+    }
+    const advisory = b.agent_report as AgentResult | null;
+    let preview: string | null = null;
+    if (advisory?.preview?.port) preview = (await boat.host(b.sandbox_id!, advisory.preview.port)).url;
+    await this.update(b.id, { status: "succeeded", preview_url: preview, pr_url: pr, commit_sha: commit, phase_message: "Verified" });
+    await this.event(b.id, "succeeded", "Verified by Mynt and shipped", { preview_url: preview, pr_url: pr, maxwell: counts });
+  }
+
+  // Every required disclosure of the app's products, for the verifier to find in the source.
+  private async requiredDisclosures(b: Build) {
+    if (!b.app_id) return [];
+    const app = await this.store.getApp(b.app_id);
+    const out: { product_id: string; text: string }[] = [];
+    for (const id of app?.product_ids ?? []) {
+      const record = await this.store.getProduct(id);
+      for (const text of record?.build_terms?.required_disclosures ?? []) out.push({ product_id: id, text });
+    }
+    return out;
   }
 
   // What the agent builds against: the app, its products and their terms.
@@ -461,6 +583,29 @@ export class BuildService {
   private task(b: Build) {
     return buildTask({ id: b.id, repository: b.repository, branch: b.branch, maxwellRepo: this.config.maxwellRepo, files: FILES });
   }
+}
+
+interface Check {
+  name: string;
+  status: "pass" | "fail" | "warn";
+  detail?: string;
+}
+
+function prBody(b: Build, checks: Check[], counts: Record<string, number>) {
+  const row = (c: Check) => `| ${c.name} | ${c.status} |`;
+  return [
+    `Built by a Mynt coding agent and **verified by Mynt** in a clean sandbox.`,
+    "",
+    `**Goal:** ${b.goal}`,
+    "",
+    `**Maxwell (independent audit):** critical ${counts.critical ?? 0}, high ${counts.high ?? 0}, medium ${counts.medium ?? 0}, low ${counts.low ?? 0}`,
+    "",
+    "| Check | Result |",
+    "| --- | --- |",
+    ...checks.map(row),
+    "",
+    `Mynt build \`${b.id}\` · source sha256 \`${b.source_sha256}\``,
+  ].join("\n");
 }
 
 interface AgentResult {
@@ -525,10 +670,11 @@ disclosure appears wherever its product does), permitted_actions (only permitted
 Run the app as a background service on port 8080 (or another port) so it keeps running, and note the port.
 
 ## 5. Push (phase: pushing)
-${o.repository ? `Commit to ${o.branch}, push it, and open a pull request against the default branch through the GitHub API with $GITHUB_TOKEN. Describe the change, the Maxwell results and the readiness checks in the PR.` : "No repository is connected: skip this step."}
+${o.repository ? `Commit everything to ${o.branch} and push it. Leave the working tree clean. Do not open a pull request: Mynt verifies the build independently and opens it.` : "No repository is connected: skip this step."}
 
 ## Finish
-Write ${o.files.result} as JSON:
+Mynt then re-runs the audit and the checks itself in a clean sandbox; only that verification decides whether the build ships.
+Write ${o.files.result} as JSON (your own report, kept for the developer):
 {"maxwell": {"counts": {"critical": n, "high": n, "medium": n, "low": n}, "findings": [{"severity", "title", "file", "workflow"}], "summary": "..."},
  "readiness": [{"name": "tests", "status": "pass|fail|warn", "detail": "..."}, ...],
  "preview": {"port": 8080},
@@ -614,7 +760,7 @@ export function registerCodingAgentTools(server: McpServer, store: Store, user: 
       json({
         month_spend_usd: await builds.monthSpend(user.id),
         monthly_cap_usd: builds.config.monthlyCapUsd,
-        builds: (await builds.listFor(user.id, status)).map(({ goal, ...b }) => ({ ...b, goal: goal.slice(0, 140) })),
+        builds: (await builds.listFor(user.id, status)).map(({ goal, source_url, agent_report, ...b }) => ({ ...b, goal: goal.slice(0, 140) })),
       }),
   );
 
@@ -629,7 +775,9 @@ export function registerCodingAgentTools(server: McpServer, store: Store, user: 
     },
     async ({ build_id }) => {
       const b = await own(build_id);
-      return b ? json({ ...b, timeline: await builds.events(b.id) }) : fail(`No build of yours with id '${build_id}'`);
+      if (!b) return fail(`No build of yours with id '${build_id}'`);
+      const { source_url, ...shown } = b;
+      return json({ ...shown, timeline: await builds.events(b.id) });
     },
   );
 
@@ -692,7 +840,7 @@ export function registerCodingAgentAdminTools(server: McpServer, builds: BuildSe
     },
     async ({ status }) => {
       const all = await builds.listFor(null, status);
-      return json({ builds: all, total_cost_usd: all.reduce((s, b) => s + b.cost_usd, 0) });
+      return json({ builds: all.map(({ source_url, agent_report, ...b }) => b), total_cost_usd: all.reduce((s, b) => s + b.cost_usd, 0) });
     },
   );
 }

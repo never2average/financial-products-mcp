@@ -150,11 +150,12 @@ const toBuild = (r: Row): Build => ({
   finished_at: iso(r.finished_at),
 });
 
-// Files the agent reads and writes inside the sandbox.
-const HOME = "/root/mynt";
+// Files the agent reads and writes inside the sandbox. boat.dev's file API only accepts paths under
+// the sandbox user's home (/home/user) or /tmp.
+const HOME = "/home/user/mynt";
 const FILES = { task: `${HOME}/TASK.md`, spec: `${HOME}/build.json`, status: `${HOME}/status.json`, result: `${HOME}/result.json`, sdk: `${HOME}/sdk` };
-const WORKSPACE = "/root/workspace/app";
-const OUT = "/root/mynt-out";
+const WORKSPACE = "/home/user/workspace/app";
+const OUT = "/home/user/mynt-out";
 
 export class BuildService {
   private timer: NodeJS.Timeout | null = null;

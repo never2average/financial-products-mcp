@@ -9,7 +9,7 @@ import { Store } from "../dist/store.js";
 
 const SHA = "a".repeat(64);
 const COMMIT = "c".repeat(40);
-const V = "/root/mynt-verify";
+const V = "/home/user/mynt-verify";
 
 // A stand-in for boat.dev: sandboxes become ready when told to, files live in memory, the agents' work
 // is simulated by writing files, and shell commands are matched by what they do.
@@ -64,7 +64,7 @@ function fakeBoat() {
     async exec(id, command, opts = {}) {
       const s = sandboxes.get(id);
       s.commands.push({ command, ...opts });
-      if (command.includes("tar --exclude")) return { exitCode: 0, stdout: `${SHA}  /root/mynt-out/app.tgz\n`, stderr: "" };
+      if (command.includes("tar --exclude")) return { exitCode: 0, stdout: `${SHA}  /home/user/mynt-out/app.tgz\n`, stderr: "" };
       if (command.includes("verify.sh --rehash")) {
         s.files.set(`${V}/after.sha`, boat.tamperDuringAudit ? "changed\n" : s.files.get(`${V}/before.sha`));
         return { exitCode: 0, stdout: "", stderr: "" };
@@ -162,7 +162,7 @@ async function runBuild(ctx, { dev, startArgs, agent = agentReport, verification
   const sbx = (await builds.get(started.id)).sandbox_id;
   boat.ready(sbx);
   await builds.tick(); // agent prompted
-  boat.write(sbx, "/root/mynt/result.json", agent);
+  boat.write(sbx, "/home/user/mynt/result.json", agent);
   boat.finishPrompt(sbx);
   await builds.tick(); // source packaged, verifier requested
   const vid = (await builds.get(started.id)).verify_sandbox_id;
@@ -194,17 +194,17 @@ test("a build is verified by Mynt in a clean sandbox, then Mynt opens the PR", a
   const coding = boat.sandboxes.get(sbx);
   assert.equal(coding.opts.env.GITHUB_TOKEN, "ghs_short_lived");
   assert.match(coding.opts.env.MYNT_SANDBOX_KEY, /^mynt_test_/);
-  const task = coding.files.get("/root/mynt/TASK.md");
+  const task = coding.files.get("/home/user/mynt/TASK.md");
   assert.match(task, /Do not open a pull request/);
   assert.match(task, /re-runs the audit and the checks itself/);
-  assert.ok(coding.files.has("/root/mynt/sdk/openapi.json"));
+  assert.ok(coding.files.has("/home/user/mynt/sdk/openapi.json"));
 
   // The verifier: a fresh sandbox with no secrets, Mynt's own script, and an audit-only agent.
   const verifier = boat.sandboxes.get(vid);
   assert.deepEqual(verifier.opts.env, {});
   assert.match(verifier.files.get(`${V}/verify.sh`), /gitleaks/);
-  assert.match(verifier.commands.find((c) => c.detached).command, new RegExp(`verify\\.sh 'https://files\\.example/${sbx}/root/mynt-out/app\\.tgz\\?sig=x' ${SHA}`));
-  assert.match(verifier.prompts[0].prompt, /Do not modify anything inside \/root\/app/);
+  assert.match(verifier.commands.find((c) => c.detached).command, new RegExp(`verify\\.sh 'https://files\\.example/${sbx}/home/user/mynt-out/app\\.tgz\\?sig=x' ${SHA}`));
+  assert.match(verifier.prompts[0].prompt, /Do not modify anything inside \/home\/user\/app/);
   assert.ok(verifier.stopped, "the verifier is stopped once it has reported");
 
   assert.equal(build.status, "succeeded");
@@ -286,7 +286,7 @@ test("spend caps count both sandboxes, and the monthly budget refuses new builds
   const sbx = (await builds.get(started.id)).sandbox_id;
   boat.ready(sbx);
   await builds.tick();
-  boat.write(sbx, "/root/mynt/result.json", agentReport);
+  boat.write(sbx, "/home/user/mynt/result.json", agentReport);
   boat.finishPrompt(sbx);
   boat.sandboxes.get(sbx).cost = 3;
   await builds.tick(); // verifying
@@ -310,7 +310,7 @@ test("developers track, steer and stop their own builds; admins see all", async 
   const sbx = (await builds.get(started.id)).sandbox_id;
   boat.ready(sbx);
   await builds.tick();
-  boat.write(sbx, "/root/mynt/status.json", { phase: "auditing", message: "Running Maxwell" });
+  boat.write(sbx, "/home/user/mynt/status.json", { phase: "auditing", message: "Running Maxwell" });
   await builds.tick();
   let b = (await call(dev, "get_build", { build_id: started.id })).data;
   assert.equal(b.status, "auditing");

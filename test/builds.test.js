@@ -69,7 +69,8 @@ function fakeBoat() {
       const running = processId === 99 ? sandboxes.get(id).agentRunning : sandboxes.get(id).checksRunning;
       return { running, exitCode: running ? null : 0 };
     },
-    async downloadUrl(id, path) {
+    async downloadUrl(id, path, ttlSeconds) {
+      if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 3600) throw new Error("ttlSeconds must be an integer between 1 and 3600.");
       return `https://files.example/${id}${path}?sig=x`;
     },
     // Test controls
@@ -545,4 +546,22 @@ test("boat's file API: a file that isn't there yet reads as null, other errors s
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+test("a build that fails stops its sandboxes and kills its proxy token", async () => {
+  const ctx = await setup();
+  const dev = await ctx.connect(await ctx.as("Dev", ["developer"]));
+  const started = (await ctx.call(dev, "start_build", { goal: "Build a savings page please" })).data;
+  await ctx.builds.tick();
+  const sbx = (await ctx.builds.get(started.id)).sandbox_id;
+  ctx.boat.ready(sbx);
+  await ctx.builds.tick();
+  const token = JSON.parse(ctx.boat.sandboxes.get(sbx).files.get(`${A}/auth.json`)).token;
+  ctx.boat.finishAgent(sbx, "error_max_budget_usd", 9.9);
+  await ctx.builds.tick();
+  const b = await ctx.builds.get(started.id);
+  assert.equal(b.status, "failed");
+  assert.match(b.error, /error_max_budget_usd/);
+  assert.ok(ctx.boat.sandboxes.get(sbx).stopped, "the coding sandbox is stopped");
+  assert.equal(await ctx.builds.agentTokenActive(token), false);
 });

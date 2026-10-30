@@ -405,7 +405,10 @@ export class BuildService {
       try {
         await this.advance(build);
       } catch (e) {
-        await this.retireKey((await this.get(build.id)) ?? build);
+        const current = (await this.get(build.id)) ?? build;
+        await this.retireKey(current);
+        // Don't leave a failed build's machines running until their TTL.
+        for (const id of [current.sandbox_id, current.verify_sandbox_id]) if (id) await this.boat.stop(id).catch(() => {});
         await this.update(build.id, { status: "failed", error: (e as Error).message });
         await this.event(build.id, "failed", (e as Error).message);
       }
@@ -495,7 +498,8 @@ export class BuildService {
     );
     const sha = pack.stdout.trim().split(/\s+/)[0];
     if (pack.exitCode !== 0 || !/^[0-9a-f]{64}$/.test(sha ?? "")) throw new Error(`Couldn't package the build's source: ${pack.stderr.slice(0, 300)}`);
-    const url = await boat.downloadUrl(b.sandbox_id!, `${OUT}/app.tgz`, 3 * 3600);
+    // boat signs download URLs for at most an hour; the verifier fetches the source as soon as it starts.
+    const url = await boat.downloadUrl(b.sandbox_id!, `${OUT}/app.tgz`, 3600);
     if (!/^https:\/\/[^\s'"`$\\]+$/.test(url)) throw new Error("Unexpected source URL from the sandbox host");
     // No secrets: the verifier needs none.
     const v = await boat.createSandbox({

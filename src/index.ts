@@ -2,8 +2,11 @@
 import { parseArgs } from "node:util";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { ClerkAdmin, ClerkAuth, clerkConfigFromEnv } from "./auth.js";
+import { HttpBoatClient } from "./boat.js";
+import { BuildService, buildConfigFromEnv } from "./builds.js";
 import { connectPostgres } from "./db.js";
 import { createMcpHttpServer } from "./http.js";
+import { GitHubApp } from "./github.js";
 import { createServer } from "./server.js";
 import { ROLES, Store, type Role } from "./store.js";
 
@@ -22,7 +25,9 @@ Environment:
   CLERK_PUBLISHABLE_KEY
   PUBLIC_URL                Public origin of this server, e.g. https://mcp.example.com
   FINANCIAL_PRODUCTS_FILE   JSON catalog used to seed published products
-  FINANCIAL_PRODUCTS_TOKEN  User token for stdio mode; omit to browse as a guest`;
+  FINANCIAL_PRODUCTS_TOKEN  User token for stdio mode; omit to browse as a guest
+  BOAT_API_KEY              Enables coding-agent builds in boat.dev sandboxes (BUILD_CAP_USD, BUILD_MONTHLY_CAP_USD, ...)
+  GITHUB_APP_ID             With GITHUB_APP_PRIVATE_KEY and GITHUB_APP_SLUG: builds push branches and open PRs`;
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
@@ -41,8 +46,17 @@ const die = (msg: string): never => {
   process.exit(1);
 };
 
-const openStore = () =>
-  Store.open(connectPostgres(process.env.DATABASE_URL ?? die("DATABASE_URL is required (your Supabase Postgres connection string)")));
+const openDb = () => connectPostgres(process.env.DATABASE_URL ?? die("DATABASE_URL is required (your Supabase Postgres connection string)"));
+const openStore = () => Store.open(openDb());
+
+// Coding-agent builds run in boat.dev sandboxes when a boat key is configured.
+const openServices = async () => {
+  const db = openDb();
+  const store = await Store.open(db);
+  const boat = process.env.BOAT_API_KEY ? new HttpBoatClient(process.env.BOAT_API_KEY) : null;
+  const builds = await BuildService.open(db, store, boat, GitHubApp.fromEnv(), buildConfigFromEnv());
+  return { store, builds };
+};
 
 const parseRoles = (): Role[] => {
   const roles = values.role ?? [];
@@ -64,16 +78,17 @@ const [command = "serve", sub] = positionals;
 if (values.help) {
   console.log(USAGE);
 } else if (command === "serve") {
-  const store = await openStore();
+  const { store, builds } = await openServices();
   const token = process.env.FINANCIAL_PRODUCTS_TOKEN;
   const user = token ? ((await store.userByToken(token)) ?? die("FINANCIAL_PRODUCTS_TOKEN is not a valid token")) : null;
-  await createServer(store, user, { clerkAdmin: clerkAdmin() }).connect(new StdioServerTransport());
+  await createServer(store, user, { clerkAdmin: clerkAdmin(), builds }).connect(new StdioServerTransport());
 } else if (command === "serve-http") {
   const port = Number(values.port);
-  const store = await openStore();
+  const { store, builds } = await openServices();
+  builds.startWorker();
   const config = clerkConfigFromEnv();
   const clerk = config ? new ClerkAuth(config, store) : null;
-  const http = createMcpHttpServer(store, clerk, { clerkAdmin: clerkAdmin() }).listen(port, values.host, () =>
+  const http = createMcpHttpServer(store, clerk, { clerkAdmin: clerkAdmin(), builds }).listen(port, values.host, () =>
     console.error(`mynt MCP listening on http://${values.host}:${port}/mcp${clerk ? " (Clerk whitelist auth)" : ""}`),
   );
   process.on("SIGTERM", () => http.close(() => process.exit(0)));

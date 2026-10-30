@@ -33,7 +33,7 @@ async function setup() {
 
 // Test fixtures, not statements of real regulation.
 const licence = (grc) => ({
-  _id: "pa",
+  _id: "rbi_pa",
   name: "Payment aggregator",
   grc: {
     allowed_product_types: [],
@@ -100,7 +100,7 @@ test("controls, policies, risk models and inspections are templates that teach l
   assert.equal(grc.registers.controls[0].minimum_test_frequency, "half_yearly");
 
   // A control template = Mynt's default control schema + the regulator's additions.
-  const control = (await call(inno, "get_template", { region: "IN", regulator_id: "rbi", license_id: "pa", kind: "control", template_id: "merchant_kyc" })).data;
+  const control = (await call(inno, "get_template", { region: "IN", regulator_id: "rbi", license_id: "rbi_pa", kind: "control", template_id: "merchant_kyc" })).data;
   assert.match(control.guidance, /due diligence/);
   const byKey = Object.fromEntries(control.schema.map((x) => [x.key, x]));
   assert.deepEqual(byKey.control_type.enum_values, ["preventive", "detective", "corrective", "directive", "compensating", "recovery"]);
@@ -110,13 +110,13 @@ test("controls, policies, risk models and inspections are templates that teach l
   assert.equal(byKey.risk_tier.guidance, "Tier every merchant");
 
   // Overrides replace a default field by key.
-  const policy = (await call(inno, "get_template", { region: "IN", regulator_id: "rbi", license_id: "pa", kind: "policy", template_id: "merchant_onboarding_policy" })).data;
+  const policy = (await call(inno, "get_template", { region: "IN", regulator_id: "rbi", license_id: "rbi_pa", kind: "policy", template_id: "merchant_onboarding_policy" })).data;
   assert.deepEqual(policy.schema.find((x) => x.key === "review_frequency").enum_values, ["annual"]);
   assert.ok(policy.schema.some((x) => x.key === "sections"));
 
   // Listing a kind shows the licence's templates; the new inspection kinds are there.
-  assert.deepEqual((await call(inno, "get_template", { region: "IN", regulator_id: "rbi", license_id: "pa", kind: "inspection_event" })).data.map((t) => t.id), ["info_request"]);
-  const inspection = (await call(inno, "get_template", { region: "IN", regulator_id: "rbi", license_id: "pa", kind: "inspection_record", template_id: "onsite_inspection" })).data;
+  assert.deepEqual((await call(inno, "get_template", { region: "IN", regulator_id: "rbi", license_id: "rbi_pa", kind: "inspection_event" })).data.map((t) => t.id), ["info_request"]);
+  const inspection = (await call(inno, "get_template", { region: "IN", regulator_id: "rbi", license_id: "rbi_pa", kind: "inspection_record", template_id: "onsite_inspection" })).data;
   assert.deepEqual(inspection.schema.find((x) => x.key === "inspection_type").enum_values, ["onsite_inspection", "offsite_review", "thematic_review", "investigation", "audit"]);
 
   const defaults = (await call(inno, "list_template_defaults", { kind: "risk_model" })).data.risk_model;
@@ -132,7 +132,7 @@ test("a template can opt out of the default schema", async () => {
       repositories: { policies: [{ id: "lean", name: "Lean policy", extends_default: false, fields: [{ key: "title", label: "Title", type: "string", required: true }] }] },
     }),
   });
-  const t = (await call(admin, "get_template", { region: "IN", regulator_id: "rbi", license_id: "pa", kind: "policy", template_id: "lean" })).data;
+  const t = (await call(admin, "get_template", { region: "IN", regulator_id: "rbi", license_id: "rbi_pa", kind: "policy", template_id: "lean" })).data;
   assert.deepEqual(t.schema.map((x) => x.key), ["title"]);
 });
 

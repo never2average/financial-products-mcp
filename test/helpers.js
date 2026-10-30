@@ -12,10 +12,12 @@ export async function licensed(store, user, { region = "IN", category = "deposit
   const regulatorId = `test_${category}_${action}`.replace(/[^a-z0-9_]/g, "_");
   const regionRow = (await store.referenceData(true)).regions.find((r) => r.code === region);
   const model = normalizeModel(regionRow.regulatory);
+  const productTypeId = `${regulatorId}_pt`;
+  await store.upsertRegulatedProductType(region, { id: productTypeId, name: category, description: "", type_id: category, actions: [action] });
   const regulator = {
     id: regulatorId,
     name: `Test regulator for ${category}`,
-    scope: { product_types: [{ id: "pt", name: category, description: "", type_id: category, action: [action] }], customer_personas: [] },
+    scope: { product_types: [{ id: productTypeId, name: category, description: "", type_id: category, action: [action] }], customer_personas: [] },
     license_types: [
       {
         _id: "lic",
@@ -25,7 +27,7 @@ export async function licensed(store, user, { region = "IN", category = "deposit
         grc: {
           registers: { obligations: [], reporting_disclosure_filings: [], risks: [], controls: [], inspection_events: [] },
           repositories: { regulatory_communications: [], enforcement_actions: [], press_releases: [], policies: [], risk_models: [], inspection_history: [] },
-          allowed_product_types: ["pt"],
+          allowed_product_types: [{ id: productTypeId, actions: [action] }],
           allowed_customer_segments: [],
           mandatory_stakeholders: { internal: [], external: [] },
         },

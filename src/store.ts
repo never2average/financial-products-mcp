@@ -2,7 +2,14 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { loadCatalog, type FinancialProduct } from "./catalog.js";
 import type { Db } from "./db.js";
 import type { TestReport } from "./product-tests.js";
-import type { RegulatoryModel } from "./regulatory.js";
+import {
+  hydrateRegulators,
+  stripScopeProducts,
+  type ProductAction as RegulatedAction,
+  type ProductMapping,
+  type RegulatedProductType,
+  type RegulatoryModel,
+} from "./regulatory.js";
 
 export const ROLES = ["consumer", "developer", "innovator", "admin"] as const;
 export type Role = (typeof ROLES)[number];
@@ -489,6 +496,30 @@ const TABLES = `
     created_at timestamptz NOT NULL DEFAULT now()
   );
   CREATE INDEX IF NOT EXISTS audit_log_created_idx ON financial_products.audit_log (created_at DESC);
+  -- Regulated product types are a region-wide catalogue; regulators map onto them many to many,
+  -- each supervising a subset of a product type's actions.
+  CREATE TABLE IF NOT EXISTS financial_products.regulated_product_types (
+    region text NOT NULL REFERENCES financial_products.regions(code),
+    id text NOT NULL CHECK (id ~ '^[a-z0-9][a-z0-9_.-]*$'),
+    name text NOT NULL,
+    description text NOT NULL DEFAULT '',
+    type_id text NOT NULL,
+    actions text[] NOT NULL CHECK (
+      cardinality(actions) > 0 AND actions <@ ARRAY['issuance', 'sale', 'purchase', 'secondary_sale', 'repackaging']::text[]
+    ),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (region, id)
+  );
+  CREATE TABLE IF NOT EXISTS financial_products.regulator_product_types (
+    region text NOT NULL,
+    regulator_id text NOT NULL,
+    product_type_id text NOT NULL,
+    actions text[] NOT NULL CHECK (cardinality(actions) > 0),
+    PRIMARY KEY (region, regulator_id, product_type_id),
+    FOREIGN KEY (region, product_type_id) REFERENCES financial_products.regulated_product_types(region, id) ON DELETE RESTRICT
+  );
+  CREATE INDEX IF NOT EXISTS regulator_product_types_product_idx
+    ON financial_products.regulator_product_types (region, product_type_id);
   -- ---- Runtime layer: per-app API keys, hand-offs, analytics events, webhooks, app releases ----
   CREATE TABLE IF NOT EXISTS financial_products.api_keys (
     id uuid PRIMARY KEY,
@@ -914,21 +945,127 @@ export class Store {
        ON CONFLICT (id) DO NOTHING`,
       [JSON.stringify(ref.categories)],
     );
-    return new Store(db);
+    const store = new Store(db);
+    await store.liftScopeProductTypes();
+    return store;
+  }
+
+  // Regulators used to carry their product types inline. Move them into the region's catalogue and
+  // the regulator mapping once; regulators whose scope already references nothing are left alone.
+  private async liftScopeProductTypes(): Promise<void> {
+    const regions = await this.all(
+      `SELECT code, regulatory FROM financial_products.regions
+       WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(regulatory->'regulators', '[]'::jsonb)) r
+                     WHERE jsonb_array_length(COALESCE(r->'scope'->'product_types', '[]'::jsonb)) > 0)`,
+    );
+    for (const row of regions) {
+      const code = row.code as string;
+      const model = row.regulatory as { regulators: { id: string; scope?: { product_types?: Record<string, unknown>[] } }[] };
+      for (const r of model.regulators) {
+        for (const p of r.scope?.product_types ?? []) {
+          const acts = ([] as string[]).concat((p.action ?? p.actions ?? []) as string[]);
+          if (typeof p.type_id === "string") {
+            await this.db.query(
+              `INSERT INTO financial_products.regulated_product_types (region, id, name, description, type_id, actions)
+               VALUES ($1, $2, $3, $4, $5, $6)
+               ON CONFLICT (region, id) DO UPDATE SET
+                 actions = ARRAY(SELECT DISTINCT unnest(regulated_product_types.actions || EXCLUDED.actions))`,
+              [code, p.id, p.name ?? p.id, p.description ?? "", p.type_id, acts],
+            );
+          }
+          await this.db.query(
+            `INSERT INTO financial_products.regulator_product_types (region, regulator_id, product_type_id, actions)
+             SELECT $1, $2, $3, COALESCE(NULLIF($4::text[], '{}'), t.actions)
+             FROM financial_products.regulated_product_types t WHERE t.region = $1 AND t.id = $3
+             ON CONFLICT DO NOTHING`,
+            [code, r.id, p.id, acts],
+          );
+        }
+      }
+      await this.db.query("UPDATE financial_products.regions SET regulatory = $2 WHERE code = $1", [
+        code,
+        JSON.stringify({ ...model, regulators: model.regulators.map(stripScopeProducts) }),
+      ]);
+    }
   }
 
   // Reference data
 
   async referenceData(includeInactive = false): Promise<ReferenceData> {
     const where = includeInactive ? "" : "WHERE active";
-    const [regions, categories] = await Promise.all([
+    const [regions, categories, productTypes, mappings] = await Promise.all([
       this.all(`SELECT * FROM financial_products.regions ${where} ORDER BY code = 'global' DESC, code`),
       this.all(`SELECT * FROM financial_products.product_categories ${where} ORDER BY id`),
+      this.regulatedProductTypes(),
+      this.productMappings(),
     ]);
+    // Regulators are handed out with their supervised product types joined from the catalogue.
+    const hydrate = (r: Region): Region => {
+      const reg = (r.regulatory ?? {}) as RegulatoryModel;
+      return {
+        ...r,
+        regulatory: {
+          ...reg,
+          regulators: hydrateRegulators(
+            (reg.regulators ?? []) as unknown[],
+            productTypes.filter((p) => p.region === r.code),
+            mappings.filter((m) => m.region === r.code),
+          ),
+        },
+      };
+    };
     return {
-      regions: regions.map((r) => ({ ...(r as unknown as Region), updated_at: iso(r.updated_at)! })),
+      regions: regions.map((r) => hydrate({ ...(r as unknown as Region), updated_at: iso(r.updated_at)! })),
       categories: categories.map((c) => ({ ...(c as unknown as ProductCategory), updated_at: iso(c.updated_at)! })),
     };
+  }
+
+  // Regulated product types: a region-wide catalogue regulators map onto.
+
+  async regulatedProductTypes(region?: string): Promise<(RegulatedProductType & { region: string; updated_at: string })[]> {
+    const rows = await this.all(
+      `SELECT * FROM financial_products.regulated_product_types ${region ? "WHERE region = $1" : ""} ORDER BY region, id`,
+      region ? [region] : [],
+    );
+    return rows.map((r) => ({
+      region: r.region as string,
+      id: r.id as string,
+      name: r.name as string,
+      description: r.description as string,
+      type_id: r.type_id as string,
+      actions: r.actions as RegulatedAction[],
+      updated_at: iso(r.updated_at)!,
+    }));
+  }
+
+  async upsertRegulatedProductType(region: string, p: RegulatedProductType): Promise<{ replaced: boolean }> {
+    const row = await this.one(
+      `INSERT INTO financial_products.regulated_product_types (region, id, name, description, type_id, actions)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (region, id) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description,
+         type_id = EXCLUDED.type_id, actions = EXCLUDED.actions, updated_at = now()
+       RETURNING (xmax <> 0) AS replaced`,
+      [region, p.id, p.name, p.description, p.type_id, p.actions],
+    );
+    return { replaced: Boolean(row?.replaced) };
+  }
+
+  async removeRegulatedProductType(region: string, id: string): Promise<boolean> {
+    const rows = await this.all("DELETE FROM financial_products.regulated_product_types WHERE region = $1 AND id = $2 RETURNING id", [region, id]);
+    return rows.length > 0;
+  }
+
+  async productMappings(region?: string): Promise<(ProductMapping & { region: string })[]> {
+    const rows = await this.all(
+      `SELECT * FROM financial_products.regulator_product_types ${region ? "WHERE region = $1" : ""} ORDER BY region, regulator_id, product_type_id`,
+      region ? [region] : [],
+    );
+    return rows.map((r) => ({
+      region: r.region as string,
+      regulator_id: r.regulator_id as string,
+      product_type_id: r.product_type_id as string,
+      actions: r.actions as RegulatedAction[],
+    }));
   }
 
   async upsertRegion(r: RegionUpdate): Promise<Region> {
@@ -954,8 +1091,30 @@ export class Store {
     return { ...(row as unknown as Region), updated_at: iso(row!.updated_at)! };
   }
 
+  // Saves a (hydrated) model: regulators' JSON without product types, and the regulator <-> product
+  // type mapping derived from each regulator's scope.
   async setRegulatoryModel(code: string, model: RegulatoryModel): Promise<void> {
-    await this.db.query("UPDATE financial_products.regions SET regulatory = $2, updated_at = now() WHERE code = $1", [code, JSON.stringify(model)]);
+    const mappings = model.regulators.flatMap((r) =>
+      r.scope.product_types.map((p) => ({ regulator_id: r.id, product_type_id: p.id, actions: p.action })),
+    );
+    await this.db.query(
+      `INSERT INTO financial_products.regulator_product_types (region, regulator_id, product_type_id, actions)
+       SELECT $1, m.regulator_id, m.product_type_id, ARRAY(SELECT jsonb_array_elements_text(m.actions))
+       FROM jsonb_to_recordset($2::jsonb) AS m(regulator_id text, product_type_id text, actions jsonb)
+       ON CONFLICT (region, regulator_id, product_type_id) DO UPDATE SET actions = EXCLUDED.actions`,
+      [code, JSON.stringify(mappings)],
+    );
+    await this.db.query(
+      `DELETE FROM financial_products.regulator_product_types t
+       WHERE t.region = $1 AND NOT EXISTS (
+         SELECT 1 FROM jsonb_to_recordset($2::jsonb) AS m(regulator_id text, product_type_id text)
+         WHERE m.regulator_id = t.regulator_id AND m.product_type_id = t.product_type_id)`,
+      [code, JSON.stringify(mappings)],
+    );
+    await this.db.query("UPDATE financial_products.regions SET regulatory = $2, updated_at = now() WHERE code = $1", [
+      code,
+      JSON.stringify({ ...model, regulators: model.regulators.map(stripScopeProducts) }),
+    ]);
   }
 
   async upsertCategory(c: Omit<ProductCategory, "updated_at">): Promise<ProductCategory> {

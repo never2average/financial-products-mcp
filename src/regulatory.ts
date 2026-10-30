@@ -25,14 +25,38 @@ const actions = <T extends z.ZodTypeAny>(item: T) =>
   z.union([item, z.array(item).min(1)]).transform((v) => (Array.isArray(v) ? v : [v]) as z.infer<T>[]);
 
 export const PRODUCT_ACTIONS = ["issuance", "sale", "purchase", "secondary_sale", "repackaging"] as const;
+const ProductAction = z.enum(PRODUCT_ACTIONS);
 
-const ProductTypeScope = z.object({
+// Regulated product types are a region-wide catalogue of their own, not part of any one regulator:
+// a product type (e.g. a sovereign gold bond) may be supervised by several regulators, and each
+// regulator maps the product types it supervises, many to many.
+export const RegulatedProductTypeSchema = z.object({
   id: Id,
   name: z.string().min(1),
   description: z.string().default(""),
   type_id: z.string().describe("The Mynt product category this maps to (see list_product_categories)"),
-  action: actions(z.enum(PRODUCT_ACTIONS)),
+  actions: actions(ProductAction).describe("Every action that can be taken on this product type"),
 });
+
+// A regulator's mapping onto a catalogue product type, with the actions it supervises.
+const SupervisedProduct = z.object({
+  id: z.string().describe("A regulated product type id in this region (see list_regulated_product_types)"),
+  actions: actions(ProductAction)
+    .optional()
+    .describe("The actions this regulator supervises; a subset of the product type's actions. Omit for all of them."),
+});
+
+// What a licence grants on one of its regulator's product types. A bare id grants every action the
+// regulator supervises on it.
+const ProductGrant = z.union([
+  z.string().transform((id) => ({ id, actions: undefined as (typeof PRODUCT_ACTIONS)[number][] | undefined })),
+  z.object({
+    id: z.string(),
+    actions: actions(ProductAction)
+      .optional()
+      .describe("The actions this licence permits; a subset of what the regulator supervises. Omit for all of them."),
+  }),
+]);
 
 const Persona = z.object({
   id: Id,
@@ -89,7 +113,10 @@ const LicenseType = z.object({
         risk_models: [],
         inspection_history: [],
       }),
-    allowed_product_types: z.array(z.string()).default([]).describe("Ids from this regulator's scope.product_types"),
+    allowed_product_types: z
+      .array(ProductGrant)
+      .default([])
+      .describe("Product types from this regulator's scope.product_types, each with the actions this licence permits"),
     allowed_customer_segments: z.array(z.string()).default([]).describe("Ids from this regulator's scope.customer_personas"),
     mandatory_stakeholders: z
       .object({ internal: z.array(Stakeholder).default([]), external: z.array(Stakeholder).default([]) })
@@ -103,11 +130,14 @@ export const RegulatorSchema = z.object({
   short_name: z.string().optional().describe("How products cite it, e.g. RBI"),
   scope: z
     .object({
-      product_types: z.array(ProductTypeScope).default([]),
-      customer_personas: z.array(Persona).default([]),
+      product_types: z
+        .array(SupervisedProduct)
+        .default([])
+        .describe("Regulated product types this regulator supervises; define them first with define_regulated_product_type"),
+      customer_personas: z.array(Persona).default([]).describe("Ids must start with '<regulator id>_'"),
     })
     .default({ product_types: [], customer_personas: [] }),
-  license_types: z.array(LicenseType).default([]),
+  license_types: z.array(LicenseType).default([]).describe("Licence _ids must start with '<regulator id>_'"),
 });
 
 // ---- legal: split into the legislative branch (what the law says) and the judiciary (how courts
@@ -169,7 +199,35 @@ export const JudgmentSchema = z.object({
 // The earlier single-list shape, still accepted by the deprecated define_legal_instrument tool.
 export const LegacyLegalSchema = LegislativeSchema.extend({ kind: z.enum([...LEGISLATIVE_KINDS, "judgment"]) }).omit({ status: true, parent_id: true });
 
-export type Regulator = z.infer<typeof RegulatorSchema>;
+export type ProductAction = (typeof PRODUCT_ACTIONS)[number];
+export type RegulatedProductType = z.infer<typeof RegulatedProductTypeSchema>;
+// A regulator as admins define it and as it is stored: its scope only references product types.
+export type RegulatorInput = z.infer<typeof RegulatorSchema>;
+type InputLicense = RegulatorInput["license_types"][number];
+
+// One row of the regulator <-> product type mapping.
+export interface ProductMapping {
+  regulator_id: string;
+  product_type_id: string;
+  actions: ProductAction[];
+}
+
+// A regulator as read: each supervised product type carries its catalogue entry and the actions the
+// regulator supervises, and each licence grant names the actions it permits.
+export interface SupervisedProductType {
+  id: string;
+  name: string;
+  description: string;
+  type_id: string;
+  action: ProductAction[];
+}
+export type License = Omit<InputLicense, "grc"> & {
+  grc: Omit<InputLicense["grc"], "allowed_product_types"> & { allowed_product_types: { id: string; actions: ProductAction[] }[] };
+};
+export type Regulator = Omit<RegulatorInput, "scope" | "license_types"> & {
+  scope: { product_types: SupervisedProductType[]; customer_personas: RegulatorInput["scope"]["customer_personas"] };
+  license_types: License[];
+};
 export type Legislation = z.infer<typeof LegislativeSchema>;
 export type Judgment = z.infer<typeof JudgmentSchema>;
 export interface LegalModel {
@@ -200,11 +258,66 @@ export function normalizeModel(raw: unknown): RegulatoryModel {
   return { regulators: liftRegulators(m.regulators), legal: { legislative: l.legislative ?? [], judiciary: l.judiciary ?? [] } };
 }
 
+// The store hydrates regulators before handing them out (see hydrateRegulators); anything else is
+// passed through so a stored model still reads.
 function liftRegulators(raw: unknown): Regulator[] {
-  return ((raw as unknown[]) ?? []).map((r) => {
-    const parsed = RegulatorSchema.safeParse(r);
-    return parsed.success ? parsed.data : (r as Regulator);
+  return ((raw as Regulator[]) ?? []).map((r) => ({
+    ...r,
+    scope: { product_types: r.scope?.product_types ?? [], customer_personas: r.scope?.customer_personas ?? [] },
+    license_types: r.license_types ?? [],
+  }));
+}
+
+// Joins stored regulators with the region's product catalogue and mapping rows. Grants that name a
+// bare id take every action the regulator supervises on that product type.
+export function hydrateRegulators(stored: unknown[], catalogue: RegulatedProductType[], mappings: ProductMapping[]): Regulator[] {
+  const byId = new Map(catalogue.map((p) => [p.id, p]));
+  return stored.map((raw) => {
+    const parsed = RegulatorSchema.safeParse(stripScopeProducts(raw));
+    const r = (parsed.success ? parsed.data : raw) as RegulatorInput;
+    const supervised: SupervisedProductType[] = mappings
+      .filter((m) => m.regulator_id === r.id && byId.has(m.product_type_id))
+      .map((m) => {
+        const p = byId.get(m.product_type_id)!;
+        return { id: p.id, name: p.name, description: p.description, type_id: p.type_id, action: m.actions };
+      });
+    const supervisedActions = new Map(supervised.map((p) => [p.id, p.action]));
+    return {
+      ...r,
+      scope: { product_types: supervised, customer_personas: r.scope?.customer_personas ?? [] },
+      license_types: (r.license_types ?? []).map((l) => ({
+        ...l,
+        grc: {
+          ...l.grc,
+          allowed_product_types: (l.grc.allowed_product_types ?? []).map((g) =>
+            typeof g === "string"
+              ? { id: g, actions: supervisedActions.get(g) ?? [] }
+              : { id: g.id, actions: g.actions ?? supervisedActions.get(g.id) ?? [] },
+          ),
+        },
+      })),
+    };
   });
+}
+
+// Stored regulators keep only their mapping elsewhere, so drop any product types left in the JSON.
+export function stripScopeProducts(r: unknown) {
+  const reg = r as { scope?: Record<string, unknown> };
+  return { ...reg, scope: { ...(reg.scope ?? {}), product_types: [] } };
+}
+
+// What define_regulator persists: the regulator's JSON without product types, plus its mapping rows
+// with omitted actions resolved against the catalogue.
+export function splitRegulator(r: RegulatorInput, catalogue: RegulatedProductType[]): { stored: unknown; mappings: ProductMapping[] } {
+  const byId = new Map(catalogue.map((p) => [p.id, p]));
+  return {
+    stored: stripScopeProducts(r),
+    mappings: r.scope.product_types.map((s) => ({
+      regulator_id: r.id,
+      product_type_id: s.id,
+      actions: (s.actions ?? byId.get(s.id)?.actions ?? []) as ProductAction[],
+    })),
+  };
 }
 
 export function legacyToJudgment(l: { id: string; title: string; issued_by?: string; citation?: string; effective_from?: string; url?: string; summary?: string; applies_to?: Judgment["applies_to"] }): Judgment {
@@ -230,23 +343,62 @@ export const legalIds = (m: RegulatoryModel) => [...m.legal.legislative.map((l) 
 const dupes = (ids: string[]) => [...new Set(ids.filter((id, i) => ids.indexOf(id) !== i))];
 
 // Errors break the regulator's own links and block the write; warnings point outside it.
+// Regulated product types are checked on their own: their category must be a Mynt category.
+export function validateProductType(p: RegulatedProductType, ctx: { categories: string[] }): string[] {
+  return ctx.categories.includes(p.type_id) ? [] : [`product type '${p.id}' maps to '${p.type_id}', which isn't an active Mynt product category`];
+}
+
+const subset = (inner: readonly string[], outer: readonly string[]) => inner.filter((a) => !outer.includes(a));
+
 export function validateRegulator(
-  r: Regulator,
-  ctx: { categories: string[]; legalIds: string[] },
+  r: RegulatorInput,
+  ctx: { legalIds: string[]; productTypes: RegulatedProductType[]; otherRegulators: Regulator[] },
 ): { errors: string[]; warnings: string[] } {
   const errors: string[] = [];
   const warnings: string[] = [];
+  const catalogue = new Map(ctx.productTypes.map((p) => [p.id, p]));
   const productIds = r.scope.product_types.map((p) => p.id);
   const personaIds = r.scope.customer_personas.map((p) => p.id);
-  for (const d of dupes(productIds)) errors.push(`duplicate product type id '${d}'`);
+  const licenseIds = r.license_types.map((l) => l._id);
+  for (const d of dupes(productIds)) errors.push(`supervises product type '${d}' twice`);
   for (const d of dupes(personaIds)) errors.push(`duplicate persona id '${d}'`);
-  for (const d of dupes(r.license_types.map((l) => l._id))) errors.push(`duplicate licence id '${d}'`);
-  for (const p of r.scope.product_types) {
-    if (!ctx.categories.includes(p.type_id)) warnings.push(`product type '${p.id}' maps to '${p.type_id}', which isn't a Mynt product category`);
+  for (const d of dupes(licenseIds)) errors.push(`duplicate licence id '${d}'`);
+
+  // Personas and licences belong to one regulator: prefixed with its id and unique in the region.
+  const prefix = `${r.id}_`;
+  for (const id of personaIds) if (!id.startsWith(prefix)) errors.push(`persona id '${id}' must start with '${prefix}'`);
+  for (const id of licenseIds) if (!id.startsWith(prefix)) errors.push(`licence id '${id}' must start with '${prefix}'`);
+  for (const other of ctx.otherRegulators) {
+    if (other.id === r.id) continue;
+    for (const id of personaIds) if (other.scope.customer_personas.some((p) => p.id === id)) errors.push(`persona id '${id}' is already used by ${other.id}`);
+    for (const id of licenseIds) if (other.license_types.some((l) => l._id === id)) errors.push(`licence id '${id}' is already used by ${other.id}`);
   }
+
+  // Product types come from the region's catalogue; a regulator supervises some of their actions.
+  const supervised = new Map<string, readonly string[]>();
+  for (const s of r.scope.product_types) {
+    const p = catalogue.get(s.id);
+    if (!p) {
+      errors.push(`supervises product type '${s.id}', which isn't a regulated product type in this region (define_regulated_product_type)`);
+      continue;
+    }
+    const extra = subset(s.actions ?? [], p.actions);
+    if (extra.length) errors.push(`supervises '${extra.join(", ")}' on '${s.id}', which the product type doesn't allow (${p.actions.join(", ")})`);
+    supervised.set(s.id, s.actions ?? p.actions);
+  }
+
   for (const l of r.license_types) {
     const where = `licence '${l._id}'`;
-    for (const id of l.grc.allowed_product_types) if (!productIds.includes(id)) errors.push(`${where} allows product type '${id}', which ${r.id} doesn't define`);
+    for (const d of dupes(l.grc.allowed_product_types.map((g) => g.id))) errors.push(`${where} grants product type '${d}' twice`);
+    for (const g of l.grc.allowed_product_types) {
+      const allowed = supervised.get(g.id);
+      if (!allowed) {
+        errors.push(`${where} allows product type '${g.id}', which ${r.id} doesn't supervise`);
+        continue;
+      }
+      const extra = subset(g.actions ?? [], allowed);
+      if (extra.length) errors.push(`${where} grants '${extra.join(", ")}' on '${g.id}', beyond what ${r.id} supervises (${allowed.join(", ")})`);
+    }
     for (const id of l.grc.allowed_customer_segments) if (!personaIds.includes(id)) errors.push(`${where} allows segment '${id}', which ${r.id} doesn't define`);
     const reg = l.grc.registers;
     const repo = l.grc.repositories;
@@ -303,15 +455,27 @@ export function validateRegulator(
   return { errors, warnings };
 }
 
+// What a licence permits, product by product: the product type with the actions the licence grants.
+export function licenseProducts(r: Regulator, l: License) {
+  return l.grc.allowed_product_types.flatMap((g) => {
+    const p = r.scope.product_types.find((x) => x.id === g.id);
+    return p ? [{ ...p, action: g.actions }] : [];
+  });
+}
+
 // Licences that let a firm do `action` with a product of `category` for `persona`, across regulators.
-export function findLicenses(model: RegulatoryModel, q: { category?: string; action?: string; persona?: string }) {
+// Actions come from the licence's grant, not from everything its regulator supervises.
+export function findLicenses(model: RegulatoryModel, q: { category?: string; action?: string; persona?: string; product_type?: string }) {
   const out = [];
   for (const r of model.regulators) {
     for (const l of r.license_types) {
-      const products = r.scope.product_types.filter(
-        (p) => l.grc.allowed_product_types.includes(p.id) && (!q.category || p.type_id === q.category) && (!q.action || (p.action as string[]).includes(q.action)),
+      const products = licenseProducts(r, l).filter(
+        (p) =>
+          (!q.category || p.type_id === q.category) &&
+          (!q.product_type || p.id === q.product_type) &&
+          (!q.action || (p.action as string[]).includes(q.action)),
       );
-      if ((q.category || q.action) && products.length === 0) continue;
+      if ((q.category || q.action || q.product_type) && products.length === 0) continue;
       const segments = r.scope.customer_personas.filter((p) => l.grc.allowed_customer_segments.includes(p.id));
       if (q.persona && !segments.some((s) => s.id === q.persona)) continue;
       out.push({

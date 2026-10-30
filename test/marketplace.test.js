@@ -72,24 +72,28 @@ test("innovators publish only under a verified, in-force licence their firm hold
   const inno = await connect(await as("Ines", ["innovator"]));
 
   // A regulator with a deposit-taking licence, in the regulatory model.
+  await call(admin, "define_regulated_product_type", {
+    region: "IN",
+    product_type: { id: "fd", name: "Fixed deposit", type_id: "deposits", actions: ["issuance"] },
+  });
   await call(admin, "define_regulator", {
     region: "IN",
     regulator: {
       id: "rbi",
       name: "Reserve Bank of India",
       short_name: "RBI",
-      scope: { product_types: [{ id: "fd", name: "Fixed deposit", type_id: "deposits", action: "issuance" }], customer_personas: [] },
-      license_types: [{ _id: "bank", name: "Banking licence", grc: { allowed_product_types: ["fd"] } }],
+      scope: { product_types: [{ id: "fd" }], customer_personas: [] },
+      license_types: [{ _id: "rbi_bank", name: "Banking licence", grc: { allowed_product_types: ["fd"] } }],
     },
   });
 
   await call(inno, "create_product", product());
   await call(inno, "test_product", { id: "green-fd" });
-  assert.match((await call(inno, "register_license", { region: "IN", regulator_id: "rbi", license_id: "bank", registration_number: "X" })).data.error, /create_entity/);
+  assert.match((await call(inno, "register_license", { region: "IN", regulator_id: "rbi", license_id: "rbi_bank", registration_number: "X" })).data.error, /create_entity/);
 
   await call(inno, "create_entity", { name: "Green Bank Ltd", regions: ["IN"] });
   assert.equal((await call(inno, "register_license", { region: "IN", regulator_id: "rbi", license_id: "nope", registration_number: "X" })).isError, true);
-  const held = (await call(inno, "register_license", { region: "IN", regulator_id: "rbi", license_id: "bank", registration_number: "RBI-123" })).data;
+  const held = (await call(inno, "register_license", { region: "IN", regulator_id: "rbi", license_id: "rbi_bank", registration_number: "RBI-123" })).data;
   assert.equal(held.status, "pending");
   assert.match((await call(inno, "publish_product", { id: "green-fd" })).data.error, /verified licence/, "pending doesn't count");
 
@@ -98,14 +102,14 @@ test("innovators publish only under a verified, in-force licence their firm hold
   await call(admin, "review_license", { license_record_id: held.id, decision: "verified", note: "Checked the public register" });
   const published = (await call(inno, "publish_product", { id: "green-fd" })).data;
   assert.equal(published.status, "published");
-  assert.deepEqual(published.licensed_under, [{ regulator: "rbi", license: "bank", registration_number: "RBI-123" }]);
+  assert.deepEqual(published.licensed_under, [{ regulator: "rbi", license: "rbi_bank", registration_number: "RBI-123" }]);
 
   // Suspended or expired licences stop new products.
   await call(admin, "review_license", { license_record_id: held.id, decision: "suspended" });
   await call(inno, "create_product", product({ id: "green-fd-2" }));
   await call(inno, "test_product", { id: "green-fd-2" });
   assert.equal((await call(inno, "publish_product", { id: "green-fd-2" })).isError, true);
-  await call(inno, "register_license", { region: "IN", regulator_id: "rbi", license_id: "bank", registration_number: "RBI-123", valid_to: "2001-01-01" });
+  await call(inno, "register_license", { region: "IN", regulator_id: "rbi", license_id: "rbi_bank", registration_number: "RBI-123", valid_to: "2001-01-01" });
   await call(admin, "review_license", { license_record_id: held.id, decision: "verified" });
   assert.equal((await call(inno, "publish_product", { id: "green-fd-2" })).isError, true, "expired");
 

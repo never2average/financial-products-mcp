@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { normalizeModel } from "./regulatory.js";
+import { licenseProducts, normalizeModel } from "./regulatory.js";
 import type { App, BuildTerms, HeldLicense, ProductAction, ProductRecord, Store, User } from "./store.js";
 
 // What a developer's experience may do with a product. Anything that moves money or collects KYC
@@ -43,9 +43,8 @@ export async function coveringLicenses(store: Store, entityId: string | null, re
     const regulator = model.regulators.find((r) => r.id === h.regulator_id);
     const license = regulator?.license_types.find((l) => l._id === h.license_id);
     if (!regulator || !license) return false;
-    return regulator.scope.product_types.some(
-      (p) => license.grc.allowed_product_types.includes(p.id) && p.type_id === category && (p.action as string[]).includes(action),
-    );
+    // What the licence grants, not everything its regulator supervises.
+    return licenseProducts(regulator, license).some((p) => p.type_id === category && (p.action as string[]).includes(action));
   });
 }
 

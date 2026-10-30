@@ -197,6 +197,7 @@ function registerCatalogTools(server: McpServer, store: Store, user: User | null
         category: z.string().optional().describe("A Mynt product category id, e.g. deposits"),
         action: z.enum(PRODUCT_ACTIONS).optional(),
         persona: z.string().optional().describe("A customer persona id from get_regulator"),
+        product_type: z.string().optional().describe("A regulated product type id from list_regulated_product_types"),
       },
       annotations: { readOnlyHint: true },
     },
@@ -204,6 +205,35 @@ function registerCatalogTools(server: McpServer, store: Store, user: User | null
       const model = await modelFor(region);
       if (!model) return fail(`No region '${region}'; see list_regions`);
       return json(findLicenses(model, q));
+    },
+  );
+
+  server.registerTool(
+    "list_regulated_product_types",
+    {
+      title: "Regulated product types in a region",
+      description:
+        "A region's catalogue of regulated product types (each with its Mynt category and possible actions) and, for each, the regulators that supervise it with the actions they cover. Optionally narrow by category or regulator.",
+      inputSchema: {
+        region: z.string(),
+        category: z.string().optional().describe("A Mynt product category id, e.g. bonds"),
+        regulator_id: z.string().optional(),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ region, category, regulator_id }) => {
+      const model = await modelFor(region);
+      if (!model) return fail(`No region '${region}'; see list_regions`);
+      const mappings = await store.productMappings(region.trim());
+      return json(
+        (await store.regulatedProductTypes(region.trim()))
+          .filter((p) => !category || p.type_id === category)
+          .map(({ region: _r, ...p }) => ({
+            ...p,
+            supervised_by: mappings.filter((m) => m.product_type_id === p.id).map((m) => ({ regulator_id: m.regulator_id, actions: m.actions })),
+          }))
+          .filter((p) => !regulator_id || p.supervised_by.some((s) => s.regulator_id === regulator_id)),
+      );
     },
   );
 

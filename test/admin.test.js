@@ -8,9 +8,9 @@ import { Store } from "../dist/store.js";
 
 const ADMIN_TOOLS = [
   "admin_pause_campaign", "admin_set_product_status", "audit_log", "define_product_category", "define_region",
-  "define_judgment", "define_legal_instrument", "define_legislation", "define_regulator", "invite_user", "list_all_campaigns",
+  "define_judgment", "define_legal_instrument", "define_legislation", "define_regulated_product_type", "define_regulator", "invite_user", "list_all_campaigns",
   "list_whitelist", "remove_judgment", "remove_legal_instrument", "remove_legislation",
-  "remove_regulator", "revoke_user",
+  "remove_regulated_product_type", "remove_regulator", "revoke_user",
 ];
 
 async function setup() {

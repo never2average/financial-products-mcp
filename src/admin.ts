@@ -9,9 +9,13 @@ import {
   LegacyLegalSchema,
   legacyToJudgment,
   legalIds,
+  hydrateRegulators,
   LegislativeSchema,
   normalizeModel,
+  RegulatedProductTypeSchema,
   RegulatorSchema,
+  splitRegulator,
+  validateProductType,
   validateRegulator,
   type Judgment,
   type Legislation,
@@ -101,25 +105,69 @@ export function registerAdminTools(server: McpServer, store: Store, user: User, 
   const regionFor = async (code: string) => (await store.referenceData(true)).regions.find((r) => r.code === code);
 
   server.registerTool(
+    "define_regulated_product_type",
+    {
+      title: "Define a regulated product type",
+      description:
+        "Admin: add or replace a product type in a region's regulated product catalogue (e.g. term deposit, listed NCD, ULIP): its Mynt category and every action that can be taken on it. Product types live apart from regulators; each regulator then maps the ones it supervises (define_regulator scope.product_types), so one product type can sit under several regulators. Narrowing actions is refused while a regulator still supervises the dropped ones.",
+      inputSchema: { region: z.string().describe("Region code, e.g. IN"), product_type: RegulatedProductTypeSchema },
+    },
+    async ({ region: code, product_type }) => {
+      const region = await regionFor(code);
+      if (!region) return fail(`No region '${code}'; create it with define_region first`);
+      const ref = await store.referenceData(true);
+      const errors = validateProductType(product_type, { categories: ref.categories.filter((c) => c.active).map((c) => c.id) });
+      for (const m of await store.productMappings(code)) {
+        if (m.product_type_id !== product_type.id) continue;
+        const dropped = m.actions.filter((a) => !product_type.actions.includes(a));
+        if (dropped.length) errors.push(`${m.regulator_id} still supervises '${dropped.join(", ")}' on '${product_type.id}'; update that regulator first`);
+      }
+      if (errors.length) return { ...json({ error: "The product type can't be saved", errors }), isError: true };
+      const { replaced } = await store.upsertRegulatedProductType(code, product_type);
+      await audit("define_regulated_product_type", `${code}/${product_type.id}`, { replaced, type_id: product_type.type_id, actions: product_type.actions });
+      return json({ region: code, product_type: product_type.id, replaced });
+    },
+  );
+
+  server.registerTool(
+    "remove_regulated_product_type",
+    {
+      title: "Remove a regulated product type",
+      description: "Admin: delete a product type from a region's catalogue. Refused while any regulator still supervises it.",
+      inputSchema: { region: z.string(), product_type_id: z.string() },
+    },
+    async ({ region: code, product_type_id }) => {
+      const users = (await store.productMappings(code)).filter((m) => m.product_type_id === product_type_id).map((m) => m.regulator_id);
+      if (users.length) return fail(`'${product_type_id}' is supervised by ${users.join(", ")}; remove it from their scope first`);
+      if (!(await store.removeRegulatedProductType(code, product_type_id))) return fail(`No regulated product type '${product_type_id}' in ${code}`);
+      await audit("remove_regulated_product_type", `${code}/${product_type_id}`);
+      return json({ region: code, removed: product_type_id });
+    },
+  );
+
+  server.registerTool(
     "define_regulator",
     {
       title: "Define a regulator",
       description:
-        "Admin: add or replace one regulator in a region's regulatory model: what it supervises (product types it covers and the actions on them, customer personas and their qualifications), and the licences it grants, each with its GRC (obligations, filings, risks, controls, repositories, allowed product types and segments, mandatory internal and external stakeholders). Broken internal links are refused; links outside the regulator come back as warnings.",
+        "Admin: add or replace one regulator in a region's regulatory model: the regulated product types it supervises (ids from the region's catalogue, see define_regulated_product_type, each with the actions it supervises), customer personas and their qualifications, and the licences it grants, each with its GRC (obligations, filings, risks, controls, repositories, the product types and actions it grants, allowed segments, mandatory internal and external stakeholders). Persona and licence ids must start with '<regulator id>_' and can't be used by another regulator in the region. Broken links are refused; links to law not yet recorded come back as warnings.",
       inputSchema: { region: z.string().describe("Region code, e.g. IN (define_region first)"), regulator: RegulatorSchema },
     },
     async ({ region: code, regulator }) => {
       const region = await regionFor(code);
       if (!region) return fail(`No region '${code}'; create it with define_region first`);
-      const ref = await store.referenceData(true);
       const model = normalizeModel(region.regulatory);
+      const catalogue = await store.regulatedProductTypes(code);
       const { errors, warnings } = validateRegulator(regulator, {
-        categories: ref.categories.filter((c) => c.active).map((c) => c.id),
         legalIds: legalIds(model),
+        productTypes: catalogue,
+        otherRegulators: model.regulators,
       });
       if (errors.length) return { ...json({ error: "The regulator has broken links", errors, warnings }), isError: true };
       const replaced = model.regulators.some((r) => r.id === regulator.id);
-      await store.setRegulatoryModel(code, { ...model, regulators: [...model.regulators.filter((r) => r.id !== regulator.id), regulator] });
+      const { stored, mappings } = splitRegulator(regulator, catalogue);
+      const [hydrated] = hydrateRegulators([stored], catalogue, mappings);
+      await store.setRegulatoryModel(code, { ...model, regulators: [...model.regulators.filter((r) => r.id !== regulator.id), hydrated] });
       // Keep the region's short regulator list (used to check what products cite) in step.
       const short = regulator.short_name ?? regulator.name;
       if (!region.regulators.includes(short)) await store.upsertRegion({ code, regulators: [...region.regulators, short] });

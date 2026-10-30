@@ -112,8 +112,8 @@ A developer can have Mynt **build and ship** one of their experiences. `start_bu
 
 **SDKs.** `create_sdk(name, languages, product_ids)` defines an SDK over products you can build on: open or approval products, or private ones you were invited to. `generate_sdk_release(sdk_id, version, changelog)` then writes an immutable, semver-versioned bundle:
 - `openapi.json`: an OpenAPI 3.1 document for the app API (`GET /v1/products`, `GET /v1/products/{id}`, `POST /v1/handoffs`, `POST /v1/events`, signed webhooks), with a schema per product built from its fields.
-- `typescript/`: a zero-dependency, fetch-based client with typed product models, `listProducts`, `getProduct`, `startHandoff` (typed to each product's permitted hand-offs), `trackEvent`, `verifyWebhook`, and constants for every product's required disclosures and branding (`disclosuresFor(id)`).
-- `python/`: the same surface on the standard library (urllib, dataclasses, hmac).
+- `typescript/`: `src/schema.d.ts` generated from the document by [openapi-typescript](https://openapi-ts.dev), an [openapi-fetch](https://openapi-ts.dev/openapi-fetch/) client for every operation, and a thin `src/index.ts` of Mynt helpers: `createMyntClient`, `startHandoff` (typed to each product's permitted hand-offs), `trackEvent`, `verifyWebhook`, and constants for every product's required disclosures, branding and banned phrases (`disclosuresFor(id)`).
+- `python/`: `generate.sh` runs [openapi-python-client](https://github.com/openapi-generators/openapi-python-client) on the document to produce the client, plus a standard-library `mynt_helpers.py` (`verify_webhook`, `disclosures_for`, `check_handoff`, the same constants). openapi-python-client is not a Mynt dependency; tests use it only when installed (set `OPENAPI_PYTHON_CLIENT` to its path to point at a virtualenv).
 
 `list_sdks`, `list_sdk_releases` and `get_sdk_release` (files as `{path, content}`) flag a release **stale**, with reasons, when a product has published a newer version, changed its build terms, been unpublished, or your access was revoked. Generate a new release to pick the changes up. `get_product_sdk` still describes a single product.
 

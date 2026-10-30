@@ -1,8 +1,8 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -114,8 +114,17 @@ async function market() {
 
 const fileOf = (release, path) => release.files.find((f) => f.path === path)?.content;
 
+// Scratch dirs live under node_modules so generated code resolves openapi-fetch like an installed SDK would.
+const scratch = [];
+after(() => scratch.forEach((d) => rmSync(d, { recursive: true, force: true })));
+const scratchDir = (prefix) => {
+  const d = mkdtempSync(join(ROOT, "node_modules", `.${prefix}`));
+  scratch.push(d);
+  return d;
+};
+
 function typecheck(files) {
-  const dir = mkdtempSync(join(tmpdir(), "mynt-sdk-ts-"));
+  const dir = scratchDir("mynt-sdk-ts-");
   for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
   const program = ts.createProgram(
     Object.keys(files).map((f) => join(dir, f)),
@@ -162,7 +171,7 @@ test("SDKs only cover products the developer may build on", async () => {
   assert.match((await ctx.call(ctx.dev, "get_product_sdk", { product_id: "green-fd" })).data.integration.generated_clients, /create_sdk/);
 });
 
-test("generated SDK: OpenAPI contract, typed TypeScript and Python clients", async () => {
+test("generated SDK: OpenAPI contract, openapi-fetch TypeScript client, Python helpers and generator", async () => {
   const ctx = await market();
   const sdk = (await ctx.call(ctx.dev, "create_sdk", { name: "Saver kit", languages: ["typescript", "python"], product_ids: ["green-fd", "index-fund-x"] })).data;
   const gen = await ctx.call(ctx.dev, "generate_sdk_release", { sdk_id: sdk.id, version: "1.0.0", changelog: "First release" });
@@ -174,10 +183,14 @@ test("generated SDK: OpenAPI contract, typed TypeScript and Python clients", asy
   assert.deepEqual(release.files.map((f) => f.path).sort(), [
     "README.md",
     "openapi.json",
-    "python/pyproject.toml",
-    "python/saver_kit/__init__.py",
+    "python/README.md",
+    "python/config.yml",
+    "python/generate.sh",
+    "python/mynt_helpers.py",
     "typescript/package.json",
     "typescript/src/index.ts",
+    "typescript/src/schema.d.ts",
+    "typescript/tsconfig.json",
   ]);
 
   // OpenAPI 3.1 with the contract's paths and a schema per product from its actual fields.
@@ -197,89 +210,138 @@ test("generated SDK: OpenAPI contract, typed TypeScript and Python clients", asy
   assert.deepEqual(doc.components.schemas.Event.properties.type.enum, ["view", "click", "handoff_started"]);
   assert.ok(doc.webhooks["handoff.completed"] && doc.webhooks["access.revoked"]);
 
-  // TypeScript: type-checks, exposes disclosures and branding, and restricts hand-offs per product.
+  // TypeScript: openapi-typescript types + openapi-fetch client + Mynt helpers, pinned to Mynt's own versions.
+  const pkgJson = JSON.parse(fileOf(release, "typescript/package.json"));
+  const mynt = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+  assert.deepEqual(pkgJson.dependencies, { "openapi-fetch": mynt.devDependencies["openapi-fetch"] });
+  assert.equal(pkgJson.devDependencies["openapi-typescript"], mynt.dependencies["openapi-typescript"]);
+  const schema = fileOf(release, "typescript/src/schema.d.ts");
+  assert.match(schema, /openapi-typescript/);
+  assert.match(schema, /export interface paths/);
+  assert.match(schema, /GreenFdProduct: \{/);
   const index = fileOf(release, "typescript/src/index.ts");
   assert.ok(index.includes(JSON.stringify(FD_TERMS.required_disclosures[1])), "disclosures as constants");
   assert.ok(index.includes(JSON.stringify(FD_TERMS.branding)));
+  assert.ok(index.includes(JSON.stringify(FD_TERMS.banned_phrases[0])));
   assert.match(index, /export function disclosuresFor/);
-  assert.doesNotMatch(index, /^import .* from "(?!node:)/m, "zero dependencies");
-  const usage = `import { MyntClient, disclosuresFor, verifyWebhook, BRANDING, type GreenFdProduct } from "./index.js";
-const c = new MyntClient({ apiKey: "mynt_test_x" });
+  assert.match(index, /from "openapi-fetch"/);
+  assert.doesNotMatch(index, /\bfetch\(/, "no hand-rolled requests");
+  const usage = `import { createMyntClient, disclosuresFor, verifyWebhook, BRANDING, type GreenFdProduct } from "./index.js";
+const c = createMyntClient({ apiKey: "mynt_test_x" });
 export async function run(): Promise<string> {
-  const p: GreenFdProduct = await c.getProduct("green-fd");
+  const { data } = await c.client.GET("/products/{id}", { params: { path: { id: "green-fd" } } });
+  const p = data as GreenFdProduct;
   await c.startHandoff("green-fd", "deep_link");
   await c.startHandoff("index-fund-x", "initiate_onboarding", "ref-1");
   await c.trackEvent("view", "green-fd", "home");
   const d: readonly string[] = disclosuresFor("index-fund-x");
   verifyWebhook("{}", "t=1,v1=00", "s");
-  return p.name + d.join() + BRANDING["green-fd"];
+  return p.name + p.key_features.join() + d.join() + BRANDING["green-fd"];
 }
 `;
-  assert.deepEqual(typecheck({ "index.ts": index, "usage.ts": usage }), []);
-  const misuse = `import { MyntClient } from "./index.js";
+  const sources = { "schema.d.ts": schema, "index.ts": index };
+  assert.deepEqual(typecheck({ ...sources, "usage.ts": usage }), []);
+  const misuse = `import type { MyntClient } from "./index.js";
 export const go = (c: MyntClient) => c.startHandoff("green-fd", "initiate_onboarding");
 `;
-  const errors = typecheck({ "index.ts": index, "misuse.ts": misuse });
+  const errors = typecheck({ ...sources, "misuse.ts": misuse });
   assert.equal(errors.length, 1, errors.join("\n"));
   assert.match(errors[0], /^misuse\.ts/);
 
-  // ...and runs: hand-offs hit the contract, webhooks verify.
-  const dir = mkdtempSync(join(tmpdir(), "mynt-sdk-js-"));
+  // ...and runs on openapi-fetch: hand-offs hit the contract, errors surface, webhooks verify.
+  const dir = scratchDir("mynt-sdk-js-");
   const js = ts.transpileModule(index, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } }).outputText;
   writeFileSync(join(dir, "index.mjs"), js);
   const mod = await import(pathToFileURL(join(dir, "index.mjs")).href);
   const seen = [];
-  const fakeFetch = async (url, init) => {
-    seen.push({ url, init });
-    if (url.endsWith("/events")) return new Response(null, { status: 202 });
+  const fakeFetch = async (req) => {
+    seen.push({ url: req.url, auth: req.headers.get("Authorization"), body: await req.text() });
+    if (req.url.endsWith("/events")) return new Response(null, { status: 202 });
     return Response.json({ handoff_id: "h1", redirect_url: "https://issuer.example.com/start" });
   };
-  const client = new mod.MyntClient({ apiKey: "mynt_test_abc", baseUrl: "https://mynt.example.com/v1", fetch: fakeFetch });
+  const client = mod.createMyntClient({ apiKey: "mynt_test_abc", baseUrl: "https://mynt.example.com/v1", fetch: fakeFetch });
   assert.equal(client.sandbox, true);
   assert.equal((await client.startHandoff("green-fd", "deep_link", "u1")).handoff_id, "h1");
   assert.equal(seen[0].url, "https://mynt.example.com/v1/handoffs");
-  assert.equal(seen[0].init.headers.Authorization, "Bearer mynt_test_abc");
-  assert.deepEqual(JSON.parse(seen[0].init.body), { product_id: "green-fd", action: "deep_link", consumer_ref: "u1" });
+  assert.equal(seen[0].auth, "Bearer mynt_test_abc");
+  assert.deepEqual(JSON.parse(seen[0].body), { product_id: "green-fd", action: "deep_link", consumer_ref: "u1" });
   await assert.rejects(client.startHandoff("green-fd", "initiate_onboarding"), /does not permit/);
   await client.trackEvent("click", "green-fd");
-  const limited = new mod.MyntClient({
+  assert.equal(seen.length, 2);
+  assert.throws(() => mod.createMyntClient({ apiKey: "sk_nope" }), /app key/);
+  const limited = mod.createMyntClient({
     apiKey: "mynt_live_x",
-    fetch: async () => Response.json({ error: "rate_limited", message: "Slow down" }, { status: 429, headers: { "Retry-After": "7" } }),
+    fetch: async () => Response.json({ error: "rate_limited", message: "Slow down" }, { status: 429 }),
   });
-  await assert.rejects(limited.listProducts(), (e) => e.status === 429 && e.code === "rate_limited" && e.retryAfter === 7);
+  await assert.rejects(limited.startHandoff("index-fund-x", "deep_link"), (e) => e.status === 429 && e.code === "rate_limited");
   const body = JSON.stringify({ type: "handoff.completed", data: { handoff_id: "h1" } });
   const t = Math.floor(Date.now() / 1000);
   const sig = createHmac("sha256", "whsec").update(`${t}.${body}`).digest("hex");
   assert.equal(mod.verifyWebhook(body, `t=${t},v1=${sig}`, "whsec").type, "handoff.completed");
   assert.throws(() => mod.verifyWebhook(body, `t=${t},v1=${sig}`, "wrong"), /Invalid/);
+  assert.throws(() => mod.verifyWebhook(body.replace("h1", "h2"), `t=${t},v1=${sig}`, "whsec"), /Invalid/, "tampered body");
+  const old = t - 3600;
+  assert.throws(() => mod.verifyWebhook(body, `t=${old},v1=${createHmac("sha256", "whsec").update(`${old}.${body}`).digest("hex")}`, "whsec"), /tolerance/);
   assert.deepEqual(mod.disclosuresFor("green-fd"), FD_TERMS.required_disclosures);
 
-  // Python: compiles, and its constants and hmac verification work.
-  const py = fileOf(release, "python/saver_kit/__init__.py");
+  // Python: openapi-python-client generates the client; the hand-written helpers are standard library only.
+  assert.match(fileOf(release, "python/generate.sh"), /openapi-python-client generate --path \.\.\/openapi\.json/);
+  assert.match(fileOf(release, "python/config.yml"), /package_name_override: "saver_kit"/);
+  const py = fileOf(release, "python/mynt_helpers.py");
   assert.match(py, /def disclosures_for/);
-  assert.match(py, /@dataclass\(frozen=True\)\nclass GreenFdProduct/);
+  assert.match(py, /def verify_webhook/);
   assert.ok(py.includes(JSON.stringify(FD_TERMS.branding)));
   if (!hasPython) return;
   const pyDir = mkdtempSync(join(tmpdir(), "mynt-sdk-py-"));
-  mkdirSync(join(pyDir, "saver_kit"));
-  writeFileSync(join(pyDir, "saver_kit", "__init__.py"), py);
-  execFileSync("python3", ["-m", "py_compile", join(pyDir, "saver_kit", "__init__.py")]);
+  for (const f of release.files) {
+    mkdirSync(dirname(join(pyDir, f.path)), { recursive: true });
+    writeFileSync(join(pyDir, f.path), f.content);
+  }
+  execFileSync("python3", ["-m", "py_compile", join(pyDir, "python", "mynt_helpers.py")]);
   const script = `
 import json, sys
-sys.path.insert(0, sys.argv[4])
-import saver_kit as k
+sys.path.insert(0, sys.argv[3])
+import mynt_helpers as k
 body, header = sys.argv[1], sys.argv[2]
 ev = k.verify_webhook(body, header, "whsec")
-try:
-    k.verify_webhook(body, header, "wrong")
-    bad = False
-except ValueError:
-    bad = True
-p = k.GreenFdProduct.from_dict(dict(json.loads(sys.argv[3]), version=1, build_terms={}))
-print(json.dumps({"type": ev["type"], "rejected": bad, "disclosures": list(k.disclosures_for("green-fd")), "name": p.name, "handoffs": list(k.PERMITTED_HANDOFFS["index-fund-x"])}))
+def rejects(f):
+    try:
+        f()
+        return False
+    except ValueError:
+        return True
+print(json.dumps({"type": ev["type"], "wrong_secret": rejects(lambda: k.verify_webhook(body, header, "wrong")),
+  "tampered": rejects(lambda: k.verify_webhook(body + " ", header, "whsec")),
+  "handoff": rejects(lambda: k.check_handoff("green-fd", "initiate_onboarding")),
+  "disclosures": list(k.disclosures_for("green-fd")), "banned": list(k.BANNED_PHRASES["index-fund-x"]), "handoffs": list(k.PERMITTED_HANDOFFS["index-fund-x"])}))
 `;
-  const out = JSON.parse(execFileSync("python3", ["-I", "-c", script, body, `t=${t},v1=${sig}`, JSON.stringify(product()), pyDir]).toString());
-  assert.deepEqual(out, { type: "handoff.completed", rejected: true, disclosures: FD_TERMS.required_disclosures, name: "Green Fixed Deposit", handoffs: ["deep_link", "initiate_onboarding"] });
+  const out = JSON.parse(execFileSync("python3", ["-I", "-c", script, body, `t=${t},v1=${sig}`, join(pyDir, "python")]).toString());
+  assert.deepEqual(out, {
+    type: "handoff.completed",
+    wrong_secret: true,
+    tampered: true,
+    handoff: true,
+    disclosures: FD_TERMS.required_disclosures,
+    banned: FUND_TERMS.banned_phrases,
+    handoffs: ["deep_link", "initiate_onboarding"],
+  });
+
+  // When openapi-python-client is installed (never a Mynt dependency), generate the client and import it.
+  // OPENAPI_PYTHON_CLIENT may point at the CLI inside a virtualenv; its python then imports the result.
+  const generator = process.env.OPENAPI_PYTHON_CLIENT || "openapi-python-client";
+  if (spawnSync(generator, ["--version"]).status !== 0) return;
+  execFileSync(generator, ["generate", "--path", "../openapi.json", "--config", "config.yml", "--meta", "setup", "--overwrite"], { cwd: join(pyDir, "python"), stdio: "pipe" });
+  const python = process.env.OPENAPI_PYTHON_CLIENT ? join(dirname(generator), "python") : "python3";
+  const imports = `
+import sys
+sys.path.insert(0, sys.argv[1])
+from saver_kit import AuthenticatedClient
+from saver_kit.api.default import list_products, start_handoff
+from saver_kit.models import GreenFixedDeposit, HandoffRequest
+c = AuthenticatedClient(base_url="https://mynt.example.com/v1", token="mynt_test_x")
+print(type(c).__name__, GreenFixedDeposit.__name__, HandoffRequest.__name__, callable(start_handoff.sync), callable(list_products.sync))
+`;
+  assert.equal(execFileSync(python, ["-c", imports, join(pyDir, "python", "saver-kit")]).toString().trim(), "AuthenticatedClient GreenFixedDeposit HandoffRequest True True");
 });
 
 test("SDK releases are immutable and versions only go up", async () => {

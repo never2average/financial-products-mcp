@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
-import type { BuildService } from "./builds.js";
+import type { AgentBackend } from "./agent-host.js";
 
 // Claude Code in a build sandbox reaches the model only through here, authenticated by its build's
 // token, which works only while that build is running. Mynt adds its own credentials and streams the
@@ -31,8 +31,8 @@ async function readBody(req: IncomingMessage): Promise<Buffer | null> {
 
 export const vertexHost = (region: string) => (region === "global" ? "aiplatform.googleapis.com" : `${region}-aiplatform.googleapis.com`);
 
-export async function agentProxy(builds: BuildService, req: IncomingMessage, res: ServerResponse, url: URL) {
-  const backend = builds.config.agentBackend;
+// `active` says whether a build's or a connector run's token is live.
+export async function agentProxy(backend: AgentBackend | null, active: (token: string) => Promise<boolean>, req: IncomingMessage, res: ServerResponse, url: URL) {
   if (!backend) return reply(res, 503, "Builds aren't enabled");
   if (req.method !== "POST") return reply(res, 404, "Not found");
 
@@ -53,7 +53,7 @@ export async function agentProxy(builds: BuildService, req: IncomingMessage, res
     upstream = `https://api.anthropic.com${path}${url.search}`;
     headers["x-api-key"] = backend.apiKey;
   }
-  if (!token || !(await builds.agentTokenActive(token))) return reply(res, 401, "This build token isn't active");
+  if (!token || !(await active(token))) return reply(res, 401, "This agent token isn't active");
   const body = await readBody(req);
   if (!body) return reply(res, 413, "Request too large");
   for (const h of FORWARD_REQUEST) {

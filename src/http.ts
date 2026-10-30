@@ -88,20 +88,41 @@ async function handle(
   // The runtime API for developers' apps authenticates with app keys, not Clerk.
   if (url.pathname === "/v1" || url.pathname.startsWith("/v1/")) return runtime(req, res, url);
   // Build agents reach Anthropic through Mynt with a per-build token (see agent-proxy.ts).
-  if (ctx.builds && url.pathname.startsWith("/agent/")) return agentProxy(ctx.builds, req, res, url);
+  if (ctx.builds && url.pathname.startsWith("/agent/")) {
+    const builds = ctx.builds;
+    const active = async (t: string) => (await builds.agentTokenActive(t)) || (!!ctx.bd && (await ctx.bd.agentTokenActive(t)));
+    return agentProxy(builds.config.agentBackend, active, req, res, url);
+  }
+  // One-click opt-out from the connector's messages.
+  if (ctx.bd && url.pathname === "/bd/unsubscribe" && (req.method === "GET" || req.method === "POST")) {
+    const done = await ctx.bd.unsubscribe(url.searchParams.get("c") ?? "", url.searchParams.get("s") ?? "");
+    res.writeHead(done ? 200 : 400, { "Content-Type": "text/plain; charset=utf-8" });
+    return void res.end(done ? "You won't hear from Mynt's connector again." : "This link isn't valid.");
+  }
+  // Connector agent runs reach Mynt's MCP server with their run token, as the agent, not as a person.
+  const bearer = req.headers.authorization?.startsWith("Bearer mynt_bd_") ? req.headers.authorization.slice(7).trim() : null;
+  if (bearer && url.pathname === "/mcp") {
+    const run = ctx.bd ? await ctx.bd.runForToken(bearer) : undefined;
+    if (!run) return sendJson(res, 401, { error: "invalid_token", message: "This connector run isn't active" });
+    if (req.method !== "POST") return void res.writeHead(405, { Allow: "POST" }).end();
+    return serveMcp(createServer(store, null, { ...ctx, bdRun: { id: run.id as string } }), req, res);
+  }
   if (url.pathname !== "/mcp") return void res.writeHead(404).end();
   if (req.method !== "POST") return void res.writeHead(405, { Allow: "POST" }).end();
 
   const authed = await authenticate(store, clerk, req, res);
   if (!authed) return;
 
+  return serveMcp(createServer(store, authed.user, ctx), req, res);
+}
+
+async function serveMcp(server: ReturnType<typeof createServer>, req: IncomingMessage, res: ServerResponse) {
   let body: unknown;
   try {
     body = await readJson(req);
   } catch {
     return void res.writeHead(400).end("Invalid JSON");
   }
-  const server = createServer(store, authed.user, ctx);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   res.on("close", () => {
     void transport.close();

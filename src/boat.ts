@@ -81,7 +81,8 @@ export class HttpBoatClient implements BoatClient {
       const r = await this.call<{ content?: string }>("GET", `/sandboxes/${encodeURIComponent(id)}/files?path=${encodeURIComponent(path)}&encoding=utf8`);
       return r.content ?? null;
     } catch (e) {
-      if (e instanceof BoatApiError && e.status === 404) return null;
+      // A file that isn't there yet: boat answers 404, or another status with an ENOENT message.
+      if (e instanceof BoatApiError && (e.status === 404 || /ENOENT|no such file/i.test(e.message))) return null;
       throw e;
     }
   }

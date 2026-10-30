@@ -115,7 +115,7 @@ async function setup({ boat = fakeBoat(), config = {} } = {}) {
   const db = { query: (s, p) => pg.query(s, p), exec: (s) => pg.exec(s), close: () => pg.close() };
   const store = await Store.open(db);
   const repos = fakeRepos();
-  const builds = await BuildService.open(db, store, boat, repos, { ...buildConfigFromEnv({}), publicUrl: "https://mynt.example.com", anthropicApiKey: "sk-ant-test", ...config });
+  const builds = await BuildService.open(db, store, boat, repos, { ...buildConfigFromEnv({}), publicUrl: "https://mynt.example.com", agentBackend: { kind: "anthropic", apiKey: "sk-ant-test" }, ...config });
   const as = async (name, roles) => (await store.createUser(name, roles)).user;
   const connect = async (user) => {
     const [c, s] = InMemoryTransport.createLinkedPair();
@@ -197,7 +197,7 @@ test("a build is verified by Mynt in a clean sandbox, then Mynt opens the PR", a
   assert.match(config.version, /^\d+\.\d+\.\d+$/);
   assert.match(coding.files.get(`${A}/runner.mjs`), /--max-budget-usd/);
   const auth = JSON.parse(coding.files.get(`${A}/auth.json`));
-  assert.equal(auth.base_url, "https://mynt.example.com/agent");
+  assert.deepEqual(auth.env, { ANTHROPIC_BASE_URL: "https://mynt.example.com/agent", ANTHROPIC_AUTH_TOKEN: auth.token });
   assert.ok(!JSON.stringify(coding.opts.env).includes("sk-ant") && !coding.opts.env.ANTHROPIC_API_KEY);
   assert.equal(await builds.agentTokenActive(auth.token), false, "the coding agent's token was replaced for the audit");
   const auditAuth = JSON.parse(boat.sandboxes.get(vid).files.get(`${A}/auth.json`));
@@ -343,8 +343,8 @@ test("developers track, steer and stop their own builds; admins see all", async 
   assert.match((await call(dev, "steer_build", { build_id: started.id, message: "go on" })).data.error, /only a running agent/);
 });
 
-test("builds stay off without an Anthropic key for the proxy", async () => {
-  const { as, connect, call } = await setup({ config: { anthropicApiKey: null } });
+test("builds stay off without a model backend for the proxy", async () => {
+  const { as, connect, call } = await setup({ config: { agentBackend: null } });
   const dev = await connect(await as("Dev", ["developer"]));
   assert.match((await call(dev, "start_build", { goal: "Build a savings page please" })).data.error, /aren't enabled/);
 });
@@ -392,6 +392,53 @@ test("the agent proxy forwards only an active build's calls, with Mynt's key", a
   }
 });
 
+test("on Vertex AI, the agent's calls carry its token in the path and Mynt signs them for the pinned project", async () => {
+  const { createServer: createHttp } = await import("node:http");
+  const { agentProxy } = await import("../dist/agent-proxy.js");
+  const vertex = { kind: "vertex", projectId: "acme-prod", region: "global", auth: { accessToken: async () => "ya29.mynt" } };
+  const ctx = await setup({ config: { agentBackend: vertex } });
+  const dev = await ctx.connect(await ctx.as("Dev", ["developer"]));
+  const started = (await ctx.call(dev, "start_build", { goal: "Build a savings page please" })).data;
+  await ctx.builds.tick();
+  const sbx = (await ctx.builds.get(started.id)).sandbox_id;
+  ctx.boat.ready(sbx);
+  await ctx.builds.tick();
+  const { token, env } = JSON.parse(ctx.boat.sandboxes.get(sbx).files.get(`${A}/auth.json`));
+  assert.deepEqual(env, {
+    CLAUDE_CODE_USE_VERTEX: "1",
+    CLAUDE_CODE_SKIP_VERTEX_AUTH: "1",
+    ANTHROPIC_VERTEX_BASE_URL: `https://mynt.example.com/agent/t/${token}/v1`,
+    ANTHROPIC_VERTEX_PROJECT_ID: "mynt",
+    CLOUD_ML_REGION: "global",
+  });
+
+  const seen = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url, headers: init.headers });
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const server = createHttp((req, res) => void agentProxy(ctx.builds, req, res, new URL(req.url, "http://x")));
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const post = (path) => realFetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json", "anthropic-beta": "x-2026" }, body: "{}" });
+  const model = "/v1/projects/mynt/locations/global/publishers/anthropic/models/claude-opus-5-5:streamRawPredict";
+  try {
+    assert.equal((await post(`/agent/t/${token}${model}`)).status, 200);
+    assert.equal(seen[0].url, "https://aiplatform.googleapis.com/v1/projects/acme-prod/locations/global/publishers/anthropic/models/claude-opus-5-5:streamRawPredict");
+    assert.equal(seen[0].headers.authorization, "Bearer ya29.mynt");
+    assert.equal(seen[0].headers["anthropic-beta"], "x-2026");
+    assert.equal((await post(`/agent/t/${token}/v1/projects/mynt/locations/global/publishers/anthropic/models/count-tokens:rawPredict`)).status, 200);
+    assert.equal((await post(`/agent/t/mynt_agent_wrong${model}`)).status, 401);
+    assert.equal((await post(`/agent/t/${token}/v1/projects/mynt/locations/global/publishers/google/models/gemini:generateContent`)).status, 404, "Claude models only");
+    assert.equal((await post(`/agent/v1/messages`)).status, 404, "no Anthropic API route on a Vertex Mynt");
+    assert.equal(seen.length, 2);
+  } finally {
+    globalThis.fetch = realFetch;
+    server.close();
+  }
+});
+
 test("the runner drives Claude Code headless, records its spend, steers and exits cleanly", async () => {
   const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
@@ -427,7 +474,7 @@ process.stdin.on("data", (d) => {
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "runner.mjs"), AGENT_RUNNER);
   writeFileSync(join(dir, "config.json"), JSON.stringify({ prompt: "Build it", cwd: join(home, "work"), model: "claude-opus-5-5", budgetUsd: 4.5, version: "0.0.0" }));
-  writeFileSync(join(dir, "auth.json"), JSON.stringify({ base_url: "https://mynt.example.com/agent", token: "mynt_agent_t" }));
+  writeFileSync(join(dir, "auth.json"), JSON.stringify({ token: "mynt_agent_t", env: { ANTHROPIC_BASE_URL: "https://mynt.example.com/agent", ANTHROPIC_AUTH_TOKEN: "mynt_agent_t" } }));
   const child = spawn(process.execPath, [join(dir, "runner.mjs"), dir], { env: { ...process.env, HOME: home, ANTHROPIC_API_KEY: "sk-ant-leak" }, stdio: "ignore" });
   const code = await new Promise((r) => child.on("exit", r));
   assert.equal(code, 0);
@@ -451,4 +498,31 @@ test("without a boat.dev key builds are disabled cleanly, and agents never conne
   assert.match(task, /Do not connect any external service or sign in anywhere/);
   const { auditorPrompt } = await import("../dist/verify-script.js");
   assert.match(auditorPrompt("https://github.com/OnFinance/Maxwell"), /Do not connect any external service or sign in anywhere/);
+});
+
+test("Mynt's Google service account signs a JWT for a cloud-platform token, and caches it", async () => {
+  const { generateKeyPairSync, createVerify } = await import("node:crypto");
+  const { GoogleServiceAccount } = await import("../dist/google-auth.js");
+  const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const sa = new GoogleServiceAccount({ client_email: "mynt@acme.iam.gserviceaccount.com", private_key: privateKey.export({ type: "pkcs8", format: "pem" }), project_id: "acme-prod" });
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, body: new URLSearchParams(init.body.toString()) });
+    return new Response(JSON.stringify({ access_token: "ya29.x", expires_in: 3600 }), { status: 200 });
+  };
+  try {
+    assert.equal(await sa.accessToken(), "ya29.x");
+    assert.equal(await sa.accessToken(), "ya29.x");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(calls.length, 1, "cached until near expiry");
+  assert.equal(calls[0].url, "https://oauth2.googleapis.com/token");
+  const [head, body, sig] = calls[0].body.get("assertion").split(".");
+  const claims = JSON.parse(Buffer.from(body, "base64url").toString());
+  assert.equal(claims.scope, "https://www.googleapis.com/auth/cloud-platform");
+  assert.equal(claims.iss, "mynt@acme.iam.gserviceaccount.com");
+  assert.ok(createVerify("RSA-SHA256").update(`${head}.${body}`).verify(publicKey, Buffer.from(sig, "base64url")));
+  assert.equal(sa.projectId, "acme-prod");
 });

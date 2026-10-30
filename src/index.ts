@@ -27,8 +27,9 @@ Environment:
   PUBLIC_URL                Public origin of this server, e.g. https://mcp.example.com
   FINANCIAL_PRODUCTS_FILE   JSON catalog used to seed published products
   FINANCIAL_PRODUCTS_TOKEN  User token for stdio mode; omit to browse as a guest
-  BOAT_API_KEY              With ANTHROPIC_API_KEY and PUBLIC_URL: coding-agent builds in boat.dev sandboxes (BUILD_CAP_USD, ...)
-  ANTHROPIC_API_KEY         Used by Mynt's agent proxy for the Claude Code it runs in build sandboxes; never sent to a sandbox
+  BOAT_API_KEY              With PUBLIC_URL and a model backend: coding-agent builds in boat.dev sandboxes (BUILD_CAP_USD, ...)
+  GOOGLE_APPLICATION_CREDENTIALS  Service account key file: build agents use Claude on Vertex AI (VERTEX_PROJECT_ID, VERTEX_REGION=global)
+  ANTHROPIC_API_KEY         Otherwise, build agents use the Anthropic API. Either way the credentials stay on Mynt's server
   GITHUB_APP_ID             With GITHUB_APP_PRIVATE_KEY and GITHUB_APP_SLUG: builds push branches and open PRs`;
 
 const { positionals, values } = parseArgs({

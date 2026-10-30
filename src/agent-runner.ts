@@ -1,10 +1,11 @@
 // The small Node program Mynt runs in a sandbox to drive Claude Code headless. Mynt, not the sandbox
 // host, runs the agent: it installs a pinned Claude Code, gives it a prompt and a dollar budget, and
-// talks to Anthropic only through Mynt's agent proxy with a per-build token, so no Anthropic key ever
+// reaches the model only through Mynt's agent proxy with a per-build token, so no Anthropic key ever
 // enters the sandbox.
 //
 // Mynt writes <dir>/config.json ({ prompt, cwd, model, budgetUsd, version }) and <dir>/auth.json (the
-// proxy URL and token; read once, then deleted), then runs `node <dir>/runner.mjs <dir>` detached. The
+// build token and the env pointing Claude Code at Mynt's proxy, for the Anthropic API or Vertex AI;
+// read once, then deleted), then runs `node <dir>/runner.mjs <dir>` detached. The
 // runner keeps <dir>/state.json up to date and copies Claude Code's stream-json output to
 // <dir>/agent.jsonl. To steer, Mynt drops a file into <dir>/inbox/: the runner interrupts the current
 // turn and sends the message as the next one.
@@ -55,8 +56,8 @@ try {
 
 mkdirSync(cfg.cwd, { recursive: true });
 // Only the model calls, through Mynt: no telemetry, update checks or other outside traffic.
-const env = { ...process.env, ANTHROPIC_BASE_URL: auth.base_url, ANTHROPIC_AUTH_TOKEN: auth.token, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" };
-delete env.ANTHROPIC_API_KEY;
+const env = { ...process.env, ...auth.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" };
+for (const k of ["ANTHROPIC_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS"]) delete env[k];
 const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
   "--dangerously-skip-permissions", "--max-budget-usd", String(cfg.budgetUsd)];
 if (cfg.model) args.push("--model", cfg.model);

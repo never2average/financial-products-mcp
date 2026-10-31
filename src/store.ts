@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { currentLine, lineForTreasuryCategory, PRODUCT_LINES, UNDERLYINGS, WRAPPERS, type FinancialProduct } from "./catalog.js";
+import type { DeveloperContract } from "./contract.js";
 import type { Component, PartyBinding } from "./regime.js";
 import type { Db } from "./db.js";
 import { fingerprint, runProductTests, type TestReport } from "./product-tests.js";
@@ -207,6 +208,7 @@ export interface Pins {
   entity_ids: string[];
   state: { entities: Record<string, string>; licences: Record<string, string>; parties: Record<string, string> };
   definition_hash?: string; // the live v2 definition (see definition.ts), when the product has one
+  contract?: DeveloperContract; // what developers build against, derived from that definition (see contract.ts)
 }
 export type DriftChange = { kind: "entity" | "licence" | "party"; id: string; was: string; now: string };
 export interface ProductRecord {

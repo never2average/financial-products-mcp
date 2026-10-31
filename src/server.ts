@@ -16,6 +16,7 @@ import { registerCodingAgentAdminTools, registerCodingAgentTools } from "./build
 import { registerBdAdminTools, registerBdAgentTools, registerConnectTools } from "./bd.js";
 import { feasibilityCheck, registerDeskTools, type DeskService } from "./desk.js";
 import { registerReviewTools } from "./review.js";
+import { deriveContract } from "./contract.js";
 import { checkDefinition, definitionHash, type Definition } from "./definition.js";
 import { registerDefinitionTools } from "./definition-tools.js";
 import { buildPins } from "./pins.js";
@@ -628,6 +629,25 @@ function registerDeveloperTools(server: McpServer, store: Store, user: User) {
   );
 
   server.registerTool(
+    "get_developer_contract",
+    {
+      title: "A product's developer contract",
+      description:
+        "Developer: exactly what you can build against on a product's live version: its offers per customer segment (eligibility, terms, rates, fees and customer-facing limits), the actions your app may trigger and where each runs (client: the provider's hosted flow on the customer's device, with the consent purpose it needs; server: idempotent calls from your backend), the lifecycle events you can listen to, the consent purposes and documents you must show. Frozen per published version; contract_hash changes when it does.",
+      inputSchema: { product_id: z.string() },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ product_id }) => {
+      const record = await store.getProduct(product_id);
+      if (record?.status !== "published") return fail(`No published product '${product_id}'`);
+      const access = await accessStatus(store, user, record, null);
+      if (record.access_mode === "private" && !access.granted) return fail(`'${product_id}' is private; ask its innovator for an invitation`);
+      if (!record.pins?.contract) return fail(`'${product_id}' was published without a v2 definition, so it has no developer contract yet; use get_product_sdk`);
+      return json({ ...record.pins.contract, access: { mode: record.access_mode, status: access.via }, sales_paused: Boolean(record.drift) });
+    },
+  );
+
+  server.registerTool(
     "get_product_sdk",
     {
       title: "Integration kit for a product",
@@ -651,6 +671,7 @@ function registerDeveloperTools(server: McpServer, store: Store, user: User) {
         underlying_product_ids: record.underlying_product_ids,
         access: { mode: record.access_mode, status: access.via },
         build_terms: terms,
+        contract: record.pins?.contract ?? null,
         integration: {
           data_shape: Object.fromEntries(Object.entries(record.product).map(([k, v]) => [k, Array.isArray(v) ? "string[]" : typeof v])),
           sandbox_sample: { ...record.product, sandbox: true },
@@ -1004,7 +1025,10 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User, des
       // The live version's composition and everything it rests on are pinned; changes later pause sales.
       if (regime) {
         const pins = await buildPins(store, record, live.version, regime);
-        if (record.definition) pins.definition_hash = definitionHash(record.definition as unknown as Definition);
+        if (record.definition) {
+          pins.definition_hash = definitionHash(record.definition as unknown as Definition);
+          pins.contract = deriveContract(record.definition as unknown as Definition, live.version);
+        }
         await store.setPins(id, pins);
       }
       else await store.setPins(id, null);

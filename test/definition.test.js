@@ -240,3 +240,39 @@ test("a published product's definition change goes into its draft version, and a
   assert.equal(refused.isError, true);
   assert.match(refused.data.errors.join("\n"), new RegExp(`party '${partner.id}' isn't active`));
 });
+
+test("publishing freezes a developer contract: public offers and actions, nothing private", async () => {
+  const ctx = await setup();
+  const { call, client, bank, partner } = ctx;
+  await call(client, "create_product", rd);
+  const governance = await call(client, "file_grc_record", { product_id: "everyday-rd", licence_id: bank.id, section: "risk_models", ref: "interest_model", key: "m", record: { model: "x" } });
+  const def = definitionFor(ctx, governance.data.id);
+  const preview = await call(client, "check_product_definition", { product_id: "everyday-rd", definition: def });
+  assert.ok(preview.data.developer_contract, "innovators see the contract before publishing");
+  await call(client, "set_product_definition", { product_id: "everyday-rd", definition: def });
+  await call(client, "test_product", { id: "everyday-rd" });
+  assert.equal((await call(client, "publish_product", { id: "everyday-rd" })).isError, false);
+
+  const { user: dev } = await ctx.store.createUser("Dev", ["developer"]);
+  const developer = await ctx.connect(dev);
+  const contract = (await call(developer, "get_developer_contract", { product_id: "everyday-rd" })).data;
+  assert.equal(contract.version, 1);
+  assert.match(contract.contract_hash, /^sha256:/);
+  assert.deepEqual(contract.offers.map((o) => o.segment_id).sort(), ["retail_saver", "senior_saver"]);
+  const retail = contract.offers.find((o) => o.segment_id === "retail_saver");
+  assert.ok(retail.terms.some((t) => t._id === "tenor_months"), "terms that apply to the product reach every segment");
+  const mandate = contract.actions.find((a) => a.id === "mandate_setup");
+  assert.deepEqual([mandate.surface, mandate.flow, mandate.host, mandate.component, mandate.consent_purpose], ["client", "hosted", "provider", "mandate", "mandate_setup"]);
+  assert.ok(contract.actions.some((a) => a.id === "premature_closure" && a.surface === "server" && a.idempotent));
+  assert.ok(contract.events.some((e) => e.type === "mandate_debit_failed"));
+  assert.deepEqual(contract.consent_purposes, ["mandate_setup"]);
+  // Nothing private leaks: no algorithms, risk models, fraud settings or parties.
+  const text = JSON.stringify(contract);
+  for (const secret of ["rd_interest_model", "core_algorithms", "risk_model", "fraud", partner.id, ctx.officer.id, ctx.entity.id]) assert.ok(!text.includes(secret), `contract leaks ${secret}`);
+  assert.equal((await call(developer, "get_product_sdk", { product_id: "everyday-rd" })).data.contract.contract_hash, contract.contract_hash);
+
+  // A catalogue product without a v2 definition has no contract yet.
+  const plain = await call(developer, "get_developer_contract", { product_id: "ppf" });
+  assert.equal(plain.isError, true);
+  assert.match(plain.data.error, /without a v2 definition/);
+});

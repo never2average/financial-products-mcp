@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { FinancialProduct } from "./catalog.js";
+import { deriveContract } from "./contract.js";
 import { checkDefinition, projectCatalogue, toV1Composition, type Definition } from "./definition.js";
 import { productRegime } from "./regime.js";
 import { normalizeModel } from "./regulatory.js";
@@ -44,7 +45,11 @@ export function registerDefinitionTools(server: McpServer, store: Store, user: U
       const def = definition as unknown as Definition;
       const check = await checkDefinition(store, record ?? null, def);
       const projection = !check.errors.length && record ? projectCatalogue(def, await leadRegulator(store, record, def, toV1Composition(def))) : null;
-      return json({ valid: check.errors.length === 0, ...check, ...(projection ? { catalogue_record: projection } : {}) });
+      return json({
+        valid: check.errors.length === 0,
+        ...check,
+        ...(projection ? { catalogue_record: projection, developer_contract: deriveContract(def, record!.version) } : {}),
+      });
     },
   );
 

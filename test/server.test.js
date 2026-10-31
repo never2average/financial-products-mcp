@@ -268,6 +268,10 @@ test("HTTP transport authenticates bearer tokens", async () => {
 // Child processes need a real Postgres; CI provides one, locally set TEST_DATABASE_URL.
 test("CLI issues tokens that work over stdio against Postgres", { skip: !process.env.TEST_DATABASE_URL }, async () => {
   const env = { ...process.env, DATABASE_URL: process.env.TEST_DATABASE_URL };
+  // Mynt ships no catalogue: seed the product this test enrolls in.
+  const { connectPostgres } = await import("../dist/db.js");
+  const seeded = await Store.open(connectPostgres(process.env.TEST_DATABASE_URL), CATALOG.filter((p) => p.id === "etf"));
+  await seeded.close();
   const out = execFileSync(process.execPath, ["dist/index.js", "users", "add", "--name", "Asha", "--role", "consumer"], {
     env,
     stdio: ["ignore", "pipe", "ignore"],
@@ -279,9 +283,13 @@ test("CLI issues tokens that work over stdio against Postgres", { skip: !process
   await client.connect(
     new StdioClientTransport({ command: process.execPath, args: ["dist/index.js"], env: { ...env, FINANCIAL_PRODUCTS_TOKEN: token } }),
   );
-  const { data } = await call(client, "enroll_in_product", { product_id: "etf" });
-  assert.equal(data.status, "active");
-  await client.close();
+  try {
+    const { data } = await call(client, "enroll_in_product", { product_id: "etf" });
+    assert.equal(data.status, "active");
+  } finally {
+    // Always stop the stdio server, or a failure leaves the test run hanging.
+    await client.close();
+  }
 });
 
 test("Mynt ships no catalogue: a new database starts with no products or categories, and only the global region", async () => {

@@ -442,6 +442,15 @@ The device routes need a client session that has a `customer_ref`:
 
 A hosted action refuses to start (`data_required`) until the personal data it sends is held for the customer.
 
+**SDKs for every client.** `create_sdk` languages: `typescript` (server, plus `./browser`), `python` (server), `react_native`, `kotlin` (Android), `swift` (iOS and macOS) and `flutter` (Dart).
+
+Every device SDK has the same client and journey runner as `./browser`, and each:
+- runs on a client session, never an app key;
+- carries the app's contract constants (client actions, consent purposes, documents), so misuse fails before any request is sent;
+- hashes evidence with the platform's SHA-256: WebCrypto, `MessageDigest`, CryptoKit or swift-crypto, Dart's `crypto`, or plain TypeScript on React Native.
+
+The device SDKs are generated from source templates in [`sdk-templates/`](sdk-templates). CI compiles a generated set on every change: Kotlin with `kotlinc`, Dart with `dart analyze`, Swift with `swift build`.
+
 **The journey runner.** The browser SDK has methods for all of this: `saveFields`, `knownFields`, `prefill`, `forgetMe` and `journey`. It also has `createJourneyRunner(client, journeyId)`, a headless runner: the app renders the current step however it likes, then calls `complete()` with what the customer did. The runner then:
 - records document and consent evidence;
 - stores fields, with secure ones sent as secure;

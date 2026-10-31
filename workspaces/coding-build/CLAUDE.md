@@ -38,6 +38,9 @@ Delegate with the Task tool; give each agent the part of the goal it owns and th
 - `qa-engineer`: end-to-end tests against Mynt's sandbox, across api, web and mobile.
 - `release-engineer`: the Compose project, the preview, and the push.
 
+The developer can work in the same sandbox alongside you (VS Code in their browser, a terminal, commands):
+before changing a file, check `git status`; never overwrite or revert their edits, and build on them.
+
 Run engineers in parallel when their parts don't depend on each other (api first if web and mobile need its
 session endpoint). You own the final decision: if a reviewer and an engineer disagree, the contract wins.
 

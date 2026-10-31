@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
 import { seal, open } from "./vault.js";
+import { boxOutput, type HostingCommandKind } from "./boxes.js";
 
 // Hosted runtime: developers' apps (their financial part: the server that holds the app key, calls
 // contract actions and handles webhooks) run on an isolated VM per developer, built from the exact commit
@@ -175,7 +176,48 @@ const TABLES = `
     updated_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (tenant_id, port)
   );
+  -- What the developer asked their VM to do (status, logs, restart, exec in one of their app containers); the
+  -- VM's agent claims them over the tunnel and reports back.
+  CREATE TABLE IF NOT EXISTS financial_products.hosting_commands (
+    id uuid PRIMARY KEY,
+    tenant_id uuid NOT NULL REFERENCES financial_products.hosting_tenants(id),
+    app_id uuid NOT NULL,
+    kind text NOT NULL CHECK (kind IN ('status', 'logs', 'restart', 'exec')),
+    args jsonb NOT NULL DEFAULT '{}',
+    status text NOT NULL CHECK (status IN ('queued', 'running', 'done', 'expired')),
+    exit_code integer,
+    output text,
+    requested_by uuid,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    finished_at timestamptz
+  );
+  CREATE INDEX IF NOT EXISTS hosting_commands_tenant_idx ON financial_products.hosting_commands (tenant_id, status, created_at);
 `;
+
+// The container an app runs in on its VM.
+export const containerName = (appId: string) => `mynt-app-${appId.slice(0, 8)}`;
+export interface HostingCommand {
+  id: string;
+  app_id: string;
+  kind: HostingCommandKind;
+  args: Record<string, unknown>;
+  status: "queued" | "running" | "done" | "expired";
+  exit_code: number | null;
+  output: string | null;
+  created_at: string;
+  finished_at: string | null;
+}
+const toCommand = (r: Record<string, unknown>): HostingCommand => ({
+  id: r.id as string,
+  app_id: r.app_id as string,
+  kind: r.kind as HostingCommandKind,
+  args: (typeof r.args === "string" ? JSON.parse(r.args) : r.args) as Record<string, unknown>,
+  status: r.status as HostingCommand["status"],
+  exit_code: (r.exit_code as number | null) ?? null,
+  output: (r.output as string | null) ?? null,
+  created_at: iso(r.created_at)!,
+  finished_at: iso(r.finished_at),
+});
 
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const iso = (v: unknown) => (v == null ? null : new Date(v as string).toISOString());
@@ -269,6 +311,32 @@ while true; do
 done
 AGENT
 chmod 700 /usr/local/bin/mynt-agent
+cat >/usr/local/bin/mynt-agent-commands <<'AGENT'
+#!/bin/bash
+# Runs what the developer asked for (status, logs, restart, exec) against their own app containers only, every
+# few seconds. exec runs inside the app's container, under gVisor, never on this VM.
+set -uo pipefail
+PROXY=http://${GATEWAY_TUNNEL_IP}:${PROXY_PORT}
+AUTH="Authorization: Bearer $(cat /etc/mynt/agent.token)"
+while true; do
+  CMDS=$(curl -fsS -x "$PROXY" ${cfg.publicUrl}/v1/hosting/commands -H "$AUTH") || { sleep 5; continue; }
+  echo "$CMDS" | jq -c '.commands[]' | while read -r c; do
+    ID=$(echo "$c" | jq -r .id); NAME=$(echo "$c" | jq -r .container); KIND=$(echo "$c" | jq -r .kind)
+    echo "$NAME" | grep -Eqx 'mynt-app-[0-9a-f]{8}' || continue
+    case "$KIND" in
+      status) OUT=$(docker inspect -f '{{.State.Status}} since {{.State.StartedAt}}, health {{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}}, restarts {{.RestartCount}}, image {{.Config.Image}}' "$NAME" 2>&1 && docker stats --no-stream --format '{{.CPUPerc}} CPU, {{.MemUsage}} memory' "$NAME" 2>&1); RC=$? ;;
+      logs) OUT=$(docker logs --timestamps --tail "$(echo "$c" | jq -r '.args.tail // 200')" "$NAME" 2>&1); RC=$? ;;
+      restart) OUT=$(docker restart "$NAME" 2>&1); RC=$? ;;
+      exec) OUT=$(timeout "$(echo "$c" | jq -r '.args.timeout_seconds // 60')" docker exec "$NAME" sh -c "$(echo "$c" | jq -r .args.command)" 2>&1); RC=$? ;;
+      *) continue ;;
+    esac
+    printf '%s' "$OUT" | tail -c 64000 | jq -Rs --argjson rc "$RC" '{exit_code: $rc, output: .}' |
+      curl -fsS -x "$PROXY" -X POST ${cfg.publicUrl}/v1/hosting/commands/$ID/result -H "$AUTH" -H 'Content-Type: application/json' --data-binary @- >/dev/null || true
+  done
+  sleep 3
+done
+AGENT
+chmod 700 /usr/local/bin/mynt-agent-commands
 cat >/etc/systemd/system/mynt-agent.service <<UNIT
 [Unit]
 After=wg-quick@wg0.service docker.service
@@ -278,7 +346,16 @@ Restart=always
 [Install]
 WantedBy=multi-user.target
 UNIT
-systemctl daemon-reload && systemctl enable --now mynt-agent
+cat >/etc/systemd/system/mynt-agent-commands.service <<UNIT
+[Unit]
+After=wg-quick@wg0.service docker.service
+[Service]
+ExecStart=/usr/local/bin/mynt-agent-commands
+Restart=always
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload && systemctl enable --now mynt-agent mynt-agent-commands
 `;
 }
 
@@ -422,7 +499,7 @@ export class HostingService {
       const sandbox = stored.endsWith(":sandbox");
       const appKey = open(stored.replace(/:(sandbox|live)$/, ""), sandbox);
       out.push({
-        name: `mynt-app-${h.app_id.slice(0, 8)}`,
+        name: containerName(h.app_id),
         app_id: h.app_id,
         commit_sha: h.commit_sha,
         source_url: `https://api.github.com/repos/${h.repository}/tarball/${h.commit_sha}`,
@@ -435,6 +512,53 @@ export class HostingService {
       });
     }
     return { apps: out, status: tenant.status };
+  }
+
+  // A command for the developer's VM, against one of their app containers.
+  async queueCommand(tenant: Tenant, appId: string, kind: HostingCommandKind, args: Record<string, unknown>, requestedBy: string): Promise<HostingCommand> {
+    if (tenant.status !== "running") throw new Error(`Your VM is ${tenant.status}`);
+    if (!(await this.hostedApps(tenant.id)).some((h) => h.app_id === appId)) throw new Error("That app isn't hosted on your VM");
+    const id = randomUUID();
+    await this.db.query(
+      "INSERT INTO financial_products.hosting_commands (id, tenant_id, app_id, kind, args, status, requested_by) VALUES ($1, $2, $3, $4, $5, 'queued', $6)",
+      [id, tenant.id, appId, kind, JSON.stringify(args), requestedBy],
+    );
+    return (await this.command(id))!;
+  }
+
+  async command(id: string): Promise<HostingCommand | undefined> {
+    const r = await this.one("SELECT * FROM financial_products.hosting_commands WHERE id = $1", [id]);
+    return r && toCommand(r);
+  }
+
+  // The VM's agent claims what's queued for it; anything it hasn't picked up in two minutes expires.
+  async claimCommands(tenant: Tenant) {
+    await this.db.query(
+      "UPDATE financial_products.hosting_commands SET status = 'expired', finished_at = now() WHERE tenant_id = $1 AND status IN ('queued', 'running') AND created_at < now() - interval '2 minutes'",
+      [tenant.id],
+    );
+    const rows = (
+      await this.db.query("UPDATE financial_products.hosting_commands SET status = 'running' WHERE tenant_id = $1 AND status = 'queued' RETURNING *", [tenant.id])
+    ).rows.map((r) => toCommand(r as Record<string, unknown>));
+    return rows.map((c) => ({ id: c.id, kind: c.kind, container: containerName(c.app_id), args: c.args }));
+  }
+
+  async finishCommand(tenant: Tenant, id: string, exitCode: number | null, output: string): Promise<boolean> {
+    const r = await this.db.query(
+      "UPDATE financial_products.hosting_commands SET status = 'done', exit_code = $3, output = $4, finished_at = now() WHERE id = $1 AND tenant_id = $2 AND status = 'running' RETURNING id",
+      [id, tenant.id, exitCode, boxOutput(output)],
+    );
+    return r.rows.length > 0;
+  }
+
+  // Waits for the VM to report (it checks every few seconds).
+  async waitForCommand(id: string, timeoutMs = 30_000, pollMs = 300): Promise<HostingCommand> {
+    const until = Date.now() + timeoutMs;
+    for (;;) {
+      const c = (await this.command(id))!;
+      if (c.status === "done" || c.status === "expired" || Date.now() >= until) return c;
+      await new Promise((r) => setTimeout(r, pollMs));
+    }
   }
 
   // The gateway's WireGuard peers: running tenants only.

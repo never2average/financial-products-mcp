@@ -354,6 +354,56 @@ test("developers track, steer and stop their own builds; admins see all", async 
   assert.match((await call(dev, "steer_build", { build_id: started.id, message: "go on" })).data.error, /only a running agent/);
 });
 
+test("developers work in their build's sandbox: VS Code, commands, files and the diff, scrubbed and on the timeline", async () => {
+  const { builds, boat, as, connect, call } = await setup();
+  const dev = await connect(await as("Dev", ["developer"]));
+  const other = await connect(await as("Other", ["developer"]));
+  const started = (await call(dev, "start_build", { goal: "Build a savings page please" })).data;
+  await builds.tick();
+  const sbx = (await builds.get(started.id)).sandbox_id;
+  assert.match((await call(dev, "sandbox_run", { build_id: started.id, command: "ls" })).data.error, /sandbox is provisioning/);
+  boat.ready(sbx);
+  await builds.tick();
+
+  // VS Code in the browser: a token-gated URL plus a password that never goes on a command line.
+  const editor = (await call(dev, "open_sandbox_editor", { build_id: started.id })).data;
+  assert.equal(editor.url, `https://${sbx}-8443.preview.example?_token=t`);
+  assert.match(editor.password, /^[A-Za-z0-9_-]{24}$/);
+  const s = boat.sandboxes.get(sbx);
+  assert.match(s.files.get("/home/user/.config/mynt-editor.yaml"), new RegExp(`bind-addr: 127\\.0\\.0\\.1:8443\\nauth: password\\npassword: ${editor.password}`));
+  const start = s.commands.find((c) => c.command.includes("code-server --config"));
+  assert.match(start.command, /code-server\/releases\/download\/v4\.96\.4\//, "a pinned release");
+  assert.ok(!s.commands.some((c) => c.command.includes(editor.password)), "the password is never in a command");
+
+  // Commands run in the app's directory; output is scrubbed of credentials.
+  const exec = boat.exec;
+  boat.exec = async (id, command, opts) => {
+    const r = await exec(id, command, opts);
+    return command.includes("npm test") ? { exitCode: 1, stdout: "GITHUB_TOKEN=ghs_abcdefghijklmnopqrstuvwxyz123456 key mynt_test_0123456789abcdef\n1 failing", stderr: "" } : r;
+  };
+  const ran = (await call(dev, "sandbox_run", { build_id: started.id, command: "npm test", timeout_seconds: 300 })).data;
+  assert.equal(ran.exit_code, 1);
+  assert.doesNotMatch(ran.stdout, /ghs_|mynt_test_0123/);
+  assert.match(ran.stdout, /GITHUB_TOKEN=\[redacted\] key \[redacted\]\n1 failing/);
+  boat.exec = exec;
+  const last = s.commands.at(-1);
+  assert.ok(last.command.startsWith("cd /home/user/workspace/app 2>/dev/null || cd ~; npm test") && last.timeoutSeconds === 300);
+
+  const files = (await call(dev, "sandbox_files", { build_id: started.id, path: "api/src/server.ts" })).data;
+  assert.equal(files.path, "/home/user/workspace/app/api/src/server.ts");
+  assert.match(s.commands.at(-1).command, /head -c 64000 '\/home\/user\/workspace\/app\/api\/src\/server\.ts'/);
+  assert.equal((await call(dev, "sandbox_diff", { build_id: started.id })).isError, false);
+
+  // Only the build's developer, and it's all on the timeline.
+  assert.match((await call(other, "sandbox_run", { build_id: started.id, command: "id" })).data.error, /No build of yours/);
+  assert.match((await call(other, "open_sandbox_editor", { build_id: started.id })).data.error, /No build of yours/);
+  const timeline = (await call(dev, "get_build", { build_id: started.id })).data.timeline.filter((e) => e.phase === "box");
+  assert.deepEqual(timeline.map((e) => e.message), ["The developer opened the editor", "The developer ran a command in the sandbox"]);
+
+  await call(dev, "stop_build", { build_id: started.id });
+  assert.match((await call(dev, "sandbox_run", { build_id: started.id, command: "ls" })).data.error, /its sandbox is gone/);
+});
+
 test("builds stay off without a model backend for the proxy", async () => {
   const { as, connect, call } = await setup({ config: { agentBackend: null } });
   const dev = await connect(await as("Dev", ["developer"]));

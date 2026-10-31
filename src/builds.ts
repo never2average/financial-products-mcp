@@ -5,6 +5,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { accessStatus, productEntity } from "./access.js";
 import type { BoatClient } from "./boat.js";
+import { BOX_OUTPUT_LIMIT, BOX_TIMEOUT_MAX, boxOutput, EDITOR_CONFIG, EDITOR_PORT, editorCommand, editorConfig, shellQuote } from "./boxes.js";
 import type { Db } from "./db.js";
 import type { RepoAccess } from "./github.js";
 import { GoogleServiceAccount } from "./google-auth.js";
@@ -354,6 +355,53 @@ export class BuildService {
       .filter((m): m is Record<string, unknown> => !!m)
       .flatMap(summarizeAgentLine)
       .reverse();
+  }
+
+  // The build's box: the sandbox the coding agents work in, for as long as it's up (during the build and, once
+  // it has shipped, while its preview runs). Everything a developer does there goes on the build's timeline.
+  private async box(build: Build): Promise<string> {
+    if (!this.boat || !build.sandbox_id) throw new Error("This build has no sandbox");
+    if (build.status === "stopped" || build.status === "over_budget") throw new Error(`The build is ${build.status}; its sandbox is gone`);
+    const s = await this.boat.getSandbox(build.sandbox_id);
+    if (!["ready", "idle", "running", "provisioned"].includes(s.state)) throw new Error(`The build's sandbox is ${s.state}`);
+    return build.sandbox_id;
+  }
+
+  async boxExec(build: Build, command: string, timeoutSeconds = 60) {
+    const id = await this.box(build);
+    const t = Math.max(1, Math.min(BOX_TIMEOUT_MAX, Math.floor(timeoutSeconds)));
+    await this.event(build.id, "box", "The developer ran a command in the sandbox", { command });
+    const r = await this.boat!.exec(id, `cd ${WORKSPACE} 2>/dev/null || cd ~; ${command}`, { timeoutSeconds: t });
+    return { exit_code: r.exitCode, stdout: boxOutput(r.stdout), stderr: boxOutput(r.stderr) };
+  }
+
+  // A file's contents, or a directory's listing (paths relative to the app unless absolute).
+  async boxFiles(build: Build, path = ".") {
+    const id = await this.box(build);
+    const target = path.startsWith("/") ? path : `${WORKSPACE}/${path}`;
+    const r = await this.boat!.exec(id, `if [ -d ${shellQuote(target)} ]; then echo DIR; ls -la ${shellQuote(target)}; else echo FILE; head -c ${BOX_OUTPUT_LIMIT} ${shellQuote(target)}; fi`, { timeoutSeconds: 30 });
+    if (r.exitCode !== 0) return { path: target, error: boxOutput(r.stderr) || "Not found" };
+    const [kind, ...rest] = r.stdout.split("\n");
+    return kind === "DIR" ? { path: target, listing: boxOutput(rest.join("\n")) } : { path: target, content: boxOutput(rest.join("\n")) };
+  }
+
+  // What the agents changed so far: git status and diff of the app.
+  async boxDiff(build: Build) {
+    const id = await this.box(build);
+    const r = await this.boat!.exec(id, `cd ${WORKSPACE} && git status --short && echo ---- && git diff HEAD --stat && echo ---- && git diff HEAD`, { timeoutSeconds: 60 });
+    return { exit_code: r.exitCode, diff: boxOutput(r.stdout), stderr: boxOutput(r.stderr) };
+  }
+
+  // VS Code in the browser on the sandbox, next to the agents: a token-gated URL plus a password.
+  async openEditor(build: Build) {
+    const id = await this.box(build);
+    const password = randomBytes(18).toString("base64url");
+    await this.boat!.writeFile(id, EDITOR_CONFIG, editorConfig(password));
+    const r = await this.boat!.exec(id, editorCommand(WORKSPACE), { timeoutSeconds: 300 });
+    if (r.exitCode !== 0) throw new Error(`The editor didn't start: ${boxOutput(r.stderr).slice(-500)}`);
+    const { url } = await this.boat!.host(id, EDITOR_PORT);
+    await this.event(build.id, "box", "The developer opened the editor");
+    return { url, password, note: "Opens VS Code on the app the agents are building, with a terminal. Edits land in the same working tree; tell the agents with steer_build." };
   }
 
   // Background loop; tests call tick() directly.
@@ -831,6 +879,61 @@ export function registerCodingAgentTools(server: McpServer, store: Store, user: 
       const b = await own(build_id);
       return b ? json(await builds.stop(b, reason)) : fail(`No build of yours with id '${build_id}'`);
     },
+  );
+
+  // The sandbox where the coding agents work: the developer can look around, run things and edit alongside them.
+  const onBox = async <T>(build_id: string, f: (b: Build) => Promise<T>) => {
+    const b = await own(build_id);
+    if (!b) return fail(`No build of yours with id '${build_id}'`);
+    try {
+      return json(await f(b));
+    } catch (e) {
+      return fail((e as Error).message);
+    }
+  };
+
+  server.registerTool(
+    "open_sandbox_editor",
+    {
+      title: "Open the build's sandbox in VS Code",
+      description:
+        "Developer: VS Code in your browser on the sandbox where the coding agents are building your app, with a terminal. Returns a private link and a password. Works while the build runs and, after it ships, while its preview is up.",
+      inputSchema: { build_id: z.string() },
+    },
+    async ({ build_id }) => onBox(build_id, (b) => builds.openEditor(b)),
+  );
+
+  server.registerTool(
+    "sandbox_run",
+    {
+      title: "Run a command in the build's sandbox",
+      description:
+        "Developer: run a shell command in your build's sandbox, in the app's directory (e.g. 'npm test', 'docker compose ps', 'git log --oneline -5'). Output is capped and secrets are scrubbed; every command is on the build's timeline.",
+      inputSchema: { build_id: z.string(), command: z.string().min(1).max(4000), timeout_seconds: z.number().int().min(1).max(300).default(60) },
+    },
+    async ({ build_id, command, timeout_seconds }) => onBox(build_id, (b) => builds.boxExec(b, command, timeout_seconds)),
+  );
+
+  server.registerTool(
+    "sandbox_files",
+    {
+      title: "Browse the build's files",
+      description: "Developer: list a directory or read a file in your build's sandbox (paths relative to the app, e.g. 'api/src/server.ts').",
+      inputSchema: { build_id: z.string(), path: z.string().max(1000).default(".") },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ build_id, path }) => onBox(build_id, (b) => builds.boxFiles(b, path)),
+  );
+
+  server.registerTool(
+    "sandbox_diff",
+    {
+      title: "What the agents changed",
+      description: "Developer: git status and the full diff of your app in the build's sandbox, so far.",
+      inputSchema: { build_id: z.string() },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ build_id }) => onBox(build_id, (b) => builds.boxDiff(b)),
   );
 }
 

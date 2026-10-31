@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import type { HostingCommandKind } from "./boxes.js";
 import type { HostingService } from "./hosting.js";
 import { appProducts, buildTerms } from "./runtime.js";
 import type { Store, User } from "./store.js";
@@ -121,6 +122,67 @@ export function registerHostingTools(server: McpServer, store: Store, user: User
       await store.audit(user.id, "undeploy_app", app_id);
       return json({ app_id, hosted: false });
     },
+  );
+
+  // The VM the app runs on: the developer asks, the VM's agent does it within a few seconds over the tunnel.
+  // Nothing reaches the VM from outside; commands only ever touch the developer's own app containers.
+  const onVm = async (app_id: string, kind: HostingCommandKind, args: Record<string, unknown>, waitSeconds: number) => {
+    const app = await store.getApp(app_id);
+    if (!app || app.owner_id !== user.id) return fail(`No app of yours with id '${app_id}'`);
+    const tenant = await hosting.tenantOf(user.id);
+    if (!tenant) return fail("You have no hosting yet (request_hosting)");
+    try {
+      const queued = await hosting.queueCommand(tenant, app_id, kind, args, user.id);
+      await store.audit(user.id, `app_${kind}`, app_id, kind === "exec" ? { command: args.command } : args);
+      const c = await hosting.waitForCommand(queued.id, waitSeconds * 1000);
+      if (c.status === "done") return json({ app_id, kind, exit_code: c.exit_code, output: c.output });
+      return fail(c.status === "expired" ? "Your VM didn't pick this up; it may be offline (hosting_status)" : `Your VM hasn't answered within ${waitSeconds}s; try again shortly`);
+    } catch (e) {
+      return fail((e as Error).message);
+    }
+  };
+
+  server.registerTool(
+    "app_status",
+    {
+      title: "How a hosted app is doing",
+      description: "Developer: your hosted app's container on your VM: running or not, since when, health, restarts, image (the verified commit), CPU and memory.",
+      inputSchema: { app_id: z.string() },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ app_id }) => onVm(app_id, "status", {}, 30),
+  );
+
+  server.registerTool(
+    "app_logs",
+    {
+      title: "A hosted app's logs",
+      description: "Developer: the latest log lines of your hosted app, with timestamps. Secrets are scrubbed.",
+      inputSchema: { app_id: z.string(), tail: z.number().int().min(1).max(2000).default(200) },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ app_id, tail }) => onVm(app_id, "logs", { tail }, 30),
+  );
+
+  server.registerTool(
+    "app_run",
+    {
+      title: "Run a command in a hosted app",
+      description:
+        "Developer: run a shell command inside your hosted app's container (under gVisor, read-only apart from /tmp), e.g. 'node --version' or 'wget -qO- localhost:8080/healthz'. It never runs on the VM itself. Output is capped and secrets are scrubbed; every command is audited.",
+      inputSchema: { app_id: z.string(), command: z.string().min(1).max(4000), timeout_seconds: z.number().int().min(1).max(120).default(30) },
+    },
+    async ({ app_id, command, timeout_seconds }) => onVm(app_id, "exec", { command, timeout_seconds }, timeout_seconds + 15),
+  );
+
+  server.registerTool(
+    "restart_app",
+    {
+      title: "Restart a hosted app",
+      description: "Developer: restart your hosted app's container on your VM (same verified commit).",
+      inputSchema: { app_id: z.string() },
+    },
+    async ({ app_id }) => onVm(app_id, "restart", {}, 60),
   );
 }
 

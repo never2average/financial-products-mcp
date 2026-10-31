@@ -32,6 +32,7 @@ import {
   type User,
 } from "./store.js";
 import { registerMarketplaceTools } from "./marketplace.js";
+import { registerProductRequestInnovatorTools, registerProductRequestTools, requestOffersFor } from "./product-requests.js";
 import { registerVersioningTools } from "./versions.js";
 import { emitProductEvent, ensureRelease, registerRuntimeInnovatorTools, registerRuntimeTools } from "./runtime.js";
 // SDKs and experiences (developer build layer)
@@ -73,6 +74,7 @@ export function createServer(store: Store, user: User | null = null, ctx: AdminC
     return server;
   }
   if (user && ctx.bd) registerConnectTools(server, ctx.bd, user);
+  if (user) registerProductRequestTools(server, store, user);
   if (has("consumer")) registerConsumerTools(server, store, user!);
   if (has("developer")) {
     registerDeveloperTools(server, store, user!);
@@ -84,6 +86,7 @@ export function createServer(store: Store, user: User | null = null, ctx: AdminC
     if (ctx.desk) registerDeskTools(server, store, user!, ctx.desk);
     registerVersioningTools(server, store, user!, productFields);
     registerMarketplaceTools(server, store, user!);
+    registerProductRequestInnovatorTools(server, store, user!);
     registerRuntimeInnovatorTools(server, store, user!);
   }
   if (has("developer") && ctx.builds) registerCodingAgentTools(server, store, user!, ctx.builds);
@@ -431,7 +434,10 @@ function registerConsumerTools(server: McpServer, store: Store, user: User) {
         attribution = a;
       }
       try {
-        return json(await store.createEnrollment(user.id, product_id, amount ?? null, attribution));
+        const enrollment = await store.createEnrollment(user.id, product_id, amount ?? null, attribution);
+        // Enrolling in a product offered for one of the person's requests answers that request.
+        await store.closeProductRequestsAnsweredBy(user.id, product_id);
+        return json(enrollment);
       } catch (e) {
         if (e instanceof DuplicateError) return fail(e.message);
         throw e;
@@ -443,11 +449,12 @@ function registerConsumerTools(server: McpServer, store: Store, user: User) {
     "list_offers",
     {
       title: "My offers",
-      description: "Consumer: live offers from campaigns aimed at you, with the products they're for. Enroll with enroll_in_product and the offer's campaign_id.",
+      description:
+        "Consumer: live offers from campaigns aimed at you, and products innovators offered for your product requests (those carry request_id instead of campaign_id). Enroll with enroll_in_product, passing the offer's campaign_id if it has one.",
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
-    async () => json(await offersFor(store, user)),
+    async () => json([...(await offersFor(store, user)), ...(await requestOffersFor(store, user))]),
   );
 
   server.registerTool(

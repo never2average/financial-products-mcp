@@ -55,19 +55,19 @@ test("controls, policies, risk models and inspections are templates that teach l
     region: "IN",
     regulator: regulator({
       registers: {
-        risks: [{ id: "fraud", title: "Merchant fraud", impact: "high", likelihood: "medium", control_test_frequency: "Quarterly" }],
+        risks: [{ id: "fraud", title: "Seller fraud", impact: "high", likelihood: "medium", control_test_frequency: "Quarterly" }],
         obligations: [{ id: "escrow", title: "Hold funds in escrow", recurrence: "continuous", risk_ref: "fraud", owner: "cco", legal_ref: "pa_guidelines" }],
         reporting_disclosure_filings: [{ id: "escrow_cert", name: "Escrow certificate", category: "filing", frequency: "quarterly", obligation_ref: "escrow" }],
         controls: [
           {
-            id: "merchant_kyc",
-            name: "Merchant due diligence",
-            guidance: "Onboard merchants only after due diligence proportionate to their risk.",
+            id: "seller_kyc",
+            name: "Seller due diligence",
+            guidance: "Onboard sellers only after due diligence proportionate to their risk.",
             legal_ref: "pa_guidelines",
             mitigates: ["fraud"],
             owner: "cco",
             minimum_test_frequency: "half-yearly",
-            fields: [{ key: "risk_tier", label: "Merchant risk tier", type: "enum", required: true, enum_values: ["low", "medium", "high"], guidance: "Tier every merchant" }],
+            fields: [{ key: "risk_tier", label: "Seller risk tier", type: "enum", required: true, enum_values: ["low", "medium", "high"], guidance: "Tier every seller" }],
           },
         ],
         inspection_events: [{ id: "info_request", name: "Information request from the supervisor" }],
@@ -76,15 +76,15 @@ test("controls, policies, risk models and inspections are templates that teach l
         enforcement_actions: [{ title: "Penalty on a PA", url: "https://example.org/penalty" }],
         policies: [
           {
-            id: "merchant_onboarding_policy",
-            name: "Merchant onboarding policy",
+            id: "seller_onboarding_policy",
+            name: "Seller onboarding policy",
             guidance: "Board-approved; reviewed at least annually.",
             review_frequency: "annual",
             approved_by: "board",
             fields: [{ key: "review_frequency", label: "Review frequency", type: "enum", required: true, enum_values: ["annual"] }],
           },
         ],
-        risk_models: [{ id: "merchant_risk_model", name: "Merchant risk scoring", validation_frequency: "yearly" }],
+        risk_models: [{ id: "seller_risk_model", name: "Seller risk scoring", validation_frequency: "yearly" }],
         inspection_history: [{ id: "onsite_inspection", name: "On-site inspection", inspection_type: "onsite_inspection" }],
       },
     }),
@@ -101,17 +101,17 @@ test("controls, policies, risk models and inspections are templates that teach l
   assert.equal(grc.registers.controls[0].minimum_test_frequency, "half_yearly");
 
   // A control template = Mynt's default control schema + the regulator's additions.
-  const control = (await call(inno, "get_template", { region: "IN", regulator_id: "rbi", license_id: "rbi_pa", kind: "control", template_id: "merchant_kyc" })).data;
+  const control = (await call(inno, "get_template", { region: "IN", regulator_id: "rbi", license_id: "rbi_pa", kind: "control", template_id: "seller_kyc" })).data;
   assert.match(control.guidance, /due diligence/);
   const byKey = Object.fromEntries(control.schema.map((x) => [x.key, x]));
   assert.deepEqual(byKey.control_type.enum_values, ["preventive", "detective", "corrective", "directive", "compensating", "recovery"]);
   assert.deepEqual(byKey.test_method.enum_values, ["manual", "automated", "it_dependent_manual"]);
   assert.deepEqual(byKey.last_test_rating.enum_values, ["effective", "partially_effective", "ineffective", "not_tested"]);
   assert.ok(byKey.test_frequency.enum_values.includes("quarterly"));
-  assert.equal(byKey.risk_tier.guidance, "Tier every merchant");
+  assert.equal(byKey.risk_tier.guidance, "Tier every seller");
 
   // Overrides replace a default field by key.
-  const policy = (await call(inno, "get_template", { region: "IN", regulator_id: "rbi", license_id: "rbi_pa", kind: "policy", template_id: "merchant_onboarding_policy" })).data;
+  const policy = (await call(inno, "get_template", { region: "IN", regulator_id: "rbi", license_id: "rbi_pa", kind: "policy", template_id: "seller_onboarding_policy" })).data;
   assert.deepEqual(policy.schema.find((x) => x.key === "review_frequency").enum_values, ["annual"]);
   assert.ok(policy.schema.some((x) => x.key === "sections"));
 

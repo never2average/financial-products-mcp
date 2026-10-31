@@ -1,0 +1,36 @@
+// All configuration comes from the environment. See .env.example.
+
+function required(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`${name} is not set (see .env.example)`);
+  return value;
+}
+
+// Where Mynt's MCP endpoint lives, e.g. https://mynt.example.com/mcp
+export function myntMcpUrl(): URL {
+  return new URL(required("MYNT_MCP_URL"));
+}
+
+// This app's public origin. OAuth redirects are built from it rather than from the request's
+// Host header, which a reverse proxy may rewrite.
+export function appUrl(): URL {
+  return new URL(process.env.APP_URL?.trim() || "http://localhost:3000");
+}
+
+export function oauthRedirectUrl(): string {
+  return new URL("/api/auth/callback", appUrl()).toString();
+}
+
+// Session cookies are Secure unless the app is plain http on localhost (local development).
+export function secureCookies(): boolean {
+  const url = appUrl();
+  return !(url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname));
+}
+
+export function oauthScope(): string {
+  return process.env.MYNT_OAUTH_SCOPE?.trim() || "openid profile email";
+}
+
+export function chatModel(): string {
+  return process.env.CHAT_MODEL?.trim() || "claude-opus-5-5";
+}

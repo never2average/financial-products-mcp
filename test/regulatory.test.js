@@ -230,7 +230,7 @@ test("test_product reports which licence covers a product, and warns when none d
   const inno = await connect(await as("Ines", ["innovator"]));
   const base = {
     name: "Green FD",
-    product_line: "treasury",
+    product_line: "account_operations",
     category: "deposits",
     region: "IN",
     risk_level: "low",

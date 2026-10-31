@@ -2,7 +2,7 @@
   {
     "id": "savings-account",
     "name": "Savings Account",
-    "product_line": "treasury",
+    "product_line": "account_operations",
     "category": "deposits",
     "region": "global",
     "risk_level": "low",
@@ -20,7 +20,7 @@
   {
     "id": "fixed-deposit",
     "name": "Fixed Deposit / Term Deposit",
-    "product_line": "treasury",
+    "product_line": "account_operations",
     "category": "deposits",
     "region": "global",
     "risk_level": "low",
@@ -38,7 +38,7 @@
   {
     "id": "recurring-deposit",
     "name": "Recurring Deposit",
-    "product_line": "treasury",
+    "product_line": "account_operations",
     "category": "deposits",
     "region": "IN",
     "risk_level": "low",
@@ -56,7 +56,7 @@
   {
     "id": "certificate-of-deposit",
     "name": "Certificate of Deposit (CD)",
-    "product_line": "treasury",
+    "product_line": "account_operations",
     "category": "deposits",
     "region": "US",
     "risk_level": "low",
@@ -74,7 +74,7 @@
   {
     "id": "money-market-account",
     "name": "Money Market Account",
-    "product_line": "treasury",
+    "product_line": "account_operations",
     "category": "deposits",
     "region": "US",
     "risk_level": "low",
@@ -326,7 +326,7 @@
   {
     "id": "liquid-fund",
     "name": "Liquid Fund",
-    "product_line": "treasury",
+    "product_line": "wealth",
     "category": "mutual_funds",
     "region": "IN",
     "risk_level": "low",
@@ -344,7 +344,7 @@
   {
     "id": "money-market-fund",
     "name": "Money Market Fund",
-    "product_line": "treasury",
+    "product_line": "wealth",
     "category": "mutual_funds",
     "region": "US",
     "risk_level": "low",
@@ -380,7 +380,7 @@
   {
     "id": "reit",
     "name": "Real Estate Investment Trust (REIT)",
-    "product_line": "wealth",
+    "product_line": "securitization",
     "category": "exchange_traded",
     "region": "global",
     "risk_level": "moderate",
@@ -398,7 +398,7 @@
   {
     "id": "invit",
     "name": "Infrastructure Investment Trust (InvIT)",
-    "product_line": "wealth",
+    "product_line": "securitization",
     "category": "exchange_traded",
     "region": "IN",
     "risk_level": "moderate",
@@ -434,7 +434,7 @@
   {
     "id": "government-bonds",
     "name": "Government Bonds / Treasuries",
-    "product_line": "treasury",
+    "product_line": "credit",
     "category": "bonds",
     "region": "global",
     "risk_level": "low",
@@ -452,7 +452,7 @@
   {
     "id": "corporate-bonds",
     "name": "Corporate Bonds",
-    "product_line": "treasury",
+    "product_line": "credit",
     "category": "bonds",
     "region": "global",
     "risk_level": "moderate",
@@ -470,13 +470,13 @@
   {
     "id": "sovereign-gold-bond",
     "name": "Sovereign Gold Bond (SGB)",
-    "product_line": "treasury",
+    "product_line": "credit",
     "category": "bonds",
     "region": "IN",
     "risk_level": "moderate",
     "liquidity": "low",
     "typical_horizon": "long",
-    "return_type": "market_linked",
+    "return_type": "fixed_interest",
     "regulator": "RBI",
     "description": "Government bond denominated in grams of gold with an additional fixed annual interest.",
     "key_features": [
@@ -488,7 +488,7 @@
   {
     "id": "tips",
     "name": "Treasury Inflation-Protected Securities (TIPS)",
-    "product_line": "treasury",
+    "product_line": "credit",
     "category": "bonds",
     "region": "US",
     "risk_level": "low",
@@ -506,7 +506,7 @@
   {
     "id": "futures-options",
     "name": "Futures & Options (Derivatives)",
-    "product_line": "treasury",
+    "product_line": "derivatives",
     "category": "derivatives",
     "region": "global",
     "risk_level": "very_high",
@@ -704,7 +704,7 @@
   {
     "id": "treasury-bills",
     "name": "Treasury Bills (T-Bills)",
-    "product_line": "treasury",
+    "product_line": "credit",
     "category": "money_market",
     "region": "global",
     "risk_level": "low",
@@ -722,7 +722,7 @@
   {
     "id": "commercial-paper",
     "name": "Commercial Paper",
-    "product_line": "treasury",
+    "product_line": "credit",
     "category": "money_market",
     "region": "IN",
     "risk_level": "moderate",
@@ -740,7 +740,7 @@
   {
     "id": "fx-forward",
     "name": "Foreign Exchange Forward Contract",
-    "product_line": "treasury",
+    "product_line": "derivatives",
     "category": "derivatives",
     "region": "global",
     "risk_level": "high",
@@ -758,7 +758,7 @@
   {
     "id": "interest-rate-swap",
     "name": "Interest Rate Swap",
-    "product_line": "treasury",
+    "product_line": "derivatives",
     "category": "derivatives",
     "region": "global",
     "risk_level": "high",
@@ -776,7 +776,7 @@
   {
     "id": "sweep-account",
     "name": "Sweep-in / Auto-Sweep Account",
-    "product_line": "treasury",
+    "product_line": "account_operations",
     "category": "deposits",
     "region": "global",
     "risk_level": "low",

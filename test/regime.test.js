@@ -78,7 +78,7 @@ async function setup() {
 const rd = {
   id: "everyday-rd",
   name: "Everyday Recurring Deposit",
-  product_line: "treasury",
+  product_line: "account_operations",
   category: "deposits",
   region: "IN",
   risk_level: "low",

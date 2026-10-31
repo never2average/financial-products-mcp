@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { UNDERLYINGS, WRAPPERS } from "./catalog.js";
 import {
   ControlTemplateSchema,
   FilingSchema,
@@ -24,7 +25,19 @@ const Qualification = z
 const actions = <T extends z.ZodTypeAny>(item: T) =>
   z.union([item, z.array(item).min(1)]).transform((v) => (Array.isArray(v) ? v : [v]) as z.infer<T>[]);
 
-export const PRODUCT_ACTIONS = ["issuance", "sale", "purchase", "secondary_sale", "repackaging"] as const;
+// What can be done with a regulated product type. assessment is producing an independent rating,
+// valuation, index, actuarial certification, audit or accreditation of it.
+export const PRODUCT_ACTIONS = [
+  "issuance",
+  "sale",
+  "purchase",
+  "secondary_sale",
+  "repackaging",
+  "advice",
+  "servicing",
+  "underwriting",
+  "assessment",
+] as const;
 const ProductAction = z.enum(PRODUCT_ACTIONS);
 
 // Regulated product types are a region-wide catalogue of their own, not part of any one regulator:
@@ -36,6 +49,8 @@ export const RegulatedProductTypeSchema = z.object({
   description: z.string().default(""),
   type_id: z.string().describe("The Mynt product category this maps to (see list_product_categories)"),
   actions: actions(ProductAction).describe("Every action that can be taken on this product type"),
+  underlying: z.enum(UNDERLYINGS).optional().describe("What it is made of: cash, securities, commodities, real_assets, receivables, risk or data"),
+  wrapper: z.enum(WRAPPERS).optional().describe("A statutory or tax structure around it: statutory_pension, tax_advantaged or government_scheme"),
 });
 
 // A regulator's mapping onto a catalogue product type, with the actions it supervises.

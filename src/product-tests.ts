@@ -78,6 +78,7 @@ function referenceChecks(p: FinancialProduct, ref: ReferenceData): Check[] {
 export function runProductTests(p: FinancialProduct, ref?: ReferenceData): TestReport {
   const text = `${p.name} ${p.description} ${p.key_features.join(" ")}`.toLowerCase();
   const isCredit = p.product_line === "credit";
+  const creditReturns = ["cost_of_credit", "fixed_interest", "variable_interest", "inflation_linked"];
   const insuranceReturns = ["protection", "guaranteed_income", "guaranteed_plus_bonus", "market_linked"];
   const checks: Check[] = [
     oneOf("product_line", p.product_line, PRODUCT_LINES),
@@ -97,11 +98,16 @@ export function runProductTests(p: FinancialProduct, ref?: ReferenceData): TestR
     oneOf("liquidity", p.liquidity, LIQUIDITY),
     oneOf("typical_horizon", p.typical_horizon, HORIZONS),
     oneOf("return_type", p.return_type, RETURN_TYPES),
+    // Credit covers borrowing (cost_of_credit) and debt bought as an investment (bonds, T-bills, CP).
     check(
       "credit_consistency",
-      isCredit === (p.return_type === "cost_of_credit") && (!isCredit || p.risk_level === "not_applicable"),
+      p.return_type === "cost_of_credit"
+        ? isCredit && p.risk_level === "not_applicable"
+        : !isCredit || creditReturns.includes(p.return_type),
       "Credit fields consistent",
-      "Credit products (and only credit products) use return_type 'cost_of_credit' with risk_level 'not_applicable'",
+      isCredit
+        ? `Credit products use return_type ${creditReturns.join(", ")}; with cost_of_credit, risk_level must be 'not_applicable'`
+        : "Only credit products use return_type 'cost_of_credit'",
     ),
     check(
       "insurance_consistency",

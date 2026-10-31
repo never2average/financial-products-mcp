@@ -25,7 +25,20 @@ export const CardChoiceSchema = z.strictObject({
 });
 export type CardChoice = z.infer<typeof CardChoiceSchema>;
 
-export const PRODUCT_LINES = ["credit", "wealth", "insurance", "treasury"] as const;
+// Mynt's product lines, by economic function (the same list as the server's catalog).
+export const PRODUCT_LINES = [
+  "credit",
+  "securitization",
+  "payments",
+  "account_operations",
+  "custody_settlement",
+  "wealth",
+  "insurance",
+  "guarantees_trade",
+  "exchange",
+  "derivatives",
+  "information",
+] as const;
 
 // A product request the model proposes with the local propose_product_request tool. Nothing
 // reaches Mynt until the user taps "Send request" (see /api/request).

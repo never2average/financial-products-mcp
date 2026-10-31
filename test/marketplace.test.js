@@ -40,7 +40,7 @@ async function setup() {
 const product = (over = {}) => ({
   id: "green-fd",
   name: "Green Fixed Deposit",
-  product_line: "treasury",
+  product_line: "account_operations",
   category: "deposits",
   region: "IN",
   risk_level: "low",

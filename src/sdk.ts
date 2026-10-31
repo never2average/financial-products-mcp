@@ -187,6 +187,49 @@ export function openApiDocument(name: string, version: string, baseUrl: string, 
           responses: { "202": { description: "Accepted" }, ...errors },
         },
       },
+      "/products/{id}/contract": {
+        get: {
+          operationId: "getContract",
+          summary: "A product's developer contract (live version)",
+          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string", enum: productIds } }],
+          responses: { "200": { description: "The contract", content: { "application/json": { schema: ref("Contract") } } }, ...errors },
+        },
+      },
+      "/client_sessions": {
+        post: {
+          operationId: "createClientSession",
+          summary: "Mint a short-lived client session for one customer's device (server only)",
+          requestBody: { required: true, content: { "application/json": { schema: ref("ClientSessionRequest") } } },
+          responses: { "201": { description: "The session; send client_secret to the device", content: { "application/json": { schema: ref("ClientSession") } } }, ...errors },
+        },
+      },
+      "/client/offers": {
+        get: {
+          operationId: "clientOffers",
+          summary: "The session's products: offers, documents, consent purposes and startable actions",
+          security: [{ clientSession: [] }],
+          responses: { "200": { description: "Offers", content: { "application/json": { schema: ref("ClientOffers") } } }, ...errors },
+        },
+      },
+      "/client/actions/{action}": {
+        post: {
+          operationId: "startClientAction",
+          summary: "Start a provider-hosted action on the customer's device (its consent must be recorded first)",
+          security: [{ clientSession: [] }],
+          parameters: [{ name: "action", in: "path", required: true, schema: { type: "string" } }],
+          requestBody: { required: true, content: { "application/json": { schema: ref("ClientActionRequest") } } },
+          responses: { "201": { description: "Where to send the customer", content: { "application/json": { schema: ref("ClientActionResult") } } }, ...errors },
+        },
+      },
+      "/client/evidence": {
+        post: {
+          operationId: "recordEvidence",
+          summary: "Record that a document was shown, or consent given or withdrawn",
+          security: [{ clientSession: [] }],
+          requestBody: { required: true, content: { "application/json": { schema: ref("EvidenceRequest") } } },
+          responses: { "201": { description: "Recorded", content: { "application/json": { schema: ref("EvidenceResult") } } }, ...errors },
+        },
+      },
     },
     webhooks: Object.fromEntries(
       WEBHOOK_EVENTS.map((t) => [
@@ -202,7 +245,10 @@ export function openApiDocument(name: string, version: string, baseUrl: string, 
       ]),
     ),
     components: {
-      securitySchemes: { appKey: { type: "http", scheme: "bearer", description: "App key: mynt_live_… or mynt_test_…" } },
+      securitySchemes: {
+        appKey: { type: "http", scheme: "bearer", description: "App key: mynt_live_… or mynt_test_… (your server only)" },
+        clientSession: { type: "http", scheme: "bearer", description: "Client session secret: mcs_live_… or mcs_test_… (a customer's device)" },
+      },
       schemas: {
         Error: { type: "object", properties: { error: { type: "string" }, message: { type: "string" } }, required: ["error", "message"] },
         BuildTerms: {
@@ -233,6 +279,96 @@ export function openApiDocument(name: string, version: string, baseUrl: string, 
           properties: { type: { type: "string", enum: [...EVENT_TYPES] }, product_id: { type: "string", enum: productIds }, screen: { type: "string" } },
           required: ["type", "product_id"],
         },
+        Contract: {
+          type: "object",
+          description: "What the app builds against: offers per segment, actions and where they run, events, consent purposes, documents",
+          properties: {
+            product_id: { type: "string" },
+            version: { type: "integer" },
+            offers: { type: "array", items: { type: "object" } },
+            actions: { type: "array", items: ref("ContractAction") },
+            events: { type: "array", items: { type: "object" } },
+            consent_purposes: { type: "array", items: { type: "string" } },
+            documents: { type: "object", additionalProperties: { type: "string" } },
+            contract_hash: { type: "string" },
+          },
+          required: ["product_id", "version", "offers", "actions", "events", "consent_purposes", "documents", "contract_hash"],
+        },
+        ContractAction: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            name: { type: "string" },
+            surface: { type: "string", enum: ["client", "server", "either"] },
+            flow: { type: "string", enum: ["hosted"] },
+            consent_purpose: { type: ["string", "null"] },
+            component: { type: "string" },
+          },
+          required: ["id", "name", "surface"],
+        },
+        ClientSessionRequest: {
+          type: "object",
+          properties: {
+            product_ids: { type: "array", items: { type: "string", enum: productIds }, minItems: 1 },
+            scopes: { type: "array", items: { type: "string" }, description: "Client actions the device may start (default view_offers)" },
+            customer_ref: { type: "string", description: "Your own opaque reference for the customer" },
+            ttl_seconds: { type: "integer", minimum: 60, maximum: 3600 },
+          },
+          required: ["product_ids"],
+        },
+        ClientSession: {
+          type: "object",
+          properties: {
+            client_secret: { type: "string" },
+            session_id: { type: "string" },
+            expires_at: { type: "string" },
+            product_ids: { type: "array", items: { type: "string" } },
+            scopes: { type: "array", items: { type: "string" } },
+          },
+          required: ["client_secret", "session_id", "expires_at", "product_ids", "scopes"],
+        },
+        ClientOffers: {
+          type: "object",
+          properties: {
+            products: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  product_id: { type: "string" },
+                  name: { type: "string" },
+                  version: { type: "integer" },
+                  contract_hash: { type: "string" },
+                  sales_paused: { type: "boolean" },
+                  offers: { type: "array", items: { type: "object" } },
+                  documents: { type: "object", additionalProperties: { type: "string" } },
+                  consent_purposes: { type: "array", items: { type: "string" } },
+                  actions: { type: "array", items: ref("ContractAction") },
+                },
+                required: ["product_id", "name", "version", "contract_hash", "sales_paused", "offers", "documents", "consent_purposes", "actions"],
+              },
+            },
+            expires_at: { type: "string" },
+          },
+          required: ["products", "expires_at"],
+        },
+        ClientActionRequest: { type: "object", properties: { product_id: { type: "string", enum: productIds } }, required: ["product_id"] },
+        ClientActionResult: {
+          type: "object",
+          properties: { handoff_id: { type: "string" }, redirect_url: { type: "string", format: "uri" }, action: { type: "string" } },
+          required: ["handoff_id", "redirect_url", "action"],
+        },
+        EvidenceRequest: {
+          type: "object",
+          properties: {
+            product_id: { type: "string", enum: productIds },
+            type: { type: "string", enum: ["disclosure_shown", "consent_given", "consent_withdrawn"] },
+            subject: { type: "string" },
+            content_hash: { type: "string", pattern: "^sha256:[0-9a-f]{64}$" },
+          },
+          required: ["product_id", "type", "subject"],
+        },
+        EvidenceResult: { type: "object", properties: { evidence_id: { type: "string" }, recorded_at: { type: "string" } }, required: ["evidence_id", "recorded_at"] },
         WebhookEvent: {
           type: "object",
           properties: { id: { type: "string" }, type: { type: "string", enum: [...WEBHOOK_EVENTS] }, created_at: { type: "string" }, data: { type: "object" } },
@@ -276,6 +412,9 @@ function productData(products: SdkProduct[]) {
     branding: per((p) => terms(p).branding),
     issuers: per((p) => p.issuer ?? ""),
     banned: per((p) => terms(p).banned_phrases),
+    clientActions: per((p) => (p.record.pins?.contract?.actions ?? []).filter((a) => a.surface !== "server").map((a) => a.id)),
+    consents: per((p) => p.record.pins?.contract?.consent_purposes ?? []),
+    documents: per((p) => Object.keys(p.record.pins?.contract?.documents ?? {})),
   };
 }
 
@@ -283,6 +422,100 @@ async function typescriptSchema(doc: object): Promise<string> {
   const { default: openapiTS, astToString } = await import("openapi-typescript");
   const ast = await openapiTS(structuredClone(doc) as never, { silent: true });
   return `// Generated by Mynt with openapi-typescript ${OPENAPI_TYPESCRIPT_VERSION} from ../../openapi.json. Do not edit.\n\n${astToString(ast)}`;
+}
+
+// The browser client: runs on a customer's device with a client session, never an app key.
+function typescriptBrowser(name: string, version: string, products: SdkProduct[]): string {
+  const d = productData(products);
+  const obj = (rows: (readonly [string, unknown])[]) => `{\n${rows.map(([id, v]) => `  ${lit(id)}: ${lit(v)},`).join("\n")}\n}`;
+  return `// Generated by Mynt: ${lit(name)} ${lit(version)}. Do not edit; generate a new release instead.
+// The browser client: runs on a customer's device with a client session (mcs_…) your server minted with
+// createClientSession. It never sees your app key. Uses only web APIs (fetch, WebCrypto).
+import createClient, { type Client } from "openapi-fetch";
+import type { components, paths } from "./schema.js";
+
+export const PRODUCT_IDS = ${lit(d.ids)} as const;
+export type ProductId = (typeof PRODUCT_IDS)[number];
+/** Actions a device may start, per product. */
+export const CLIENT_ACTIONS = ${obj(d.clientActions)} as const;
+/** Consent purposes each product's actions need. */
+export const CONSENT_PURPOSES = ${obj(d.consents)} as const;
+/** Documents each product requires you to show. */
+export const DOCUMENTS = ${obj(d.documents)} as const;
+export type ClientOffers = components["schemas"]["ClientOffers"];
+
+export class MyntBrowserError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "MyntBrowserError";
+  }
+}
+
+/** sha256:<hex> of the exact text you showed, so the evidence proves what was on screen. */
+export async function hashText(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return "sha256:" + [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export interface MyntBrowserOptions {
+  /** The client session secret from your server: mcs_live_… or mcs_test_…. */
+  clientSecret: string;
+  baseUrl?: string;
+  fetch?: (input: Request) => Promise<Response>;
+}
+
+export function createMyntBrowserClient(options: MyntBrowserOptions) {
+  if (/^mynt_(live|test)_/.test(options.clientSecret)) throw new Error("That's an app key: keep it on your server and send the device a client session secret instead");
+  if (!/^mcs_(live|test)_/.test(options.clientSecret)) throw new Error("clientSecret must be a mcs_live_ or mcs_test_ client session secret");
+  const client: Client<paths> = createClient<paths>({
+    baseUrl: (options.baseUrl ?? ${lit(`/v1`)}).replace(/\\/+$/, ""),
+    headers: { Authorization: "Bearer " + options.clientSecret },
+    ...(options.fetch ? { fetch: options.fetch } : {}),
+  });
+  const fail = (response: Response, error: unknown) => {
+    const e = (error ?? {}) as { error?: string; message?: string };
+    return new MyntBrowserError(response.status, e.error ?? "http_" + response.status, e.message ?? response.statusText);
+  };
+  const evidence = async (body: components["schemas"]["EvidenceRequest"]) => {
+    const { data, error, response } = await client.POST("/client/evidence", { body });
+    if (!data) throw fail(response, error);
+    return data;
+  };
+  return {
+    client,
+    /** The session's products: offers per segment, documents to show, consents and startable actions. */
+    async offers(): Promise<ClientOffers> {
+      const { data, error, response } = await client.GET("/client/offers");
+      if (!data) throw fail(response, error);
+      return data;
+    },
+    /** Records that a required document was shown, with a hash of the exact text. */
+    async documentShown(productId: ProductId, document: string, shownText: string) {
+      if (!(DOCUMENTS[productId] as readonly string[]).includes(document)) throw new Error(document + " isn't a document of " + productId);
+      return evidence({ product_id: productId, type: "disclosure_shown", subject: document, content_hash: await hashText(shownText) });
+    },
+    /** Records the customer's consent for a purpose (needed before actions that use their data). */
+    async giveConsent(productId: ProductId, purpose: string, consentText: string) {
+      if (!(CONSENT_PURPOSES[productId] as readonly string[]).includes(purpose)) throw new Error(purpose + " isn't a consent purpose of " + productId);
+      return evidence({ product_id: productId, type: "consent_given", subject: purpose, content_hash: await hashText(consentText) });
+    },
+    async withdrawConsent(productId: ProductId, purpose: string) {
+      return evidence({ product_id: productId, type: "consent_withdrawn", subject: purpose });
+    },
+    /** Starts a provider-hosted action; send the customer to redirect_url. */
+    async startAction<P extends ProductId>(productId: P, action: (typeof CLIENT_ACTIONS)[P][number]) {
+      const { data, error, response } = await client.POST("/client/actions/{action}", { params: { path: { action } }, body: { product_id: productId } });
+      if (!data) throw fail(response, error);
+      return data;
+    },
+  };
+}
+export type MyntBrowserClient = ReturnType<typeof createMyntBrowserClient>;
+`;
 }
 
 // The thin hand-written layer over the openapi-fetch client.
@@ -329,6 +562,12 @@ export const ISSUERS = ${obj(d.issuers)} as const;
 
 /** Words or claims experiences must not use with each product. */
 export const BANNED_PHRASES = ${obj(d.banned)} as const;
+
+/** Actions a customer's device may start, per product (from its developer contract). */
+export const CLIENT_ACTIONS = ${obj(d.clientActions)} as const;
+export type ClientAction<P extends ProductId> = (typeof CLIENT_ACTIONS)[P][number];
+export type Contract = components["schemas"]["Contract"];
+export type ClientSession = components["schemas"]["ClientSession"];
 
 export function disclosuresFor(productId: ProductId): readonly string[] {
   const d = REQUIRED_DISCLOSURES[productId] as readonly string[] | undefined;
@@ -382,6 +621,33 @@ export function createMyntClient(options: MyntClientOptions) {
     async trackEvent(type: EventType, productId: ProductId, screen?: string): Promise<void> {
       const { error, response } = await client.POST("/events", { body: { type, product_id: productId, ...(screen ? { screen } : {}) } });
       if (!response.ok) throw fail(response, error);
+    },
+    /** A product's developer contract (its live version). */
+    async getContract(productId: ProductId): Promise<Contract> {
+      const { data, error, response } = await client.GET("/products/{id}/contract", { params: { path: { id: productId } } });
+      if (!data) throw fail(response, error);
+      return data;
+    },
+    /**
+     * Mints a client session for one customer's device: send client_secret to the device and use the
+     * browser client there. Never call this from a browser; the app key stays on your server.
+     */
+    async createClientSession<P extends ProductId>(
+      productIds: P[],
+      scopes: ClientAction<P>[] = [],
+      opts: { customerRef?: string; ttlSeconds?: number } = {},
+    ): Promise<ClientSession> {
+      for (const s of scopes) if (!productIds.some((p) => (CLIENT_ACTIONS[p] as readonly string[]).includes(s))) throw new Error(s + " isn't a client action of " + productIds.join(", "));
+      const { data, error, response } = await client.POST("/client_sessions", {
+        body: {
+          product_ids: productIds,
+          scopes: ["view_offers", ...scopes.filter((s) => s !== "view_offers")],
+          ...(opts.customerRef ? { customer_ref: opts.customerRef } : {}),
+          ...(opts.ttlSeconds ? { ttl_seconds: opts.ttlSeconds } : {}),
+        },
+      });
+      if (!data) throw fail(response, error);
+      return data;
     },
   };
 }
@@ -495,6 +761,7 @@ export async function generateSdk(opts: { name: string; version: string; languag
     files.push(
       { path: "typescript/src/schema.d.ts", content: await typescriptSchema(doc) },
       { path: "typescript/src/index.ts", content: typescriptHelpers(name, version, baseUrl, products) },
+      { path: "typescript/src/browser.ts", content: typescriptBrowser(name, version, products) },
       {
         path: "typescript/package.json",
         content: jsonFile({
@@ -503,6 +770,10 @@ export async function generateSdk(opts: { name: string; version: string; languag
           type: "module",
           main: "dist/index.js",
           types: "dist/index.d.ts",
+          exports: {
+            ".": { types: "./dist/index.d.ts", default: "./dist/index.js" },
+            "./browser": { types: "./dist/browser.d.ts", default: "./dist/browser.js" },
+          },
           engines: { node: ">=18" },
           scripts: { generate: "openapi-typescript ../openapi.json -o src/schema.d.ts", build: `tsc && node -e "require('node:fs').copyFileSync('src/schema.d.ts', 'dist/schema.d.ts')"` },
           dependencies: { "openapi-fetch": OPENAPI_FETCH_VERSION },

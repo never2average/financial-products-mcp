@@ -199,6 +199,33 @@ export interface GrcRecord {
   created_at: string;
 }
 
+export interface ClientSession {
+  id: string;
+  app_id: string;
+  key_id: string;
+  customer_ref: string | null;
+  product_ids: string[];
+  scopes: string[];
+  sandbox: boolean;
+  expires_at: string;
+  created_at: string;
+  revoked_at: string | null;
+}
+
+export interface ClientEvidence {
+  id: string;
+  app_id: string;
+  session_id: string;
+  product_id: string;
+  contract_hash: string | null;
+  type: "disclosure_shown" | "consent_given" | "consent_withdrawn";
+  subject: string;
+  content_hash: string | null;
+  customer_ref: string | null;
+  sandbox: boolean;
+  created_at: string;
+}
+
 export type ProductStatus = "draft" | "published" | "unpublished";
 export interface Pins {
   version: number;
@@ -902,6 +929,36 @@ const TABLES = `
   DROP INDEX IF EXISTS financial_products.grc_records_current_idx;
   CREATE UNIQUE INDEX IF NOT EXISTS grc_records_current_v2_idx ON financial_products.grc_records
     (entity_id, COALESCE(party_id::text, ''), COALESCE(product_id, ''), COALESCE(licence_id::text, ''), section, key) WHERE status = 'current';
+  -- Client sessions: short-lived, scoped secrets an app's server mints for one customer's device, so
+  -- browsers and phones never hold the app's key. Only the secret's hash is stored.
+  CREATE TABLE IF NOT EXISTS financial_products.client_sessions (
+    id uuid PRIMARY KEY,
+    app_id uuid NOT NULL REFERENCES financial_products.apps(id),
+    key_id uuid NOT NULL REFERENCES financial_products.api_keys(id),
+    secret_hash text NOT NULL UNIQUE,
+    customer_ref text,
+    product_ids text[] NOT NULL,
+    scopes text[] NOT NULL,
+    sandbox boolean NOT NULL,
+    expires_at timestamptz NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    revoked_at timestamptz
+  );
+  -- What a customer's device was shown and agreed to (disclosures, consents), against the contract version.
+  CREATE TABLE IF NOT EXISTS financial_products.client_evidence (
+    id uuid PRIMARY KEY,
+    app_id uuid NOT NULL REFERENCES financial_products.apps(id),
+    session_id uuid NOT NULL REFERENCES financial_products.client_sessions(id),
+    product_id text NOT NULL,
+    contract_hash text,
+    type text NOT NULL CHECK (type IN ('disclosure_shown', 'consent_given', 'consent_withdrawn')),
+    subject text NOT NULL,
+    content_hash text,
+    customer_ref text,
+    sandbox boolean NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS client_evidence_app_idx ON financial_products.client_evidence (app_id, created_at DESC);
   -- Deployment settings admins change from Mynt (e.g. whether anyone may sign up).
   CREATE TABLE IF NOT EXISTS financial_products.settings (
     key text PRIMARY KEY,
@@ -1048,6 +1105,33 @@ const toGrcRecord = (r: Row): GrcRecord => ({
   record: (r.record as Record<string, unknown>) ?? {},
   status: r.status as GrcRecord["status"],
   created_by: (r.created_by as string | null) ?? null,
+  created_at: iso(r.created_at)!,
+});
+
+const toClientSession = (r: Row): ClientSession => ({
+  id: r.id as string,
+  app_id: r.app_id as string,
+  key_id: r.key_id as string,
+  customer_ref: (r.customer_ref as string | null) ?? null,
+  product_ids: (r.product_ids as string[]) ?? [],
+  scopes: (r.scopes as string[]) ?? [],
+  sandbox: Boolean(r.sandbox),
+  expires_at: iso(r.expires_at)!,
+  created_at: iso(r.created_at)!,
+  revoked_at: iso(r.revoked_at),
+});
+
+const toClientEvidence = (r: Row): ClientEvidence => ({
+  id: r.id as string,
+  app_id: r.app_id as string,
+  session_id: r.session_id as string,
+  product_id: r.product_id as string,
+  contract_hash: (r.contract_hash as string | null) ?? null,
+  type: r.type as ClientEvidence["type"],
+  subject: r.subject as string,
+  content_hash: (r.content_hash as string | null) ?? null,
+  customer_ref: (r.customer_ref as string | null) ?? null,
+  sandbox: Boolean(r.sandbox),
   created_at: iso(r.created_at)!,
 });
 
@@ -1626,6 +1710,43 @@ export class Store {
   }
 
   // The active key with this secret, and its app; marks it used (at most once a minute).
+  async createClientSession(
+    s: Pick<ClientSession, "app_id" | "key_id" | "customer_ref" | "product_ids" | "scopes" | "sandbox"> & { ttl_seconds: number },
+  ): Promise<{ session: ClientSession; secret: string }> {
+    const secret = `mcs_${s.sandbox ? "test" : "live"}_${randomBytes(24).toString("base64url")}`;
+    const r = await this.one(
+      `INSERT INTO financial_products.client_sessions (id, app_id, key_id, secret_hash, customer_ref, product_ids, scopes, sandbox, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now() + make_interval(secs => $9)) RETURNING *`,
+      [randomUUID(), s.app_id, s.key_id, hashToken(secret), s.customer_ref, s.product_ids, s.scopes, s.sandbox, s.ttl_seconds],
+    );
+    return { session: toClientSession(r!), secret };
+  }
+
+  // A live (unexpired, unrevoked) session by its secret, with its app and the key that minted it.
+  async clientSessionBySecret(secret: string): Promise<{ session: ClientSession; key: ApiKey; app: App } | undefined> {
+    const r = await this.one(
+      `SELECT * FROM financial_products.client_sessions WHERE secret_hash = $1 AND revoked_at IS NULL AND expires_at > now()`,
+      [hashToken(secret)],
+    );
+    if (!r) return undefined;
+    const [key, app] = await Promise.all([this.getApiKey(r.key_id as string), this.getApp(r.app_id as string)]);
+    if (!key || key.status !== "active" || !app) return undefined;
+    return { session: toClientSession(r), key, app };
+  }
+
+  async recordClientEvidence(e: Omit<ClientEvidence, "id" | "created_at">): Promise<ClientEvidence> {
+    const r = await this.one(
+      `INSERT INTO financial_products.client_evidence (id, app_id, session_id, product_id, contract_hash, type, subject, content_hash, customer_ref, sandbox)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [randomUUID(), e.app_id, e.session_id, e.product_id, e.contract_hash, e.type, e.subject, e.content_hash, e.customer_ref, e.sandbox],
+    );
+    return toClientEvidence(r!);
+  }
+
+  async clientEvidence(appId: string, limit = 200): Promise<ClientEvidence[]> {
+    return (await this.all("SELECT * FROM financial_products.client_evidence WHERE app_id = $1 ORDER BY created_at DESC LIMIT $2", [appId, limit])).map(toClientEvidence);
+  }
+
   async apiKeyBySecret(secret: string): Promise<{ key: ApiKey; app: App } | undefined> {
     const r = await this.one(
       `UPDATE financial_products.api_keys SET last_used_at = CASE

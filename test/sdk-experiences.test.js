@@ -188,6 +188,7 @@ test("generated SDK: OpenAPI contract, openapi-fetch TypeScript client, Python h
     "python/generate.sh",
     "python/mynt_helpers.py",
     "typescript/package.json",
+    "typescript/src/browser.ts",
     "typescript/src/index.ts",
     "typescript/src/schema.d.ts",
     "typescript/tsconfig.json",

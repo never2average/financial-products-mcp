@@ -385,6 +385,25 @@ function verifyMynt(secret, header, rawBody, toleranceSec = 300) {
 - `rollback_app(app_id, version)` makes an earlier snapshot current again, if it still passes the products' current terms.
 - `publish_app` records a first release (`1.0.0`) if an app has none.
 
+**Client sessions: SDKs for servers and for devices.** An app key belongs on the developer's server. A customer's browser or phone gets a client session instead.
+- **`POST /v1/client_sessions`** (app key, server only: refused when sent from a browser) mints a session for one customer:
+  - its products, each of which needs a developer contract;
+  - its scopes: client actions taken from those contracts;
+  - a lifetime of at most an hour.
+
+  It returns a `mcs_…` secret to send to the device.
+- **The device calls `/v1/client/*`** with that secret, and only from the origins the app's key allows:
+  - `GET /v1/client/offers` returns the contract's offers, documents, consent purposes and the actions the session may start.
+  - `POST /v1/client/evidence` records that a document was shown (with a hash of the exact text), or that consent was given or withdrawn. It only accepts the contract's own documents and consent purposes.
+  - `POST /v1/client/actions/{action}` starts a provider-hosted flow and returns where to send the customer. It's refused until the action's consent is recorded in that session, and again after the consent is withdrawn.
+
+  Evidence is stored against the contract version, ready for the developer's GRC folder.
+- **Servers read a contract** with `GET /v1/products/{id}/contract`.
+
+**Generated SDKs.** A generated TypeScript SDK now has two entry points:
+- **The default (server) entry** adds `createClientSession` and `getContract`. A session's scopes are typed to the client actions of its products.
+- **`./browser`** is `createMyntBrowserClient({ clientSecret })`, with `offers`, `documentShown`, `giveConsent`, `withdrawConsent` and `startAction`. It uses only web APIs (fetch and WebCrypto) and refuses an app key. Its typing won't let a device start a server-only action.
+
 **Analytics.**
 - Developers: `get_app_metrics(app_id, from?, to?, include_sandbox?)` gives views, clicks and hand-offs (started, completed, failed) per product and per day. It also gives conversion (completed hand-offs per view) and the hand-off completion rate. Only live traffic counts unless you set `include_sandbox`.
 - Innovators: `get_product_distribution_metrics(product_id)` shows how one of their products performs across every app that shows it.

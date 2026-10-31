@@ -237,6 +237,17 @@ export function createRuntimeApi(store: Store, opts: RuntimeApiOptions = {}) {
       });
       return send(res, 201, { handoff_id: h.id, redirect_url: h.redirect_url, action: a.id, sandbox: session.sandbox }, cors);
     }
+    const journey = path.match(/^\/v1\/client\/journeys\/([a-z][a-z0-9_]*)$/);
+    if (journey) {
+      allow("GET");
+      const saved = (await store.journeysOf(app.id)).find((j) => j.journey_id === journey[1]);
+      if (!saved) throw new ApiError(404, "journey_not_found", `This app has no journey '${journey[1]}'`);
+      const record = await inSession(saved.product_id);
+      // Served only while it's built on the live contract; a new contract means re-checking it.
+      if (record.pins.contract.contract_hash !== saved.contract_hash)
+        throw new ApiError(409, "journey_outdated", `'${saved.journey_id}' was checked against an earlier contract of '${saved.product_id}'; the developer must check and save it again`);
+      return send(res, 200, { ...saved.spec, contract_hash: saved.contract_hash }, cors);
+    }
     if (path === "/v1/client/evidence") {
       allow("POST");
       const body = parse(EvidenceBody, await readJson(req, maxBody));

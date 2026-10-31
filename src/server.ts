@@ -43,6 +43,7 @@ import { registerTakeRateAdminTools, registerTakeRateTools } from "./take-rates.
 import { emitProductEvent, ensureRelease, registerRuntimeInnovatorTools, registerRuntimeTools } from "./runtime.js";
 // SDKs and experiences (developer build layer)
 import { experienceStructure, registerBuildTools } from "./build.js";
+import { registerJourneyTools } from "./journeys-tools.js";
 
 // The name MCP clients show for this server.
 export const SERVER_NAME = "mynt";
@@ -85,6 +86,7 @@ export function createServer(store: Store, user: User | null = null, ctx: AdminC
   if (has("developer")) {
     registerDeveloperTools(server, store, user!);
     registerBuildTools(server, store, user!);
+    registerJourneyTools(server, store, user!);
     registerGtmTools(server, store, user!);
   }
   if (has("innovator")) {

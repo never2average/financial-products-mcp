@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { DATA_DICTIONARY, isDataField, type CaptureMethod, type Sensitivity } from "./data-dictionary.js";
 import type { Definition } from "./definition.js";
 
 // The developer contract: what a developer may build against, derived from a product's v2 definition and
@@ -29,6 +30,7 @@ export interface ContractAction {
   returns?: unknown;
   idempotent?: boolean;
   data: "public" | "personal";
+  data_requirements?: { field: string; known: boolean; sensitivity?: Sensitivity; capture?: CaptureMethod[] }[];
 }
 
 export interface DeveloperContract {
@@ -98,6 +100,10 @@ export function deriveContract(def: Definition, version: number): DeveloperContr
       inputs: h.sends,
       returns: h.returns,
       data: purpose ? "personal" : "public",
+      // The customer data the handoff sends, as data dictionary fields (unknown names are flagged).
+      data_requirements: ((h.sends as { required?: unknown } | undefined)?.required as string[] | undefined ?? [])
+        .filter((f) => typeof f === "string")
+        .map((f) => (isDataField(f) ? { field: f, known: true, sensitivity: DATA_DICTIONARY[f].sensitivity, capture: DATA_DICTIONARY[f].capture } : { field: f, known: false })),
     });
   }
   const occursOn = (id: string) => conns.find((c) => c.type === "occurs_on" && c.from.id === id)?.to.id;

@@ -404,6 +404,30 @@ function verifyMynt(secret, header, rawBody, toleranceSec = 300) {
 - **The default (server) entry** adds `createClientSession` and `getContract`. A session's scopes are typed to the client actions of its products.
 - **`./browser`** is `createMyntBrowserClient({ clientSecret })`, with `offers`, `documentShown`, `giveConsent`, `withdrawConsent` and `startAction`. It uses only web APIs (fetch and WebCrypto) and refuses an app key. Its typing won't let a device start a server-only action.
 
+**Journeys.** A journey is how an app walks a customer through a product, written as a declarative spec rather than code. It's a graph of steps, and each step does one thing:
+- a screen of elements: offer cards, documents, data fields, text or an outcome;
+- a consent capture;
+- one of the provider's hosted actions;
+- a wait for a lifecycle event.
+
+Branches use `on: { outcome: step }`.
+
+**Data fields come from Mynt's data dictionary** (`get_data_dictionary`). Each field has a type and validation, a sensitivity level, and the ways it may be captured: typed, a secure field, a document upload, Account Aggregator, DigiLocker or CKYC. Each contract action lists the dictionary fields it needs (its `data_requirements`, taken from its handoff's input schema).
+
+**`check_journey` checks every path through the journey:**
+- consent is captured before any personal data;
+- every document the product requires is shown before any hosted action;
+- every field an action needs is collected before it;
+- no field is collected that no action needs;
+- sensitive fields go only in secure inputs;
+- every step is reachable, and every path ends.
+
+Each error names the step and the fix. The check also lists every path through the journey, for simulation.
+
+**Tools.** `get_default_journey` builds the minimum compliant journey from the product's contract, so developers start from something that works. `preview_journey` renders an HTML outline. `save_journey` stores a journey on an app, and `list_journeys` shows whether each saved journey is still current.
+
+**Serving to devices.** Devices fetch a saved journey with `GET /v1/client/journeys/{journey}`. It's served only while it was checked against the product's live contract. Once a new contract is published, it returns `journey_outdated` until the developer checks and saves it again.
+
 **Analytics.**
 - Developers: `get_app_metrics(app_id, from?, to?, include_sandbox?)` gives views, clicks and hand-offs (started, completed, failed) per product and per day. It also gives conversion (completed hand-offs per view) and the hand-off completion rate. Only live traffic counts unless you set `include_sandbox`.
 - Innovators: `get_product_distribution_metrics(product_id)` shows how one of their products performs across every app that shows it.

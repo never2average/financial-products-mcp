@@ -226,6 +226,15 @@ export interface ClientEvidence {
   created_at: string;
 }
 
+export interface AppJourney {
+  app_id: string;
+  journey_id: string;
+  product_id: string;
+  contract_hash: string;
+  spec: Record<string, unknown>;
+  updated_at: string;
+}
+
 export type ProductStatus = "draft" | "published" | "unpublished";
 export interface Pins {
   version: number;
@@ -959,6 +968,16 @@ const TABLES = `
     created_at timestamptz NOT NULL DEFAULT now()
   );
   CREATE INDEX IF NOT EXISTS client_evidence_app_idx ON financial_products.client_evidence (app_id, created_at DESC);
+  -- Apps' journeys: declarative specs checked against one version of a product's developer contract.
+  CREATE TABLE IF NOT EXISTS financial_products.app_journeys (
+    app_id uuid NOT NULL REFERENCES financial_products.apps(id),
+    journey_id text NOT NULL,
+    product_id text NOT NULL,
+    contract_hash text NOT NULL,
+    spec jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (app_id, journey_id)
+  );
   -- Deployment settings admins change from Mynt (e.g. whether anyone may sign up).
   CREATE TABLE IF NOT EXISTS financial_products.settings (
     key text PRIMARY KEY,
@@ -1106,6 +1125,15 @@ const toGrcRecord = (r: Row): GrcRecord => ({
   status: r.status as GrcRecord["status"],
   created_by: (r.created_by as string | null) ?? null,
   created_at: iso(r.created_at)!,
+});
+
+const toAppJourney = (r: Row): AppJourney => ({
+  app_id: r.app_id as string,
+  journey_id: r.journey_id as string,
+  product_id: r.product_id as string,
+  contract_hash: r.contract_hash as string,
+  spec: r.spec as Record<string, unknown>,
+  updated_at: iso(r.updated_at)!,
 });
 
 const toClientSession = (r: Row): ClientSession => ({
@@ -1741,6 +1769,20 @@ export class Store {
       [randomUUID(), e.app_id, e.session_id, e.product_id, e.contract_hash, e.type, e.subject, e.content_hash, e.customer_ref, e.sandbox],
     );
     return toClientEvidence(r!);
+  }
+
+  async saveJourney(j: Omit<AppJourney, "updated_at">): Promise<AppJourney> {
+    const r = await this.one(
+      `INSERT INTO financial_products.app_journeys (app_id, journey_id, product_id, contract_hash, spec) VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (app_id, journey_id) DO UPDATE SET product_id = EXCLUDED.product_id, contract_hash = EXCLUDED.contract_hash, spec = EXCLUDED.spec, updated_at = now()
+       RETURNING *`,
+      [j.app_id, j.journey_id, j.product_id, j.contract_hash, JSON.stringify(j.spec)],
+    );
+    return toAppJourney(r!);
+  }
+
+  async journeysOf(appId: string): Promise<AppJourney[]> {
+    return (await this.all("SELECT * FROM financial_products.app_journeys WHERE app_id = $1 ORDER BY journey_id", [appId])).map(toAppJourney);
   }
 
   async clientEvidence(appId: string, limit = 200): Promise<ClientEvidence[]> {

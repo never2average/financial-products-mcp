@@ -15,6 +15,8 @@ export const WEBHOOK_EVENTS = [
   "product.version_published",
   "product.unpublished",
   "product.suspended",
+  "product.drifted",
+  "product.drift_cleared",
   "access.approved",
   "access.revoked",
   "request.decided",
@@ -378,7 +380,7 @@ export function registerRuntimeTools(server: McpServer, store: Store, user: User
     {
       title: "Register a webhook",
       description:
-        "Developer: receive events about one of your apps' products at an https URL: product.version_published, product.unpublished, product.suspended, access.approved, access.revoked, request.decided, handoff.completed, handoff.failed. Each POST carries a Mynt-Signature header (t=<unix>,v1=<HMAC-SHA256 of \"t.body\" with the secret>). The secret is shown once.",
+        "Developer: receive events about one of your apps' products at an https URL: product.version_published, product.unpublished, product.suspended, product.drifted, product.drift_cleared, access.approved, access.revoked, request.decided, handoff.completed, handoff.failed. Each POST carries a Mynt-Signature header (t=<unix>,v1=<HMAC-SHA256 of \"t.body\" with the secret>). The secret is shown once.",
       inputSchema: { app_id: z.string(), url: z.string(), events: z.array(z.enum(WEBHOOK_EVENTS)).min(1) },
     },
     async ({ app_id, url, events }) => {

@@ -177,11 +177,14 @@ test("regulated product types carry an optional underlying and wrapper", async (
   await call(admin, "define_regulated_product_type", { region: "IN", product_type: sgb });
   await call(admin, "admin_set_product_composition", {
     product_id: "sovereign-gold-bond",
-    components: [{ region: "IN", primitive: "in_sgb", action: "issuance", role: "the bond itself" }],
+    components: [{ key: "bond", country: "in", primitive: "credit", action: "issuance", underlying: "commodities", wrapper: "government_scheme" }],
   });
   const regime = (await call(admin, "get_product_regime", { product_id: "sovereign-gold-bond" })).data;
-  assert.equal(regime.regions[0].components[0].primitive_info.underlying, "commodities");
-  assert.equal(regime.regions[0].components[0].primitive_info.wrapper, "government_scheme");
+  assert.deepEqual(regime.regions[0].components[0].perimeter.map((t) => t.id), ["in_sgb"]);
+  // Without the wrapper, the same credit issuance falls outside the scheme's perimeter.
+  await call(admin, "admin_set_product_composition", { product_id: "sovereign-gold-bond", components: [{ key: "bond", country: "in", primitive: "credit", action: "issuance" }] });
+  const plain = (await call(admin, "get_product_regime", { product_id: "sovereign-gold-bond" })).data;
+  assert.equal(plain.regions[0].components[0].perimeter.some((t) => t.id === "in_sgb"), false);
 });
 
 test("take rates scale with a product's compliance and servicing workload, within the admin's floor and cap", async () => {
@@ -245,8 +248,8 @@ test("take rates scale with a product's compliance and servicing workload, withi
   const composed = await call(owner, "set_product_composition", {
     product_id: "green-fd",
     components: [
-      { region: "IN", primitive: "in_term_deposit", action: "issuance", role: "holds the deposit" },
-      { region: "IN", primitive: "in_mandate", action: "servicing", role: "collects and reconciles the instalments" },
+      { key: "deposit", country: "in", primitive: "account_operations", action: "issuance", underlying: "cash", provider: { by: "self" } },
+      { key: "mandate", country: "in", primitive: "account_operations", action: "servicing", provider: { by: "self" } },
     ],
   });
   assert.equal(composed.isError, false, JSON.stringify(composed.data));
@@ -267,8 +270,8 @@ test("take rates scale with a product's compliance and servicing workload, withi
   assert.deepEqual(
     got.workload.components.map((c) => [c.primitive, c.action, c.base_points, c.grc_points, c.servicing_points, c.points]),
     [
-      ["in_term_deposit", "issuance", 1, 0.5, 0, 1.5],
-      ["in_mandate", "servicing", 1, 0.5, 1, 2.5],
+      ["account_operations", "issuance", 1, 0.5, 0, 1.5],
+      ["account_operations", "servicing", 1, 0.5, 1, 2.5],
     ],
   );
   assert.deepEqual(got.workload.components[0].licences, [{ regulator_id: "rbi", license_id: "rbi_bank", obligations: 2, filings: 1, controls: 2 }]);

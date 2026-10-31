@@ -7,9 +7,11 @@ import { createServer } from "../dist/server.js";
 import { Store } from "../dist/store.js";
 import { CATALOG } from "./helpers.js";
 
+const db = (pg) => ({ query: (s, p) => pg.query(s, p), exec: (s) => pg.exec(s), close: () => pg.close() });
+
 async function setup() {
   const pg = new PGlite();
-  const store = await Store.open({ query: (s, p) => pg.query(s, p), exec: (s) => pg.exec(s), close: () => pg.close() }, CATALOG);
+  const store = await Store.open(db(pg), CATALOG);
   const connect = async (user) => {
     const [c, s] = InMemoryTransport.createLinkedPair();
     await createServer(store, user).connect(s);
@@ -29,28 +31,34 @@ async function setup() {
   };
   const { user: adminUser } = await store.createUser("Ada", ["admin"]);
   const admin = await connect(adminUser);
-  // Two regulated primitives and a regulator that supervises them, with a bank licence that may do both and
-  // a payment-aggregator licence that may only sell mandates.
+  // Mandates are payments; term deposits are account operations. A bank licence may do both and mandates a
+  // compliance officer with ten years' experience and a statutory auditor; a payment aggregator may only sell
+  // mandates and mandates nobody.
+  await call(admin, "define_product_category", { id: "mandates", name: "Payment mandates", product_lines: ["payments"] });
   for (const t of [
     { id: "in_term_deposit", name: "Term deposit", type_id: "deposits", actions: ["issuance", "sale"] },
-    { id: "in_recurring_mandate", name: "Recurring payment mandate", type_id: "deposits", actions: ["issuance", "sale"] },
+    { id: "in_recurring_mandate", name: "Recurring payment mandate", type_id: "mandates", actions: ["issuance", "sale"] },
   ]) {
     assert.equal((await call(admin, "define_regulated_product_type", { region: "IN", product_type: { ...t, description: "" } })).isError, false);
   }
-  const grc = (grants) => ({
+  const grc = (grants, stakeholders = { internal: [], external: [] }) => ({
     registers: { obligations: [], reporting_disclosure_filings: [], risks: [], controls: [], inspection_events: [] },
     repositories: { regulatory_communications: [], enforcement_actions: [], press_releases: [], policies: [], risk_models: [], inspection_history: [] },
     allowed_product_types: grants,
     allowed_customer_segments: [],
-    mandatory_stakeholders: { internal: [], external: [] },
+    mandatory_stakeholders: stakeholders,
   });
+  const bankStakeholders = {
+    internal: [{ id: "rbi_bank_compliance_officer", name: "Chief compliance officer", qualification: { years_experience: 10 }, action: "compliance" }],
+    external: [{ id: "rbi_bank_statutory_auditor", name: "Statutory auditor", qualification: {}, action: "audit" }],
+  };
   const regulator = {
     id: "rbi",
     name: "Reserve Bank of India",
     short_name: "RBI",
     scope: { product_types: [{ id: "in_term_deposit" }, { id: "in_recurring_mandate", actions: ["sale"] }], customer_personas: [] },
     license_types: [
-      { _id: "rbi_bank", name: "Bank", scope: "", application_procedure: [], grc: grc(["in_term_deposit", "in_recurring_mandate"]) },
+      { _id: "rbi_bank", name: "Bank", scope: "", application_procedure: [], grc: grc(["in_term_deposit", "in_recurring_mandate"], bankStakeholders) },
       { _id: "rbi_pa", name: "Payment aggregator", scope: "", application_procedure: [], grc: grc([{ id: "in_recurring_mandate", actions: ["sale"] }]) },
     ],
   };
@@ -60,19 +68,21 @@ async function setup() {
     region: "IN",
     instrument: { id: "in_banking_regulation_act", kind: "act", title: "Banking Regulation Act", issued_by: "parliament", status: "in_force", applies_to: { regulators: ["rbi"] } },
   });
-  // A firm with a verified bank licence.
-  const innovator = async (name, licence) => {
+  const licence = async (entityId, by, licenceId) => {
+    const held = await store.registerLicense(by, { entity_id: entityId, region: "IN", regulator_id: "rbi", license_id: licenceId, registration_number: `${licenceId}-1`, valid_from: null, valid_to: null });
+    await store.reviewLicense(held.id, "verified", adminUser.id, "ok");
+    return held;
+  };
+  // A firm with an innovator acting for it and, optionally, a verified licence.
+  const innovator = async (name, licenceId) => {
     const { user } = await store.createUser(name, ["innovator"]);
-    const entity = await store.createEntity(user.id, { name: `${name} Bank`, registration_numbers: {}, regions: ["IN"] });
+    const entity = await store.createEntity(user.id, { name: `${name} Bank`, registration_numbers: {}, regions: ["IN"], legal_form: "company_public", incorporation: { country: "in" } });
     await store.setUserEntity(user.id, entity.id);
     user.entity_id = entity.id;
-    if (licence) {
-      const held = await store.registerLicense(user.id, { entity_id: entity.id, region: "IN", regulator_id: "rbi", license_id: licence, registration_number: "X-1", valid_from: null, valid_to: null });
-      await store.reviewLicense(held.id, "verified", adminUser.id, "ok");
-    }
-    return { user, client: await connect(user) };
+    const held = licenceId ? await licence(entity.id, user.id, licenceId) : null;
+    return { user, entity, held, client: await connect(user) };
   };
-  return { store, admin, call, connect, innovator };
+  return { pg, store, admin, adminUser, call, connect, innovator, licence };
 }
 
 const rd = {
@@ -89,84 +99,285 @@ const rd = {
   description: "A recurring deposit that collects a small amount every day from a mandate and pays a fixed rate.",
   key_features: ["Daily instalments", "Fixed rate"],
 };
-const components = [
-  { region: "IN", primitive: "in_term_deposit", action: "issuance", role: "holds the deposit and pays interest", provided_by: "self" },
-  { region: "IN", primitive: "in_recurring_mandate", action: "sale", role: "collects the daily instalment", provided_by: "partner", partner_name: "A sponsor bank" },
-];
 
-test("a product's regime follows from its components: who supervises, which licences, the law, and coverage", async () => {
-  const { call, innovator, connect } = await setup();
-  const { client } = await innovator("Ines", "rbi_bank");
-  assert.equal((await call(client, "create_product", rd)).isError, false);
-  const set = await call(client, "set_product_composition", { product_id: "everyday-rd", components });
+// A bank with its roster complete (compliance officer + auditor) and a partner aggregator on it.
+async function bankWithRoster(ctx) {
+  const { call, store, innovator, licence } = ctx;
+  const bank = await innovator("Ines", "rbi_bank");
+  const partnerEntity = await store.createEntity(null, { name: "Pay Partner", registration_numbers: {}, regions: ["IN"] });
+  const partnerLicence = await licence(partnerEntity.id, bank.user.id, "rbi_pa");
+  const officer = await call(bank.client, "add_party", {
+    kind: "internal",
+    person: { name: "Rhea Rao", identifiers: [{ scheme: "in_pan", value: "ABCDE1234F" }] },
+    fills: [{ licence_id: bank.held.id, stakeholder: "rbi_bank_compliance_officer" }],
+    attributes: { years_experience: 12 },
+  });
+  assert.equal(officer.isError, false, JSON.stringify(officer.data));
+  const auditor = await call(bank.client, "add_party", {
+    kind: "external",
+    new_legal_entity: { name: "Audit & Co LLP", legal_form: "llp", incorporation: { country: "in", subdivision: "in-mh" }, identifiers: [{ scheme: "in_llpin", value: "AAA-1234" }] },
+    fills: [{ licence_id: bank.held.id, stakeholder: "rbi_bank_statutory_auditor" }],
+  });
+  assert.equal(auditor.isError, false, JSON.stringify(auditor.data));
+  const partner = await call(bank.client, "add_party", { kind: "external", legal_entity_id: partnerEntity.id, relationship: "mandate_collection_agreement" });
+  assert.equal(partner.isError, false, JSON.stringify(partner.data));
+  return { ...bank, officer: officer.data, auditor: auditor.data, partner: partner.data, partnerEntity, partnerLicence };
+}
+
+const composition = (b) => ({
+  components: [
+    { key: "deposit", country: "in", primitive: "account_operations", action: "issuance", underlying: "cash", provider: { by: "self" } },
+    { key: "mandate", country: "in", primitive: "payments", action: "sale", provider: { by: "party", party_id: b.partner.id } },
+  ],
+  parties: [
+    { party_id: b.officer.id, for: "deposit" },
+    { party_id: b.auditor.id, for: "deposit" },
+  ],
+});
+
+async function publishRd(ctx, b, comp = composition(b)) {
+  const { call } = ctx;
+  assert.equal((await call(b.client, "create_product", rd)).isError, false);
+  const set = await call(b.client, "set_product_composition", { product_id: "everyday-rd", ...comp });
+  assert.equal(set.isError, false, JSON.stringify(set.data));
+  await call(b.client, "test_product", { id: "everyday-rd" });
+  return call(b.client, "publish_product", { id: "everyday-rd" });
+}
+
+test("the primitive is the line: a component's perimeter, supervisors, licences, law and provider follow from it", async () => {
+  const ctx = await setup();
+  const b = await bankWithRoster(ctx);
+  assert.equal((await ctx.call(b.client, "create_product", rd)).isError, false);
+  const set = await ctx.call(b.client, "set_product_composition", { product_id: "everyday-rd", ...composition(b) });
   assert.equal(set.isError, false, JSON.stringify(set.data));
   const [inRegion] = set.data.regions;
-  const deposit = inRegion.components.find((c) => c.primitive === "in_term_deposit");
+  const deposit = inRegion.components.find((c) => c.key === "deposit");
+  assert.equal(deposit.primitive, "account_operations");
+  assert.deepEqual(deposit.perimeter.map((p) => p.id), ["in_term_deposit"]);
   assert.deepEqual(deposit.supervised_by.map((s) => s.regulator_id), ["rbi"]);
   assert.deepEqual(deposit.licences.map((l) => l.license_id), ["rbi_bank"]);
   assert.ok(deposit.law.some((l) => l.legal_ref === "in_banking_regulation_act"));
   assert.equal(deposit.coverage.status, "covered");
-  const mandate = inRegion.components.find((c) => c.primitive === "in_recurring_mandate");
+  assert.equal(deposit.coverage.by[0].licence_id, b.held.id);
+  assert.equal(deposit.stakeholders.complete, true);
+  assert.deepEqual(deposit.stakeholders.unbound, []);
+
+  const mandate = inRegion.components.find((c) => c.key === "mandate");
+  assert.deepEqual(mandate.perimeter.map((p) => p.id), ["in_recurring_mandate"]);
   assert.deepEqual(mandate.licences.map((l) => l.license_id).sort(), ["rbi_bank", "rbi_pa"]);
-  assert.deepEqual(mandate.coverage, { status: "partner_declared", partner: "A sponsor bank" });
+  assert.equal(mandate.provider_entity_id, b.partnerEntity.id);
+  assert.equal(mandate.coverage.status, "covered");
+  assert.equal(mandate.coverage.by[0].license_id, "rbi_pa");
+  assert.equal(mandate.stakeholders.enforced, false, "a partner's own roster is the partner's to keep");
   assert.equal(inRegion.covered, true);
 
-  const tested = (await call(client, "test_product", { id: "everyday-rd" })).data;
-  assert.equal(tested.checks.find((c) => c.name === "composition_coverage").status, "warn", "a declared partner isn't verified on Mynt");
-  const published = await call(client, "publish_product", { id: "everyday-rd" });
-  assert.equal(published.isError, false, JSON.stringify(published.data));
-
-  const guest = await connect(null);
-  const regime = (await call(guest, "get_product_regime", { product_id: "everyday-rd" })).data;
-  assert.equal(regime.composed, true);
-  assert.equal(regime.regions[0].components.length, 2);
-});
-
-test("publishing stops when a component the firm provides isn't covered by its licences", async () => {
-  const { call, innovator } = await setup();
-  const { client } = await innovator("Omar", "rbi_pa"); // may sell mandates, may not take deposits
-  await call(client, "create_product", rd);
-  const set = await call(client, "set_product_composition", { product_id: "everyday-rd", components: [{ ...components[0] }, { ...components[1], provided_by: "self", partner_name: null }] });
-  assert.equal(set.isError, false, JSON.stringify(set.data));
-  const byPrimitive = Object.fromEntries(set.data.regions[0].components.map((c) => [c.primitive, c.coverage]));
-  assert.equal(byPrimitive.in_recurring_mandate.status, "covered");
-  assert.equal(byPrimitive.in_term_deposit.status, "uncovered");
-  assert.match(byPrimitive.in_term_deposit.reason, /rbi_bank/);
-  const tested = (await call(client, "test_product", { id: "everyday-rd" })).data;
-  assert.equal(tested.checks.find((c) => c.name === "composition_coverage").status, "fail");
-  const refused = await call(client, "publish_product", { id: "everyday-rd" });
-  assert.equal(refused.isError, true);
-  assert.match(refused.data.error, /Not covered: in_term_deposit \(issuance, IN\)/);
-});
-
-test("compositions are checked against the region's catalogue", async () => {
-  const { call, innovator } = await setup();
-  const { client } = await innovator("Ines", "rbi_bank");
-  await call(client, "create_product", rd);
-  const bad = await call(client, "set_product_composition", {
+  // A cross-line primitive no regulated type covers yet is unmodelled, and blocks publishing.
+  const fx = await ctx.call(b.client, "set_product_composition", {
     product_id: "everyday-rd",
-    components: [
-      { region: "IN", primitive: "in_unknown_thing", action: "sale", role: "does something", provided_by: "self" },
-      { region: "IN", primitive: "in_term_deposit", action: "repackaging", role: "repackages it", provided_by: "self" },
-      { region: "US", primitive: "in_term_deposit", action: "issuance", role: "wrong region", provided_by: "self" },
-      { region: "IN", primitive: "in_recurring_mandate", action: "sale", role: "no partner named", provided_by: "partner" },
+    components: [...composition(b).components, { key: "fx", country: "in", primitive: "exchange", action: "issuance", provider: { by: "self" } }],
+    parties: composition(b).parties,
+  });
+  assert.equal(fx.data.regions[0].components.find((c) => c.key === "fx").coverage.status, "unmodelled");
+  assert.equal(fx.data.regions[0].covered, false);
+});
+
+test("a firm's roster is reconciled against the stakeholders its licences mandate", async () => {
+  const ctx = await setup();
+  const { call } = ctx;
+  const b = await ctx.innovator("Omar", "rbi_bank");
+  let mine = (await call(b.client, "get_my_entity")).data;
+  assert.equal(mine.legal_form, "company_public");
+  assert.deepEqual(mine.incorporation, { country: "in" });
+  const [bank] = mine.reconciliation.licences;
+  assert.equal(bank.mandated, 2);
+  assert.deepEqual(bank.missing.map((m) => m.stakeholder).sort(), ["rbi_bank_compliance_officer", "rbi_bank_statutory_auditor"]);
+  assert.equal(mine.reconciliation.complete, false);
+
+  // A junior officer fills the slot but fails its criteria; an officer with no stated experience is unconfirmed.
+  const junior = await call(b.client, "add_party", {
+    kind: "internal",
+    person: { name: "Jay" },
+    fills: [{ licence_id: b.held.id, stakeholder: "rbi_bank_compliance_officer" }],
+    attributes: { years_experience: 3 },
+  });
+  mine = (await call(b.client, "get_my_entity")).data;
+  assert.deepEqual(mine.reconciliation.licences[0].unqualified, [{ stakeholder: "rbi_bank_compliance_officer", party_id: junior.data.id, failed: ["years_experience"] }]);
+  await call(b.client, "end_party", { party_id: junior.data.id });
+  const unknown = await call(b.client, "add_party", { kind: "internal", person: { name: "Uma" }, fills: [{ licence_id: b.held.id, stakeholder: "rbi_bank_compliance_officer" }] });
+  mine = (await call(b.client, "get_my_entity")).data;
+  assert.deepEqual(mine.reconciliation.licences[0].filled, [{ stakeholder: "rbi_bank_compliance_officer", party_ids: [unknown.data.id] }]);
+  assert.deepEqual(mine.reconciliation.licences[0].unconfirmed[0].criteria, ["years_experience"]);
+
+  // Fills are checked against the regulatory model and the party's kind.
+  const bad = await call(b.client, "add_party", {
+    kind: "internal",
+    person: { name: "Zed" },
+    fills: [
+      { licence_id: b.held.id, stakeholder: "rbi_bank_statutory_auditor" },
+      { licence_id: b.held.id, stakeholder: "rbi_bank_chairman" },
+      { licence_id: "00000000-0000-4000-8000-000000000000", stakeholder: "rbi_bank_compliance_officer" },
     ],
   });
   assert.equal(bad.isError, true);
   const errors = bad.data.errors.join("\n");
-  assert.match(errors, /no regulated product type 'in_unknown_thing'/);
-  assert.match(errors, /repackaging isn't possible on Term deposit/);
-  assert.match(errors, /offered in IN, not US/);
-  assert.match(errors, /name the partner/);
-  const { client: other } = await innovator("Rival", "rbi_bank");
-  assert.equal((await call(other, "set_product_composition", { product_id: "everyday-rd", components })).isError, true, "only the owner composes a product");
+  assert.match(errors, /is an external stakeholder; this party is internal/);
+  assert.match(errors, /'rbi_bank_chairman' isn't a mandatory stakeholder of rbi_bank/);
+  assert.match(errors, /holds no licence/);
+  assert.equal((await call(b.client, "add_party", { kind: "external", person: { name: "Firm?" } })).isError, true);
+  assert.equal((await call(b.client, "add_party", { kind: "external", legal_entity_id: b.entity.id })).isError, true, "not on its own roster");
 });
 
-test("admins compose Mynt's reference products; their own components show as reference, not uncovered", async () => {
+test("publishing needs every mandated stakeholder of the licence the firm provides under filled and bound", async () => {
+  const ctx = await setup();
+  const b = await bankWithRoster(ctx);
+  const comp = composition(b);
+  const refused = await publishRd(ctx, b, { ...comp, parties: [comp.parties[0]] });
+  assert.equal(refused.isError, true);
+  assert.match(refused.data.error, new RegExp(`deposit .*bind party ${b.auditor.id} to 'deposit'`));
+  const tested = (await ctx.call(b.client, "test_product", { id: "everyday-rd" })).data;
+  assert.equal(tested.checks.find((c) => c.name === "composition_coverage").status, "fail");
+
+  await ctx.call(b.client, "set_product_composition", { product_id: "everyday-rd", ...comp });
+  await ctx.call(b.client, "test_product", { id: "everyday-rd" });
+  const published = await ctx.call(b.client, "publish_product", { id: "everyday-rd" });
+  assert.equal(published.isError, false, JSON.stringify(published.data));
+
+  // The live composition is pinned: providers' licences resolved, and every entity, licence and party hashed.
+  const record = await ctx.store.getProduct("everyday-rd");
+  assert.equal(record.pins.version, 1);
+  assert.deepEqual(record.pins.components.find((c) => c.key === "deposit").provider, { by: "self", licence_id: b.held.id });
+  assert.deepEqual(new Set(record.pins.entity_ids), new Set([b.entity.id, b.partnerEntity.id, b.auditor.legal_entity_id]));
+  assert.deepEqual(Object.keys(record.pins.state.licences).sort(), [b.held.id, b.partnerLicence.id].sort());
+  assert.deepEqual(Object.keys(record.pins.state.parties).sort(), [b.officer.id, b.auditor.id, b.partner.id].sort());
+  const guest = await ctx.connect(null);
+  const regime = (await ctx.call(guest, "get_product_regime", { product_id: "everyday-rd" })).data;
+  assert.equal(regime.live, true);
+  assert.equal(regime.sales_paused, false);
+});
+
+test("when a pinned party leaves, the product drifts and new sales pause until a new version is published", async () => {
+  const ctx = await setup();
+  const b = await bankWithRoster(ctx);
+  assert.equal((await publishRd(ctx, b)).isError, false);
+  const { user: consumerUser } = await ctx.store.createUser("Asha", ["consumer"]);
+  const consumer = await ctx.connect(consumerUser);
+
+  const ended = await ctx.call(b.client, "end_party", { party_id: b.auditor.id });
+  assert.deepEqual(ended.data.drifted_products, ["everyday-rd"]);
+  const shown = (await ctx.call(consumer, "get_product", { id: "everyday-rd" })).data;
+  assert.equal(shown.sales_paused, true);
+  assert.deepEqual(shown.drift.changes.map((c) => [c.kind, c.id]), [["party", b.auditor.id]]);
+  const paused = await ctx.call(consumer, "enroll_in_product", { product_id: "everyday-rd" });
+  assert.equal(paused.isError, true);
+  assert.match(paused.data.error, /paused/);
+  assert.ok((await ctx.store.auditLog(20)).some((a) => a.action === "product_drifted" && a.target === "everyday-rd"));
+
+  // The working copy can't name the ended party any more; a new auditor goes live with a new version.
+  const stale = await ctx.call(b.client, "set_product_composition", { product_id: "everyday-rd", ...composition(b) });
+  assert.equal(stale.isError, true);
+  assert.match(stale.data.errors.join("\n"), new RegExp(`party '${b.auditor.id}' isn't active`));
+  const next = await ctx.call(b.client, "add_party", {
+    kind: "external",
+    new_legal_entity: { name: "Ledger Auditors LLP", legal_form: "llp", incorporation: { country: "in" } },
+    fills: [{ licence_id: b.held.id, stakeholder: "rbi_bank_statutory_auditor" }],
+  });
+  const comp = composition(b);
+  comp.parties[1] = { party_id: next.data.id, for: "deposit" };
+  assert.equal((await ctx.call(b.client, "set_product_composition", { product_id: "everyday-rd", ...comp })).isError, false);
+  await ctx.call(b.client, "create_product_version", { id: "everyday-rd", changelog: "New statutory auditor" });
+  await ctx.call(b.client, "test_product", { id: "everyday-rd" });
+  const republished = await ctx.call(b.client, "publish_product", { id: "everyday-rd" });
+  assert.equal(republished.isError, false, JSON.stringify(republished.data));
+  const record = await ctx.store.getProduct("everyday-rd");
+  assert.equal(record.drift, null);
+  assert.equal(record.pins.version, 2);
+  assert.equal((await ctx.call(consumer, "enroll_in_product", { product_id: "everyday-rd" })).isError, false);
+});
+
+test("a suspended licence drifts every product resting on it, and re-verifying clears the drift", async () => {
+  const ctx = await setup();
+  const b = await bankWithRoster(ctx);
+  assert.equal((await publishRd(ctx, b)).isError, false);
+  // The partner's licence, not the bank's.
+  const suspended = await ctx.call(ctx.admin, "review_license", { license_record_id: b.partnerLicence.id, decision: "suspended", note: "regulator order" });
+  assert.deepEqual(suspended.data.drifted_products, ["everyday-rd"]);
+  assert.deepEqual((await ctx.store.getProduct("everyday-rd")).drift.changes.map((c) => [c.kind, c.id]), [["licence", b.partnerLicence.id]]);
+  const restored = await ctx.call(ctx.admin, "review_license", { license_record_id: b.partnerLicence.id, decision: "verified", note: "order lifted" });
+  assert.deepEqual(restored.data.drifted_products, []);
+  assert.equal((await ctx.store.getProduct("everyday-rd")).drift, null);
+
+  // A struck-off entity, too.
+  const struck = await ctx.call(ctx.admin, "set_entity_status", { entity_id: b.partnerEntity.id, status: "struck_off" });
+  assert.deepEqual(struck.data.drifted_products, ["everyday-rd"]);
+});
+
+test("compositions are checked against the reference data and the owner's roster", async () => {
+  const ctx = await setup();
+  const b = await bankWithRoster(ctx);
+  const rival = await bankWithRoster({ ...ctx, innovator: (n, l) => ctx.innovator(`${n}2`, l) });
+  await ctx.call(b.client, "create_product", rd);
+  const bad = await ctx.call(b.client, "set_product_composition", {
+    product_id: "everyday-rd",
+    components: [
+      { key: "deposit", country: "in", primitive: "account_operations", action: "issuance", provider: { by: "self" } },
+      { key: "deposit", country: "us", primitive: "payments", action: "sale" },
+      { key: "mandate", country: "in", primitive: "payments", action: "sale", provider: { by: "party", party_id: rival.partner.id } },
+      { key: "advice", country: "in", primitive: "wealth", action: "advice", provider: { by: "party", party_id: b.officer.id } },
+      { key: "own", country: "in", primitive: "account_operations", action: "sale", provider: { by: "self", licence_id: rival.held.id } },
+    ],
+    parties: [{ party_id: b.officer.id, for: "nothing" }, { party_id: rival.officer.id, for: "deposit" }],
+  });
+  assert.equal(bad.isError, true);
+  const errors = bad.data.errors.join("\n");
+  assert.match(errors, /component 'deposit': the key is used twice/);
+  assert.match(errors, /offered in IN, not US/);
+  assert.match(errors, /name its provider/);
+  assert.match(errors, new RegExp(`party '${rival.partner.id}' isn't on your entity's roster`));
+  assert.match(errors, /a provider is a firm/);
+  assert.match(errors, /your entity holds no licence/);
+  assert.match(errors, /no component 'nothing'/);
+  assert.match(errors, new RegExp(`party '${rival.officer.id}' isn't on your entity's roster`));
+  // Old-shaped components are refused outright.
+  const old = await ctx.call(b.client, "set_product_composition", { product_id: "everyday-rd", components: [{ region: "IN", primitive: "in_term_deposit", action: "issuance", role: "holds it", provided_by: "self" }] });
+  assert.equal(old.isError, true);
+  assert.equal((await ctx.call(rival.client, "set_product_composition", { product_id: "everyday-rd", ...composition(b) })).isError, true, "only the owner composes a product");
+});
+
+test("admins compose Mynt's reference products without providers; they show as reference", async () => {
   const { call, admin } = await setup();
   const id = CATALOG.find((p) => p.region === "IN" && p.category === "deposits").id;
-  const set = await call(admin, "admin_set_product_composition", { product_id: id, components: [components[0]] });
+  const component = { key: "deposit", country: "in", primitive: "account_operations", action: "issuance" };
+  const set = await call(admin, "admin_set_product_composition", { product_id: id, components: [component] });
   assert.equal(set.isError, false, JSON.stringify(set.data));
   assert.equal(set.data.regions[0].components[0].coverage.status, "reference");
   assert.equal(set.data.regions[0].covered, true);
+  const withProvider = await call(admin, "admin_set_product_composition", { product_id: id, components: [{ ...component, provider: { by: "self" } }] });
+  assert.match(withProvider.data.errors.join("\n"), /reference product has no firm/);
+});
+
+test("components stored in the old shape move to line primitives, partners on Mynt onto the owner's roster", async () => {
+  const ctx = await setup();
+  const b = await ctx.innovator("Ines", "rbi_bank");
+  const partner = await ctx.store.createEntity(null, { name: "Partner", registration_numbers: {}, regions: ["IN"] });
+  await ctx.call(b.client, "create_product", rd);
+  const legacy = [
+    { region: "IN", primitive: "in_term_deposit", action: "issuance", role: "holds the deposit", provided_by: "self" },
+    { region: "IN", primitive: "in_recurring_mandate", action: "sale", role: "collects", provided_by: "partner", partner_entity_id: partner.id },
+    { region: "IN", primitive: "in_recurring_mandate", action: "sale", role: "collects too", provided_by: "partner", partner_name: "Somebody" },
+  ];
+  await ctx.pg.query("UPDATE financial_products.products SET components = $2 WHERE id = $1", ["everyday-rd", JSON.stringify(legacy)]);
+  const reopened = await Store.open(db(ctx.pg), CATALOG);
+  const { components } = await reopened.getProduct("everyday-rd");
+  const [roster] = [await reopened.partiesOf(b.entity.id)];
+  assert.equal(roster.length, 1);
+  assert.equal(roster[0].legal_entity_id, partner.id);
+  assert.equal(roster[0].relationship, "partner");
+  assert.deepEqual(components, [
+    { key: "account_operations_issuance", country: "in", primitive: "account_operations", action: "issuance", provider: { by: "self" } },
+    { key: "payments_sale", country: "in", primitive: "payments", action: "sale", provider: { by: "party", party_id: roster[0].id } },
+    { key: "payments_sale_2", country: "in", primitive: "payments", action: "sale" },
+  ]);
+  // Idempotent.
+  await Store.open(db(ctx.pg), CATALOG);
+  assert.equal((await reopened.partiesOf(b.entity.id)).length, 1);
 });

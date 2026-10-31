@@ -4,6 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { ClerkAdmin, ClerkAuth, clerkConfigFromEnv } from "./auth.js";
 import { HttpBoatClient } from "./boat.js";
 import { BdService, bdConfigFromEnv } from "./bd.js";
+import { driftSweep } from "./pins.js";
 import { DeskService, deskConfigFromEnv } from "./desk.js";
 import { ReviewService, reviewConfigFromEnv } from "./review.js";
 import { BuildService, buildConfigFromEnv } from "./builds.js";
@@ -113,7 +114,11 @@ if (values.help) {
   );
   // Sends queued webhook deliveries (events from any process sharing the database).
   const webhooks = startWebhookWorker(store);
+  // Licences lapse with time: re-check pinned products hourly (changes made through Mynt re-check at once).
+  const drift = setInterval(() => driftSweep(store).catch((e) => console.error("drift sweep:", e)), 60 * 60 * 1000);
+  drift.unref();
   process.on("SIGTERM", () => {
+    clearInterval(drift);
     webhooks.stop();
     builds.stopWorker();
     bd.stopWorker();

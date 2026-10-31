@@ -8,8 +8,7 @@
     "mynt": "dist/index.js"
   },
   "files": [
-    "dist",
-    "data"
+    "dist"
   ],
   "engines": {
     "node": ">=22.13"

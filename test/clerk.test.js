@@ -4,6 +4,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { ClerkAuth, frontendApiFromPublishableKey } from "../dist/auth.js";
 import { createMcpHttpServer } from "../dist/http.js";
 import { Store } from "../dist/store.js";
+import { CATALOG } from "./helpers.js";
 
 const PUBLISHABLE_KEY = `pk_test_${Buffer.from("fpm-test.clerk.accounts.dev$").toString("base64")}`;
 const PUBLIC_URL = "https://mcp.example.com";
@@ -45,7 +46,7 @@ function fakeClerk() {
 
 async function setup() {
   const pg = new PGlite();
-  const store = await Store.open({ query: (s, p) => pg.query(s, p), exec: (s) => pg.exec(s), close: () => pg.close() });
+  const store = await Store.open({ query: (s, p) => pg.query(s, p), exec: (s) => pg.exec(s), close: () => pg.close() }, CATALOG);
   const clerk = fakeClerk();
   const auth = new ClerkAuth({ secretKey: "sk_test_x", publishableKey: PUBLISHABLE_KEY, publicUrl: PUBLIC_URL, requireAudience: true }, store, clerk);
   // Stand-in for Clerk's Backend API: role changes land in the fake users' public metadata.

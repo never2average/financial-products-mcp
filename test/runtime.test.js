@@ -9,13 +9,13 @@ import { createServer } from "../dist/server.js";
 import { createMcpHttpServer } from "../dist/http.js";
 import { compareSemver, deliverDueWebhooks, retryDelay, webhookUrlProblem } from "../dist/runtime.js";
 import { Store } from "../dist/store.js";
-import { licensed } from "./helpers.js";
+import { CATALOG, licensed } from "./helpers.js";
 
 const SANDBOX_ORIGIN = "https://mynt.test";
 
 async function setup(runtimeOptions = {}) {
   const pg = new PGlite();
-  const store = await Store.open({ query: (s, p) => pg.query(s, p), exec: (s) => pg.exec(s), close: () => pg.close() });
+  const store = await Store.open({ query: (s, p) => pg.query(s, p), exec: (s) => pg.exec(s), close: () => pg.close() }, CATALOG);
   const as = async (name, roles) => {
     const { user } = await store.createUser(name, roles);
     await pg.query("UPDATE financial_products.users SET email = $2 WHERE id = $1", [user.id, `${name.toLowerCase()}@example.com`]);

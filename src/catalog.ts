@@ -41,15 +41,6 @@ export interface ProductFilter {
   query?: string;
 }
 
-const DEFAULT_CATALOG = fileURLToPath(new URL("../data/products.json", import.meta.url));
-
-// FINANCIAL_PRODUCTS_FILE lets you seed your own catalog with the same schema.
-export function loadCatalog(path = process.env.FINANCIAL_PRODUCTS_FILE ?? DEFAULT_CATALOG): FinancialProduct[] {
-  const data = JSON.parse(readFileSync(path, "utf8"));
-  if (!Array.isArray(data)) throw new Error(`Catalog at ${path} must be a JSON array`);
-  return data as FinancialProduct[];
-}
-
 export function filterProducts(products: FinancialProduct[], f: ProductFilter): FinancialProduct[] {
   const eq = (a: string, b?: string) => !b || a.toLowerCase() === b.toLowerCase();
   const q = f.query?.toLowerCase();

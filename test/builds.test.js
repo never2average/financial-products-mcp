@@ -6,6 +6,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { BuildService, buildConfigFromEnv, buildTask } from "../dist/builds.js";
 import { createServer } from "../dist/server.js";
 import { Store } from "../dist/store.js";
+import { CATALOG } from "./helpers.js";
 
 const SHA = "a".repeat(64);
 const COMMIT = "c".repeat(40);
@@ -114,7 +115,7 @@ function fakeRepos() {
 async function setup({ boat = fakeBoat(), config = {} } = {}) {
   const pg = new PGlite();
   const db = { query: (s, p) => pg.query(s, p), exec: (s) => pg.exec(s), close: () => pg.close() };
-  const store = await Store.open(db);
+  const store = await Store.open(db, CATALOG);
   const repos = fakeRepos();
   const builds = await BuildService.open(db, store, boat, repos, { ...buildConfigFromEnv({}), publicUrl: "https://mynt.example.com", agentBackend: { kind: "anthropic", apiKey: "sk-ant-test" }, ...config });
   const as = async (name, roles) => (await store.createUser(name, roles)).user;

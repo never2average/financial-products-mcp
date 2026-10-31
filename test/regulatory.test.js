@@ -5,10 +5,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "../dist/server.js";
 import { Store } from "../dist/store.js";
+import { CATALOG } from "./helpers.js";
 
 async function setup() {
   const pg = new PGlite();
-  const store = await Store.open({ query: (s, p) => pg.query(s, p), exec: (s) => pg.exec(s), close: () => pg.close() });
+  const store = await Store.open({ query: (s, p) => pg.query(s, p), exec: (s) => pg.exec(s), close: () => pg.close() }, CATALOG);
   const as = async (name, roles) => (await store.createUser(name, roles)).user;
   const connect = async (user) => {
     const [c, s] = InMemoryTransport.createLinkedPair();
@@ -177,7 +178,7 @@ test("the deprecated define_legal_instrument files items into the right branch",
 test("a stored flat legal list is migrated into the two branches when Mynt starts", async () => {
   const pg = new PGlite();
   const db = { query: (s, p) => pg.query(s, p), exec: (s) => pg.exec(s), close: async () => {} };
-  await Store.open(db);
+  await Store.open(db, CATALOG);
   const flat = [
     { id: "act1", title: "Some Act", kind: "act", issued_by: "parliament", summary: "s" },
     { id: "case1", title: "P v. Q", kind: "judgment", issued_by: "Bombay High Court", effective_from: "2019-05-01" },
@@ -185,7 +186,7 @@ test("a stored flat legal list is migrated into the two branches when Mynt start
   await pg.query("UPDATE financial_products.regions SET regulatory = jsonb_build_object('regulators', '[]'::jsonb, 'legal', $1::jsonb) WHERE code = 'IN'", [
     JSON.stringify(flat),
   ]);
-  const store = await Store.open(db);
+  const store = await Store.open(db, CATALOG);
   const { rows } = await pg.query("SELECT regulatory FROM financial_products.regions WHERE code = 'IN'");
   const legal = rows[0].regulatory.legal;
   assert.deepEqual(legal.legislative.map((l) => l.id), ["act1"]);
@@ -194,7 +195,7 @@ test("a stored flat legal list is migrated into the two branches when Mynt start
   assert.equal(legal.judiciary[0].decided_on, "2019-05-01");
   assert.equal(legal.judiciary[0].court_level, "other");
   // Running again leaves the split shape alone.
-  await Store.open(db);
+  await Store.open(db, CATALOG);
   assert.deepEqual((await pg.query("SELECT regulatory FROM financial_products.regions WHERE code = 'IN'")).rows[0].regulatory.legal, legal);
   assert.ok(store);
 });
@@ -353,7 +354,7 @@ test("persona and licence ids are prefixed with their regulator and never shared
 test("regulators stored with inline product types are lifted into the catalogue when Mynt starts", async () => {
   const pg = new PGlite();
   const db = { query: (s, p) => pg.query(s, p), exec: (s) => pg.exec(s), close: async () => {} };
-  await Store.open(db);
+  await Store.open(db, CATALOG);
   const inline = (id, actions) => ({
     id,
     name: id,
@@ -364,7 +365,7 @@ test("regulators stored with inline product types are lifted into the catalogue 
     "UPDATE financial_products.regions SET regulatory = jsonb_build_object('regulators', $1::jsonb, 'legal', jsonb_build_object('legislative', '[]'::jsonb, 'judiciary', '[]'::jsonb)) WHERE code = 'IN'",
     [JSON.stringify([inline("rbi", ["purchase"]), inline("sebi", ["issuance", "sale"])])],
   );
-  const store = await Store.open(db);
+  const store = await Store.open(db, CATALOG);
   const catalogue = await store.regulatedProductTypes("IN");
   assert.deepEqual(catalogue.map((p) => [p.id, [...p.actions].sort()]), [["bond", ["issuance", "purchase", "sale"]]], "actions are the union across regulators");
   assert.deepEqual((await store.productMappings("IN")).map((m) => [m.regulator_id, m.actions]), [["rbi", ["purchase"]], ["sebi", ["issuance", "sale"]]]);
@@ -373,6 +374,6 @@ test("regulators stored with inline product types are lifted into the catalogue 
   const sebi = (await store.referenceData(true)).regions.find((r) => r.code === "IN").regulatory.regulators.find((r) => r.id === "sebi");
   assert.deepEqual(sebi.license_types[0].grc.allowed_product_types, [{ id: "bond", actions: ["issuance", "sale"] }]);
   // Running again changes nothing.
-  await Store.open(db);
+  await Store.open(db, CATALOG);
   assert.equal((await store.productMappings("IN")).length, 2);
 });

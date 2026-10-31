@@ -9,9 +9,8 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { createServer } from "../dist/server.js";
 import { createMcpHttpServer } from "../dist/http.js";
 import { Store } from "../dist/store.js";
-import { loadCatalog } from "../dist/catalog.js";
 import { runProductTests } from "../dist/product-tests.js";
-import { licensed } from "./helpers.js";
+import { CATALOG, licensed } from "./helpers.js";
 
 const CATALOG_TOOLS = ["find_licenses", "get_product", "get_region", "get_regulator", "get_template", "list_apps", "list_categories", "list_legal_instruments", "list_product_categories", "list_products", "list_regions", "list_regulated_product_types", "list_template_defaults", "whoami"];
 const CONSUMER_TOOLS = ["cancel_enrollment", "enroll_in_product", "list_my_enrollments", "list_offers", "upgrade_enrollment"];
@@ -58,7 +57,7 @@ const toolNames = async (client) => (await client.listTools()).tools.map((t) => 
 // In-process Postgres, so tests exercise the same SQL as Supabase without a database server.
 async function openStore() {
   const pg = new PGlite();
-  return Store.open({ query: (sql, params) => pg.query(sql, params), exec: (sql) => pg.exec(sql), close: () => pg.close() });
+  return Store.open({ query: (sql, params) => pg.query(sql, params), exec: (sql) => pg.exec(sql), close: () => pg.close() }, CATALOG);
 }
 
 async function setup() {
@@ -123,9 +122,9 @@ test("catalog covers credit, wealth, insurance and treasury", async () => {
   assert.ok(treasury.products.some((p) => p.id === "treasury-bills"));
 });
 
-test("every bundled product passes the product test suite, including the seeded regions and categories", async () => {
+test("every fixture product passes the product test suite, including the seeded regions and categories", async () => {
   const ref = await (await openStore()).referenceData();
-  for (const p of loadCatalog()) {
+  for (const p of CATALOG) {
     const failed = runProductTests(p, ref).checks.filter((c) => c.status === "fail");
     assert.deepEqual(failed, [], p.id);
   }
@@ -283,4 +282,33 @@ test("CLI issues tokens that work over stdio against Postgres", { skip: !process
   const { data } = await call(client, "enroll_in_product", { product_id: "etf" });
   assert.equal(data.status, "active");
   await client.close();
+});
+
+test("Mynt ships no catalogue: a new database starts with no products or categories, and only the global region", async () => {
+  const pg = new PGlite();
+  const store = await Store.open({ query: (s, p) => pg.query(s, p), exec: (s) => pg.exec(s), close: () => pg.close() });
+  const client = await connect(store);
+  assert.equal((await call(client, "list_products", {})).data.total, 0);
+  const ref = await store.referenceData(true);
+  assert.deepEqual(ref.regions.map((r) => r.code), ["global"], "only the built-in global region");
+  assert.equal(ref.categories.length, 0);
+});
+
+test("catalog remove-bundled deletes only unused products left from the old bundled catalogue", async () => {
+  const store = await openStore();
+  const [used, other] = CATALOG.filter((p) => p.region === "IN").map((p) => p.id);
+  const { user } = await store.createUser("Dev", ["developer"]);
+  await store.createApp(user.id, { name: "Uses one", description: "Keeps a bundled product in use", audience: "Savers", product_ids: [used], disclosures: [], actions: ["display"] });
+  const dry = await store.removeBundledProducts(false);
+  assert.ok(dry.removed.includes(other) && !dry.removed.includes(used));
+  assert.deepEqual(dry.kept, [{ id: used, used_by: ["apps"] }]);
+  assert.ok(await store.getProduct(other), "a dry run deletes nothing");
+
+  const done = await store.removeBundledProducts(true);
+  assert.equal(done.removed.length, CATALOG.length - 1);
+  assert.equal(await store.getProduct(other), undefined);
+  assert.ok(await store.getProduct(used), "the product an app uses stays");
+  const { user: inno } = await store.createUser("Ines", ["innovator"]);
+  await store.insertDraft(inno.id, { ...CATALOG[0], id: "ines-own" });
+  assert.deepEqual((await store.removeBundledProducts(true)).removed, [], "innovators' products are never touched");
 });

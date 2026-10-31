@@ -33,7 +33,7 @@ Admins own Mynt's reference data and access. **Every admin action is written to 
 
     Schemas start from Mynt's defaults (a control's type, test method, test frequency, test status and last test rating; a risk model's scoring methods, factors and thresholds; an inspection's type, outcome and findings by severity). The regulator adds or overrides fields by key, each with its own guidance, or opts out of the defaults. Innovators read a template's resolved schema with `get_template`, and the defaults with `list_template_defaults`.
 - **Product types** (`define_product_category`): the categories products may have, and which of the four product lines each may be used in.
-- **How products are checked against them:** `test_product` fails a product whose region or category isn't defined and active, or whose category doesn't allow its product line. It warns when the regulator isn't one listed for the region, and when no launch procedure is documented for the product's line there. Retiring a region or category (`active: false`) stops new products from using it; live products stay. Mynt seeds both lists from the bundled catalog the first time it starts.
+- **How products are checked against them:** `test_product` fails a product whose region or category isn't defined and active, or whose category doesn't allow its product line. It warns when the regulator isn't one listed for the region, and when no launch procedure is documented for the product's line there. Retiring a region or category (`active: false`) stops new products from using it; live products stay. A new Mynt starts with neither: admins define them.
 - **Whitelist** (`invite_user`, `revoke_user`, `list_whitelist`): kept in step with Clerk's allowlist. Mynt refuses any change that would remove the last admin.
 - **Oversight:** see every campaign and pause any of them. Unpublish any product, or republish one; republishing re-runs the tests first.
 
@@ -250,7 +250,7 @@ Every product has a `product_line`:
 - **insurance**: term/whole life, health, motor, home, travel, ULIPs, annuities
 - **treasury**: deposits, sweep accounts, liquid/money-market funds, T-bills, commercial paper, government and corporate bonds, FX forwards, interest-rate swaps, derivatives
 
-`list_products` filters by `product_line`, `category`, `region` (`IN`, `US`, `global`), `risk_level` or free text, and `list_categories` returns counts for each. The bundled catalog has 50 product types.
+`list_products` filters by `product_line`, `category`, `region` (`IN`, `US`, `global`), `risk_level` or free text, and `list_categories` returns counts for each.
 
 Each product has: `id`, `name`, `product_line`, `category`, `region`, `risk_level`, `liquidity`, `typical_horizon`, `return_type`, `regulator`, `description`, `key_features`.
 
@@ -375,9 +375,9 @@ docker compose -f /opt/mynt/src/deploy/docker-compose.yml exec mcp \
   node dist/index.js users add --name "Ines" --role innovator
 ```
 
-## Seeding your own catalog
+## Starting empty
 
-Set `FINANCIAL_PRODUCTS_FILE` to a JSON array with the same fields as [`data/products.json`](data/products.json). On every start, products whose `id` isn't in the database yet are inserted as published, read-only products.
+Mynt ships no product catalogue. A new deployment has no products, regions or categories until admins define the regions and categories and innovators publish products. Databases created by earlier versions may still hold the old bundled products (owner-less, read-only); `mynt catalog remove-bundled` lists them and, with `--yes`, deletes those nothing references. Products still used by an app, enrollment or request are kept and reported.
 
 ## Development
 
@@ -388,7 +388,7 @@ TEST_DATABASE_URL=postgres://postgres:pw@localhost:5432/postgres npm test   # al
 
 ## Disclaimer
 
-The bundled catalog describes product *types* for informational purposes. It contains no live rates and is not financial advice; rules (tax treatment, limits, lock-ins) change, so verify with the relevant regulator or provider. Enrollments here are records in this server's database, not real accounts.
+Mynt ships no catalogue: every product comes from an innovator. Product information is for informational purposes, contains no live rates and is not financial advice; rules (tax treatment, limits, lock-ins) change, so verify with the relevant regulator or provider. Enrollments here are records in this server's database, not real accounts.
 
 ## License
 

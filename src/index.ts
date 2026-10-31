@@ -16,6 +16,7 @@ import { ROLES, Store, type Role } from "./store.js";
 const USAGE = `Usage:
   mynt [serve]                         Run over stdio (token from FINANCIAL_PRODUCTS_TOKEN)
   mynt serve-http [--port 3000] [--host 127.0.0.1]
+  mynt catalog remove-bundled [--yes]   List (or delete) unused products from the old bundled catalogue
   mynt users invite --email <email> --role <${ROLES.join("|")}> [--role ...]   (bootstrap; admins then use Mynt)
   mynt users revoke --email <email>
   mynt users add --name <name> --role <role> [--role ...]   Local token (stdio, or HTTP without Clerk)
@@ -45,6 +46,7 @@ const { positionals, values } = parseArgs({
     port: { type: "string", default: process.env.PORT ?? "3000" },
     host: { type: "string", default: process.env.HOST ?? "127.0.0.1" },
     help: { type: "boolean", short: "h" },
+    yes: { type: "boolean" },
   },
 });
 
@@ -123,6 +125,13 @@ if (values.help) {
   const warning = await clerkAdmin()?.allow(email);
   if (warning) console.error(`warning: ${email} ${warning}`);
   console.log(JSON.stringify(invite, null, 2));
+  await store.close();
+} else if (command === "catalog" && sub === "remove-bundled") {
+  // Lists (and with --yes deletes) products left from the bundled catalogue earlier versions shipped.
+  const store = await openStore();
+  const result = await store.removeBundledProducts(values.yes ?? false);
+  console.log(JSON.stringify({ applied: values.yes ?? false, ...result }, null, 2));
+  if (!values.yes && result.removed.length) console.error(`Run again with --yes to delete ${result.removed.length} unused bundled products.`);
   await store.close();
 } else if (command === "users" && sub === "revoke") {
   const email = parseEmail();

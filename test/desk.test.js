@@ -11,7 +11,7 @@ import { DESK_RUNNER } from "../dist/desk-runner.js";
 import { DeskService, deskConfigFromEnv, termsHash } from "../dist/desk.js";
 import { createServer } from "../dist/server.js";
 import { Store } from "../dist/store.js";
-import { licensed } from "./helpers.js";
+import { CATALOG, licensed } from "./helpers.js";
 
 const DIR = "/home/user/mynt-desk";
 const JOB = `${DIR}/job`;
@@ -186,7 +186,7 @@ const ranOutcome = (over = {}) => ({
 async function setup() {
   const pg = new PGlite();
   const db = { query: (s, p) => pg.query(s, p), exec: (s) => pg.exec(s), close: () => pg.close() };
-  const store = await Store.open(db);
+  const store = await Store.open(db, CATALOG);
   const boat = fakeBoat();
   const repos = fakeRepos();
   const host = { agentBackend: { kind: "anthropic", apiKey: "sk-ant-test" }, model: "claude-opus-5-5", publicUrl: "https://mynt.example.com" };

@@ -1,6 +1,92 @@
 # Mynt
 
-**Mynt** is an [MCP](https://modelcontextprotocol.io) server for **credit, wealth, insurance and treasury** products. MCP clients show it as `mynt`. It has four kinds of user:
+**Lovable for finance apps.** Describe the financial product you want; Mynt's AI agents design it, price it, test it, clear compliance, build it and launch it.
+
+## The problem
+
+The need for a better financial product is usually obvious from the data. Examples:
+- pay-later for a shop's regular customers;
+- cover for a slow season;
+- six weeks of working capital before a festival, repaid a little every day, instead of a 12-month loan with fixed EMIs.
+
+Building one still takes months:
+- pricing and feasibility;
+- finding a licensed partner;
+- working out which regulations and licences apply;
+- controls and disclosures;
+- the app itself;
+- distribution.
+
+So products get built for the average customer, and nobody builds the one that fits.
+
+## Describe it. Agents build it.
+
+You chat with Mynt and describe the product or app. Its agents take it from there:
+
+1. **The chat agent** works out what's needed, asking one clarifying question at a time.
+2. **The product foundry** designs the terms and pricing and picks the licensed partner.
+   - A product is composed from regulated building blocks: a recurring deposit is a recurring payment mandate plus a term deposit.
+   - So its regulatory regime follows from what it's made of.
+   - Its feasibility is worked out in code.
+3. **Compliance, platform, acquisition and back office** are spun up for that one product:
+   - its compliance is checked against the regulation and the licences behind it;
+   - it runs in its own isolated environment;
+   - experiences are built for it, and it reaches the right customers;
+   - it's serviced and reconciled.
+4. **It comes back to the same chat** as a product card: the terms, and a one-tap accept.
+
+```
+You:   I need ₹80,000 of stock for six weeks before Diwali.
+Mynt:  Got it. Should repayments come from your daily settlements?
+You:   Yes, a little every day.
+Mynt:  ┌─────────────────────────────────────────────┐
+       │ SIX-WEEK STOCK LOAN · READY                 │
+       │ ₹80,000 · 6 weeks · 12% p.a. · partner bank │
+       │ [ Accept ]  [ Look for more options ]       │
+       └─────────────────────────────────────────────┘
+```
+
+**From months of launch work to one conversation.**
+
+## A self-improving compliance loop
+
+Every product gets its own compliance workspace. That workspace links the regulations to:
+- the business functions and people responsible;
+- what each of them must do and how;
+- the policies and controls that do it;
+- the metrics and evidence that prove it;
+- the disclosures and reports that go back to the regulator.
+
+Each new product, review and inspection makes the loop better. Everything has an audit trail, version history, reporting and connectors to external data.
+
+## Business model
+
+A simple take rate on every product sold:
+
+| Credit | Insurance | Treasury | Asset management |
+| --- | --- | --- | --- |
+| 1% | 20% | 10% | 5% |
+
+## What's in this repository
+
+This repository is Mynt's platform, published as an [MCP](https://modelcontextprotocol.io) server (MCP clients show it as `mynt`). It covers **credit, wealth, insurance and treasury** products, and serves the people and agents around a product:
+
+| Who | What Mynt gives them |
+| --- | --- |
+| **Consumers** | Products and offers they can use, and a way to say what they need |
+| **Innovators** (licensed firms) | The product foundry: composition from regulated primitives, term sheets and feasibility analysis in their own model repository, versioning, licensing checks, distribution |
+| **Developers** | Apps and experiences on top of products: SDKs, APIs, webhooks, sandbox, GTM campaigns, and coding agents that build and ship them |
+| **Admins** | The regulatory model (regulators, licences, law, GRC), the governance desk that reviews firms, licences and products, and oversight |
+
+Hosted agents do the work: they build, audit, run the product desk, review governance and do business development. Each one is steered by its own folder under `workspaces/`, and Mynt checks whatever an agent produces itself.
+
+The rest of this README is the technical reference.
+
+---
+
+## Reference
+
+Mynt has four kinds of user:
 
 | User type | Can | Tools (in addition to the catalog tools) |
 | --- | --- | --- |

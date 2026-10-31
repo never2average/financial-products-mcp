@@ -16,7 +16,8 @@ import { registerCodingAgentAdminTools, registerCodingAgentTools } from "./build
 import { registerBdAdminTools, registerBdAgentTools, registerConnectTools } from "./bd.js";
 import { feasibilityCheck, registerDeskTools, type DeskService } from "./desk.js";
 import { registerReviewTools } from "./review.js";
-import { blockingComponents, ComponentSchema, productRegime, validateComponents } from "./regime.js";
+import { buildPins } from "./pins.js";
+import { blockingComponents, ComponentSchema, partnerGaps, PartyBindingSchema, productRegime, validateComposition } from "./regime.js";
 import { accessStatus, BuildTermsSchema, coveringLicenses, EXPERIENCE_ACTIONS, lintExperience, productEntity } from "./access.js";
 import { runProductTests } from "./product-tests.js";
 import { COURT_LEVELS, findLicenses, LEGISLATIVE_KINDS, normalizeModel, PRODUCT_ACTIONS, summarizeModel, type Regulator } from "./regulatory.js";
@@ -128,14 +129,16 @@ function registerCatalogTools(server: McpServer, store: Store, user: User | null
     {
       title: "A product's regulatory regime",
       description:
-        "The regulated primitives a product is made of and, for each, who supervises it, which licences may provide it, the law recorded against it, and whether it's covered (by the firm's licence, a partner's, or not yet).",
-      inputSchema: { product_id: z.string() },
+        "The regulated primitives a product is made of and, for each, what it falls under (regulated product types), who supervises it, which licences may provide it, the law recorded against it, who provides it and whether their licence covers it, and the stakeholders that licence mandates. A published product shows its pinned live composition and any drift; its firm and admins can pass working: true for the unpublished working copy.",
+      inputSchema: { product_id: z.string(), working: z.boolean().default(false) },
       annotations: { readOnlyHint: true },
     },
-    async ({ product_id }) => {
+    async ({ product_id, working }) => {
       const record = await store.getProduct(product_id);
-      if (!record || (record.status !== "published" && record.owner_id !== user?.id && !user?.roles.includes("admin"))) return fail(`No product '${product_id}'`);
-      return json(await productRegime(store, record));
+      const insider = Boolean(record && (record.owner_id === user?.id || user?.roles.includes("admin")));
+      if (!record || (record.status !== "published" && !insider)) return fail(`No product '${product_id}'`);
+      const live = record.status === "published" && !(working && insider);
+      return json({ ...(await productRegime(store, record, { live })), drift: record.drift, sales_paused: Boolean(record.drift) });
     },
   );
 
@@ -386,7 +389,7 @@ function registerCatalogTools(server: McpServer, store: Store, user: User | null
     },
     async ({ id }) => {
       const record = await store.getProduct(id);
-      if (record?.status === "published") return json(record.product);
+      if (record?.status === "published") return json(record.drift ? { ...record.product, sales_paused: true, drift: record.drift } : record.product);
       if (record && user && record.owner_id === user.id) return json({ ...record.product, status: record.status, last_test: record.last_test });
       return fail(`No product with id '${id}'`);
     },
@@ -446,7 +449,9 @@ function registerConsumerTools(server: McpServer, store: Store, user: User) {
       },
     },
     async ({ product_id, amount, campaign_id }) => {
-      if ((await store.getProduct(product_id))?.status !== "published") return fail(`No published product with id '${product_id}'`);
+      const product = await store.getProduct(product_id);
+      if (product?.status !== "published") return fail(`No published product with id '${product_id}'`);
+      if (product.drift) return fail(`New enrollments in '${product_id}' are paused: something it rests on changed (a licence, a party or the firm) and its firm must resolve it`);
       let attribution = null;
       if (campaign_id) {
         const a = await attributionFor(store, user, campaign_id, product_id);
@@ -883,17 +888,21 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User, des
     {
       title: "Set a product's composition",
       description:
-        "Innovator: the regulated primitives your product is made of, per jurisdiction. Example: a recurring deposit = a recurring payment mandate (sale, by a partner bank) + a term deposit (issuance, by you). The product's regulatory regime follows from its components, and publishing needs every component you provide covered by your firm's verified licences.",
-      inputSchema: { product_id: z.string(), components: z.array(ComponentSchema).min(1).max(20) },
+        "Innovator: what your product is made of, and who stands behind it. Each component is a primitive (the line: credit, payments, account_operations, …) with an action, in a country, provided by your firm (by: self, optionally naming the licence) or by an external party on your firm's roster (by: party). Example: a recurring deposit = payments sale (by a partner bank on your roster) + account_operations issuance (by you). parties binds roster parties to components: the stakeholders each licence you provide under mandates must be bound. Collateral, segment and purpose are business context, not components. On a published product this edits the working copy; it goes live with the next published version.",
+      inputSchema: {
+        product_id: z.string(),
+        components: z.array(ComponentSchema).min(1).max(20),
+        parties: z.array(PartyBindingSchema).max(100).default([]),
+      },
     },
-    async ({ product_id, components }) => {
+    async ({ product_id, components, parties }) => {
       const record = await ownProduct(product_id);
       if (!record) return fail(`No product of yours with id '${product_id}'`);
-      const errors = await validateComponents(store, record, components);
+      const errors = await validateComposition(store, record, components, parties);
       if (errors.length) return { ...json({ error: "The composition can't be saved", errors }), isError: true };
-      await store.setComponents(product_id, components);
-      await store.audit(user.id, "set_product_composition", product_id, { components: components.length });
-      return json(await productRegime(store, { ...record, components }));
+      await store.setComposition(product_id, components, parties);
+      await store.audit(user.id, "set_product_composition", product_id, { components: components.length, parties: parties.length });
+      return json(await productRegime(store, { ...record, components, parties }));
     },
   );
 
@@ -930,13 +939,13 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User, des
       if (record.components.length) {
         const regime = await productRegime(store, record);
         const blocking = blockingComponents(regime, data.region);
-        const declared = regime.regions.flatMap((r) => r.components.filter((c) => c.coverage.status === "partner_declared"));
+        const gaps = partnerGaps(regime);
         composition.push(
           blocking.length
-            ? { name: "composition_coverage", status: "fail", message: `Not covered: ${blocking.map((b) => `${b.primitive} (${b.action}, ${b.region})`).join(", ")}` }
-            : declared.length
-              ? { name: "composition_coverage", status: "warn", message: `Covered, with partner components not verified on Mynt: ${declared.map((c) => c.primitive).join(", ")}` }
-              : { name: "composition_coverage", status: "pass", message: `Every component is covered (${regime.regions.map((r) => r.region).join(", ")})` },
+            ? { name: "composition_coverage", status: "fail", message: `Not ready: ${blocking.map((b) => `${b.key} (${b.primitive} ${b.action}, ${b.region}): ${b.reason}`).join("; ")}` }
+            : gaps.length
+              ? { name: "composition_coverage", status: "warn", message: `Covered; partners' rosters don't fill every stakeholder their licence mandates: ${gaps.map((g) => g.key).join(", ")}` }
+              : { name: "composition_coverage", status: "pass", message: `Every component is covered and its stakeholders bound (${regime.regions.map((r) => r.region).join(", ")})` },
         );
       } else composition.push({ name: "composition_coverage", status: "warn", message: "No composition yet: set_product_composition lists the regulated primitives the product is made of" });
       // Advisory too: the latest feasibility analysis of the current term sheet, when the desk is on.
@@ -967,9 +976,11 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User, des
       // A composed product needs every component it provides itself covered by its firm's verified licences
       // (partners' components by theirs); otherwise a licence for its category and action.
       let held: Awaited<ReturnType<typeof coveringLicenses>> = [];
+      let regime: Awaited<ReturnType<typeof productRegime>> | null = null;
       if (record.components.length) {
-        const blocking = blockingComponents(await productRegime(store, record), data.region);
-        if (blocking.length) return fail(`Not covered: ${blocking.map((b) => `${b.primitive} (${b.action}, ${b.region}): ${b.reason}`).join("; ")}`);
+        regime = await productRegime(store, record);
+        const blocking = blockingComponents(regime, data.region);
+        if (blocking.length) return fail(`Not ready: ${blocking.map((b) => `${b.key} (${b.primitive} ${b.action}, ${b.region}): ${b.reason}`).join("; ")}`);
       } else {
         held = await coveringLicenses(store, user.entity_id, data.region, data.category, record.action);
         if (held.length === 0)
@@ -981,6 +992,9 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User, des
       for (const u of record.underlying_product_ids) if ((await store.getProduct(u))?.status !== "published") notLive.push(u);
       if (notLive.length) return fail(`Underlying products aren't published: ${notLive.join(", ")}`);
       const live = draft ? await store.publishDraftVersion(id) : await store.publishCurrentVersion(id);
+      // The live version's composition and everything it rests on are pinned; changes later pause sales.
+      if (regime) await store.setPins(id, await buildPins(store, record, live.version, regime));
+      else await store.setPins(id, null);
       await emitProductEvent(store, id, "product.version_published", { version: live.version });
       return json({
         ...live,

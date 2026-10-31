@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { currentLine, lineForTreasuryCategory, PRODUCT_LINES, UNDERLYINGS, WRAPPERS, type FinancialProduct } from "./catalog.js";
-import type { Component } from "./regime.js";
+import type { Component, PartyBinding } from "./regime.js";
 import type { Db } from "./db.js";
 import { fingerprint, runProductTests, type TestReport } from "./product-tests.js";
 import {
@@ -181,7 +181,32 @@ export interface Invite {
   created_at: string;
 }
 
+// One record in a legal entity's GRC folder (or one of its parties' folders): it answers an item of a held
+// licence's GRC (see entity-grc.ts). Filing a record with the same key supersedes the current one.
+export interface GrcRecord {
+  id: string;
+  entity_id: string;
+  party_id: string | null;
+  licence_id: string | null;
+  section: string;
+  ref: string | null;
+  key: string;
+  record: Record<string, unknown>;
+  status: "current" | "superseded";
+  created_by: string | null;
+  created_at: string;
+}
+
 export type ProductStatus = "draft" | "published" | "unpublished";
+export interface Pins {
+  version: number;
+  pinned_at: string;
+  components: Component[];
+  parties: PartyBinding[];
+  entity_ids: string[];
+  state: { entities: Record<string, string>; licences: Record<string, string>; parties: Record<string, string> };
+}
+export type DriftChange = { kind: "entity" | "licence" | "party"; id: string; was: string; now: string };
 export interface ProductRecord {
   product: FinancialProduct;
   owner_id: string | null; // null = bundled catalog product
@@ -192,6 +217,9 @@ export interface ProductRecord {
   action: ProductAction;
   underlying_product_ids: string[];
   components: Component[]; // the regulated primitives the product is made of (see regime.ts)
+  parties: PartyBinding[]; // parties from the owner's roster, bound to components
+  pins: Pins | null; // the live version's composition and the state of everything it rests on (see pins.ts)
+  drift: { detected_at: string; changes: DriftChange[] } | null; // pinned state that changed: new sales pause
   access_mode: AccessMode;
   build_terms: BuildTerms;
   created_at: string;
@@ -214,13 +242,53 @@ export interface BuildTerms {
   handoff_url?: string; // where the runtime API sends deep_link / initiate_onboarding hand-offs
 }
 
+export const LEGAL_FORMS = [
+  "company_private",
+  "company_public",
+  "llp",
+  "partnership",
+  "sole_proprietorship",
+  "trust",
+  "cooperative",
+  "society",
+  "nonprofit_company",
+  "statutory_corporation",
+  "government_entity",
+  "foreign_branch",
+] as const;
+export const ENTITY_STATUSES = ["active", "suspended", "under_liquidation", "dissolved", "struck_off"] as const;
+export type EntityStatus = (typeof ENTITY_STATUSES)[number];
+export type Identifier = { scheme: string; value: string };
 export interface Entity {
   id: string;
   name: string;
+  legal_form: (typeof LEGAL_FORMS)[number] | null;
+  incorporation: { country: string; subdivision?: string; date?: string } | null; // ISO 3166 codes, lowercase
+  identifiers: Identifier[]; // e.g. { scheme: "in_cin", value: "U65999MH…" }, { scheme: "lei", … }
+  status: EntityStatus;
   registration_numbers: Record<string, string>;
   regions: string[];
   created_by: string | null;
   created_at: string;
+}
+
+// Who fills a firm's roles: the stakeholders its licences mandate (internal people, external firms), and
+// its commercial counterparties. Products may only name parties on their owner's roster.
+export interface Party {
+  id: string;
+  entity_id: string;
+  kind: "internal" | "external";
+  person: { name: string; identifiers: Identifier[] } | null; // internal
+  legal_entity_id: string | null; // external
+  attributes: Record<string, string | number | boolean>; // facts checked against stakeholder qualifications
+  fills: { licence_id: string; stakeholder: string }[]; // held licence record id + mandated stakeholder id
+  relationship: string | null; // a code, e.g. collection_agency_agreement
+  since: string | null;
+  until: string | null;
+  status: "active" | "ended";
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export type LicenseStatus = "pending" | "verified" | "rejected" | "suspended";
@@ -778,6 +846,51 @@ const TABLES = `
     updated_by uuid REFERENCES financial_products.users(id),
     updated_at timestamptz NOT NULL DEFAULT now()
   );
+  -- Legal entities as typed facts, and the parties on each firm's roster.
+  ALTER TABLE financial_products.entities ADD COLUMN IF NOT EXISTS legal_form text CHECK (legal_form IN (${sqlList(LEGAL_FORMS)}));
+  ALTER TABLE financial_products.entities ADD COLUMN IF NOT EXISTS incorporation jsonb;
+  ALTER TABLE financial_products.entities ADD COLUMN IF NOT EXISTS identifiers jsonb NOT NULL DEFAULT '[]';
+  ALTER TABLE financial_products.entities ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active'
+    CHECK (status IN (${sqlList(ENTITY_STATUSES)}));
+  CREATE TABLE IF NOT EXISTS financial_products.entity_parties (
+    id uuid PRIMARY KEY,
+    entity_id uuid NOT NULL REFERENCES financial_products.entities(id),
+    kind text NOT NULL CHECK (kind IN ('internal', 'external')),
+    person jsonb,
+    legal_entity_id uuid REFERENCES financial_products.entities(id),
+    attributes jsonb NOT NULL DEFAULT '{}',
+    fills jsonb NOT NULL DEFAULT '[]',
+    relationship text,
+    since text,
+    until text,
+    status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'ended')),
+    created_by uuid REFERENCES financial_products.users(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CHECK ((kind = 'internal' AND person IS NOT NULL AND legal_entity_id IS NULL)
+        OR (kind = 'external' AND legal_entity_id IS NOT NULL AND person IS NULL))
+  );
+  CREATE INDEX IF NOT EXISTS entity_parties_entity_idx ON financial_products.entity_parties (entity_id);
+  -- Each entity's GRC folder, and its parties' folders, mirroring the GRC of the licences it holds.
+  CREATE TABLE IF NOT EXISTS financial_products.grc_records (
+    id uuid PRIMARY KEY,
+    entity_id uuid NOT NULL REFERENCES financial_products.entities(id),
+    party_id uuid REFERENCES financial_products.entity_parties(id),
+    licence_id uuid REFERENCES financial_products.held_licenses(id),
+    section text NOT NULL,
+    ref text,
+    key text NOT NULL,
+    record jsonb NOT NULL,
+    status text NOT NULL DEFAULT 'current' CHECK (status IN ('current', 'superseded')),
+    created_by uuid REFERENCES financial_products.users(id),
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS grc_records_current_idx ON financial_products.grc_records
+    (entity_id, COALESCE(party_id::text, ''), COALESCE(licence_id::text, ''), section, key) WHERE status = 'current';
+  -- A product binds roster parties to its components; publishing pins them, and drift pauses new sales.
+  ALTER TABLE financial_products.products ADD COLUMN IF NOT EXISTS parties jsonb NOT NULL DEFAULT '[]';
+  ALTER TABLE financial_products.products ADD COLUMN IF NOT EXISTS pins jsonb;
+  ALTER TABLE financial_products.products ADD COLUMN IF NOT EXISTS drift jsonb;
 `;
 
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -874,6 +987,9 @@ const toProductRecord = (r: Row): ProductRecord => ({
   action: ((r.action as string) ?? "issuance") as ProductAction,
   underlying_product_ids: (r.underlying_product_ids as string[]) ?? [],
   components: (r.components as Component[]) ?? [],
+  parties: (r.parties as PartyBinding[]) ?? [],
+  pins: (r.pins as Pins | null) ?? null,
+  drift: (r.drift as ProductRecord["drift"]) ?? null,
   // Mynt's reference catalogue (no owner) is open to every developer.
   access_mode: (r.owner_id == null ? "open" : ((r.access_mode as string) ?? "approval")) as AccessMode,
   build_terms: (r.build_terms as BuildTerms) ?? {},
@@ -885,10 +1001,45 @@ const toProductRecord = (r: Row): ProductRecord => ({
 const toEntity = (r: Row): Entity => ({
   id: r.id as string,
   name: r.name as string,
+  legal_form: (r.legal_form as Entity["legal_form"]) ?? null,
+  incorporation: (r.incorporation as Entity["incorporation"]) ?? null,
+  identifiers: (r.identifiers as Identifier[]) ?? [],
+  status: ((r.status as string) ?? "active") as EntityStatus,
   registration_numbers: (r.registration_numbers as Record<string, string>) ?? {},
   regions: (r.regions as string[]) ?? [],
   created_by: (r.created_by as string | null) ?? null,
   created_at: iso(r.created_at)!,
+});
+
+const toGrcRecord = (r: Row): GrcRecord => ({
+  id: r.id as string,
+  entity_id: r.entity_id as string,
+  party_id: (r.party_id as string | null) ?? null,
+  licence_id: (r.licence_id as string | null) ?? null,
+  section: r.section as string,
+  ref: (r.ref as string | null) ?? null,
+  key: r.key as string,
+  record: (r.record as Record<string, unknown>) ?? {},
+  status: r.status as GrcRecord["status"],
+  created_by: (r.created_by as string | null) ?? null,
+  created_at: iso(r.created_at)!,
+});
+
+const toParty = (r: Row): Party => ({
+  id: r.id as string,
+  entity_id: r.entity_id as string,
+  kind: r.kind as Party["kind"],
+  person: (r.person as Party["person"]) ?? null,
+  legal_entity_id: (r.legal_entity_id as string | null) ?? null,
+  attributes: (r.attributes as Party["attributes"]) ?? {},
+  fills: (r.fills as Party["fills"]) ?? [],
+  relationship: (r.relationship as string | null) ?? null,
+  since: (r.since as string | null) ?? null,
+  until: (r.until as string | null) ?? null,
+  status: r.status as Party["status"],
+  created_by: (r.created_by as string | null) ?? null,
+  created_at: iso(r.created_at)!,
+  updated_at: iso(r.updated_at)!,
 });
 
 const toHeldLicense = (r: Row): HeldLicense => ({
@@ -1071,7 +1222,55 @@ export class Store {
     const store = new Store(db);
     await store.liftScopeProductTypes();
     await store.migrateProductLines();
+    await store.migrateComponents();
     return store;
+  }
+
+  // Components used to name a regulated product type as their primitive, with provided_by self or a
+  // partner (a firm on Mynt or just a name). Now the primitive is the line and the provider is the owner or
+  // a party on its roster: a partner firm on Mynt becomes a counterparty on the owner's roster; a partner
+  // known only by name is left unassigned for the firm to name properly.
+  private async migrateComponents(): Promise<void> {
+    type Legacy = { region: string; primitive: string; action: Component["action"]; provided_by?: string; partner_entity_id?: string | null };
+    const rows = (await this.all("SELECT id, entity_id, data, components FROM financial_products.products WHERE jsonb_array_length(components) > 0")).filter(
+      (r) => (r.components as Record<string, unknown>[]).some((c) => "region" in c && !("key" in c)),
+    );
+    if (!rows.length) return;
+    const types = await this.regulatedProductTypes();
+    const lines = new Map((await this.referenceData(true)).categories.map((c) => [c.id, c.product_lines]));
+    for (const r of rows) {
+      const entityId = r.entity_id as string | null;
+      const productLine = (r.data as FinancialProduct).product_line;
+      const keys = new Set<string>();
+      const components: Component[] = [];
+      for (const o of r.components as Legacy[]) {
+        const t = types.find((x) => x.region === o.region && x.id === o.primitive);
+        const typeLines = (t && lines.get(t.type_id)) ?? [];
+        const primitive = (typeLines.includes(productLine) ? productLine : (typeLines[0] ?? productLine)) as Component["primitive"];
+        let key = `${primitive}_${o.action}`;
+        for (let n = 2; keys.has(key); n++) key = `${primitive}_${o.action}_${n}`;
+        keys.add(key);
+        let provider: Component["provider"];
+        if (entityId && o.provided_by !== "partner") provider = { by: "self" };
+        else if (entityId && o.partner_entity_id) {
+          const existing = (await this.partiesOf(entityId)).find((p) => p.status === "active" && p.legal_entity_id === o.partner_entity_id);
+          const party =
+            existing ??
+            (await this.addParty(null, { entity_id: entityId, kind: "external", person: null, legal_entity_id: o.partner_entity_id, attributes: {}, fills: [], relationship: "partner", since: null }));
+          provider = { by: "party", party_id: party.id };
+        }
+        components.push({
+          key,
+          country: (/^[A-Z]{2}$/.test(o.region) ? o.region : (r.data as FinancialProduct).region).toLowerCase(),
+          primitive,
+          action: o.action,
+          ...(t?.underlying ? { underlying: t.underlying } : {}),
+          ...(t?.wrapper ? { wrapper: t.wrapper } : {}),
+          ...(provider ? { provider } : {}),
+        });
+      }
+      await this.db.query("UPDATE financial_products.products SET components = $2 WHERE id = $1", [r.id, JSON.stringify(components)]);
+    }
   }
 
   // Products used to sit in four lines (credit, wealth, insurance, treasury). Move stored products,
@@ -1706,8 +1905,29 @@ export class Store {
 
   // Products
 
-  async setComponents(productId: string, components: Component[]): Promise<void> {
-    await this.db.query("UPDATE financial_products.products SET components = $2, updated_at = now() WHERE id = $1", [productId, JSON.stringify(components)]);
+  async setComposition(productId: string, components: Component[], parties: PartyBinding[]): Promise<void> {
+    await this.db.query("UPDATE financial_products.products SET components = $2, parties = $3, updated_at = now() WHERE id = $1", [
+      productId,
+      JSON.stringify(components),
+      JSON.stringify(parties),
+    ]);
+  }
+
+  // Pinning a new live version clears any drift recorded against the previous one.
+  async setPins(productId: string, pins: Pins | null): Promise<void> {
+    await this.db.query("UPDATE financial_products.products SET pins = $2, drift = NULL WHERE id = $1", [productId, pins && JSON.stringify(pins)]);
+  }
+
+  async setDrift(productId: string, drift: ProductRecord["drift"]): Promise<void> {
+    await this.db.query("UPDATE financial_products.products SET drift = $2 WHERE id = $1", [productId, drift && JSON.stringify(drift)]);
+  }
+
+  // Published products whose pins rest on this legal entity (as owner, provider or party holder); all of them without one.
+  async pinnedProducts(entityId?: string): Promise<ProductRecord[]> {
+    const rows = entityId
+      ? await this.all("SELECT * FROM financial_products.products WHERE status = 'published' AND pins->'entity_ids' ? $1 ORDER BY id", [entityId])
+      : await this.all("SELECT * FROM financial_products.products WHERE status = 'published' AND pins IS NOT NULL ORDER BY id");
+    return rows.map(toProductRecord);
   }
 
   async getProduct(id: string): Promise<ProductRecord | undefined> {
@@ -2014,12 +2234,107 @@ export class Store {
 
   // Entities and held licences
 
-  async createEntity(createdBy: string, e: Pick<Entity, "name" | "registration_numbers" | "regions">): Promise<Entity> {
+  async createEntity(
+    createdBy: string | null,
+    e: Pick<Entity, "name" | "registration_numbers" | "regions"> & Partial<Pick<Entity, "legal_form" | "incorporation" | "identifiers">>,
+  ): Promise<Entity> {
     const r = await this.one(
-      "INSERT INTO financial_products.entities (id, name, registration_numbers, regions, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING *",
-      [randomUUID(), e.name, JSON.stringify(e.registration_numbers), e.regions, createdBy],
+      `INSERT INTO financial_products.entities (id, name, registration_numbers, regions, created_by, legal_form, incorporation, identifiers)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [
+        randomUUID(),
+        e.name,
+        JSON.stringify(e.registration_numbers),
+        e.regions,
+        createdBy,
+        e.legal_form ?? null,
+        e.incorporation ? JSON.stringify(e.incorporation) : null,
+        JSON.stringify(e.identifiers ?? []),
+      ],
     );
     return toEntity(r!);
+  }
+
+  async setEntityFacts(id: string, e: Partial<Pick<Entity, "legal_form" | "incorporation" | "identifiers">>): Promise<Entity> {
+    const r = await this.one(
+      `UPDATE financial_products.entities SET legal_form = COALESCE($2, legal_form), incorporation = COALESCE($3, incorporation),
+         identifiers = COALESCE($4, identifiers) WHERE id::text = $1 RETURNING *`,
+      [id, e.legal_form ?? null, e.incorporation ? JSON.stringify(e.incorporation) : null, e.identifiers ? JSON.stringify(e.identifiers) : null],
+    );
+    return toEntity(r!);
+  }
+
+  async setEntityStatus(id: string, status: EntityStatus): Promise<Entity> {
+    const r = await this.one("UPDATE financial_products.entities SET status = $2 WHERE id::text = $1 RETURNING *", [id, status]);
+    return toEntity(r!);
+  }
+
+  // Parties on a firm's roster
+
+  async addParty(createdBy: string | null, p: Pick<Party, "entity_id" | "kind" | "person" | "legal_entity_id" | "attributes" | "fills" | "relationship" | "since">): Promise<Party> {
+    const r = await this.one(
+      `INSERT INTO financial_products.entity_parties
+         (id, entity_id, kind, person, legal_entity_id, attributes, fills, relationship, since, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [
+        randomUUID(),
+        p.entity_id,
+        p.kind,
+        p.person && JSON.stringify(p.person),
+        p.legal_entity_id,
+        JSON.stringify(p.attributes),
+        JSON.stringify(p.fills),
+        p.relationship,
+        p.since,
+        createdBy,
+      ],
+    );
+    return toParty(r!);
+  }
+
+  async getParty(id: string): Promise<Party | undefined> {
+    const r = await this.one("SELECT * FROM financial_products.entity_parties WHERE id::text = $1", [id]);
+    return r && toParty(r);
+  }
+
+  async partiesOf(entityId: string): Promise<Party[]> {
+    return (await this.all("SELECT * FROM financial_products.entity_parties WHERE entity_id = $1 ORDER BY created_at", [entityId])).map(toParty);
+  }
+
+  // GRC folders
+
+  async fileGrcRecord(createdBy: string | null, r: Pick<GrcRecord, "entity_id" | "party_id" | "licence_id" | "section" | "ref" | "key" | "record">): Promise<GrcRecord> {
+    await this.db.query(
+      `UPDATE financial_products.grc_records SET status = 'superseded'
+       WHERE entity_id = $1 AND COALESCE(party_id::text, '') = COALESCE($2::text, '') AND COALESCE(licence_id::text, '') = COALESCE($3::text, '')
+         AND section = $4 AND key = $5 AND status = 'current'`,
+      [r.entity_id, r.party_id, r.licence_id, r.section, r.key],
+    );
+    const row = await this.one(
+      `INSERT INTO financial_products.grc_records (id, entity_id, party_id, licence_id, section, ref, key, record, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [randomUUID(), r.entity_id, r.party_id, r.licence_id, r.section, r.ref, r.key, JSON.stringify(r.record), createdBy],
+    );
+    return toGrcRecord(row!);
+  }
+
+  async grcRecords(entityId: string, opts: { party_id?: string | null; history?: boolean } = {}): Promise<GrcRecord[]> {
+    const rows = await this.all(
+      `SELECT * FROM financial_products.grc_records WHERE entity_id = $1
+         AND ($2::boolean OR status = 'current')
+         AND ($3::text IS NULL OR party_id::text = $3)
+       ORDER BY section, key, created_at`,
+      [entityId, Boolean(opts.history), opts.party_id ?? null],
+    );
+    return rows.map(toGrcRecord);
+  }
+
+  async endParty(id: string, until: string): Promise<Party> {
+    const r = await this.one(
+      "UPDATE financial_products.entity_parties SET status = 'ended', until = $2, updated_at = now() WHERE id::text = $1 RETURNING *",
+      [id, until],
+    );
+    return toParty(r!);
   }
 
   async getEntity(id: string): Promise<Entity | undefined> {

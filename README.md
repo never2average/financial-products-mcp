@@ -409,7 +409,7 @@ Product lines group products by **economic function**, not asset class: what a p
 
 A product that spans functions is a **composition** of primitives rather than a line of its own. A cross-border transfer is an exchange primitive (the currency conversion) plus a payments primitive (moving the money). Retirement is wealth plus a statutory wrapper, and commodities are an underlying, not a line.
 
-The **regulated primitives** are each region's regulated product types. Each one lists the **actions** that can be taken on it:
+The **primitive is the line itself**. A product component is a line with an action, in a country. Collateral, customer segment and purpose aren't attributes of the primitive: they are the product's business context (collateral, for instance, is a source of value in underwriting). What a component falls under in a country, its **perimeter**, is every regulated product type there whose category is on that line and which allows the action. Who supervises it, which licences may provide it, and the law recorded against it all follow from that perimeter. Each regulated product type lists the **actions** that can be taken on it:
 
 - **issuance**: creating it as the issuer
 - **sale**: distributing it for its issuer
@@ -425,6 +425,45 @@ Two optional attributes describe the primitive itself:
 
 - `underlying`: what it is made of: `cash`, `securities`, `commodities`, `real_assets`, `receivables`, `risk` or `data`
 - `wrapper`: a statutory or tax structure around it: `statutory_pension`, `tax_advantaged` or `government_scheme`
+
+### Legal entities: facts, parties and GRC folders
+
+A legal entity is recorded as typed facts, never prose:
+- **Legal form**, from a fixed list.
+- **Incorporation**, as lowercase ISO 3166 codes such as `in` or `in-mh`.
+- **Identifiers**, as `{ scheme, value }`, for example `in_cin`, `lei` or `us_ein`.
+- **Status**, which admins set from the company registry.
+- **Licences held**, which admins verify.
+
+Each entity keeps a **party roster** (`add_party`, `end_party`):
+- **Internal** parties are people, such as the compliance officer.
+- **External** parties are other legal entities, such as the statutory auditor or a lending partner.
+
+A party fills the mandatory stakeholders that the licence type of a held licence requires (`grc.mandatory_stakeholders` in the regulatory model). It may also be a counterparty, with a relationship code. Parties aren't edited: to change one, end it and add a new one.
+
+`get_my_entity` reconciles each held licence against the roster. It reports:
+- which mandated stakeholders are filled, and by whom;
+- which are missing;
+- which parties fail the stakeholder's qualification criteria;
+- which parties have no stated facts for those criteria.
+
+Each entity, and each party on its roster, has a **GRC folder** (`file_grc_record`, `get_grc_folder`) laid out like the GRC of the licences it holds. It has two parts:
+- **Registers.** Obligations hold a compliance status and the owner party. Filings hold the period, status and when they were filed. Risks hold the inherent and residual rating. Controls and inspection events follow the licence's templates.
+- **Repositories.** Communications, enforcement actions and press releases are simple records. Policies, risk models and inspection history follow the licence's templates.
+
+Template records are checked against the template's field schema. Owners and approvers must be active parties on the roster. Mynt matches the folder against each licence's GRC and lists the gaps:
+- an item with no record;
+- an owner or approver who doesn't fill the stakeholder the regulator holds accountable;
+- an obligation marked non-compliant.
+
+A vendor's due diligence goes in the vendor's own folder and still counts towards the licence.
+
+A product names who provides each component: the owner itself, under one of its licences, or an external party on the owner's roster. Products never name parties by free text. Publishing pins two things: the live composition, and a hash of the state of every entity, licence and party it rests on. Some changes mean the product has drifted:
+- a licence lapses or is suspended;
+- a party ends;
+- an entity is struck off.
+
+A drifted product pauses new enrollments and emits `product.drifted`. New enrollments resume when the state is restored (`product.drift_cleared`) or a new version is published. Changes made through Mynt are checked at once, and the HTTP server also re-checks every hour so expiries are caught.
 
 Stores created under the original four lines (credit, wealth, insurance and the old cash-and-markets line) are moved onto these lines once, when Mynt starts. Old cash-and-markets products go by category: deposits to account_operations, bonds and money-market instruments to credit, derivatives to derivatives, and funds to wealth. REIT and InvIT units go to securitization. Published products stay published, and their test reports are re-run so they match the migrated data.
 

@@ -38,6 +38,8 @@ const INNOVATOR_TOOLS = [
   // firm, licences, and who may build on its products
   "create_entity", "get_my_entity", "invite_developer", "list_experiences", "list_requests", "register_license",
   "review_request", "revoke_access", "set_product_access", "suspend_product_experiences",
+  // the firm's party roster and GRC folder
+  "add_party", "end_party", "file_grc_record", "get_grc_folder", "set_entity_facts",
   // runtime layer
   "get_product_distribution_metrics", "report_handoff_outcome",
   // product requests

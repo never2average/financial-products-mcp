@@ -26,7 +26,11 @@ import {
 } from "./regulatory.js";
 import { ROLES, type Role, type Store, type User } from "./store.js";
 import { emitProductEvent } from "./runtime.js";
-import { ComponentSchema, productRegime, validateComponents } from "./regime.js";
+import { driftSweep } from "./pins.js";
+import { reconcileEntityGrc } from "./entity-grc.js";
+import { reconcileEntity } from "./parties.js";
+import { ComponentSchema, PartyBindingSchema, productRegime, validateComposition } from "./regime.js";
+import { ENTITY_STATUSES } from "./store.js";
 
 const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] });
 const fail = (error: string) => ({ ...json({ error }), isError: true });
@@ -348,20 +352,41 @@ export function registerAdminTools(server: McpServer, store: Store, user: User, 
     "list_entities",
     {
       title: "Firms",
-      description: "Admin: every registered firm with its members and licences.",
+      description: "Admin: every registered legal entity with its members, licences, party roster, and each licence's mandated stakeholders reconciled against the roster.",
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
-    async () =>
-      json(
+    async () => {
+      const ref = await store.referenceData(true);
+      return json(
         await Promise.all(
           (await store.listEntities()).map(async (e) => ({
             ...e,
             members: (await store.entityMembers(e.id)).map((m) => ({ id: m.id, name: m.name, email: m.email })),
             licenses: await store.licensesOf(e.id),
+            parties: await store.partiesOf(e.id),
+            reconciliation: await reconcileEntity(store, e.id, ref),
+            grc: await reconcileEntityGrc(store, e.id, ref),
           })),
         ),
-      ),
+      );
+    },
+  );
+
+  server.registerTool(
+    "set_entity_status",
+    {
+      title: "Set a legal entity's status",
+      description:
+        "Admin: record a legal entity's status from its company registry (active, suspended, under_liquidation, dissolved, struck_off). Every published product resting on it is re-checked, and drifted ones pause new sales.",
+      inputSchema: { entity_id: z.string(), status: z.enum(ENTITY_STATUSES), note: z.string().optional() },
+    },
+    async ({ entity_id, status, note }) => {
+      if (!(await store.getEntity(entity_id))) return fail(`No legal entity '${entity_id}'`);
+      const entity = await store.setEntityStatus(entity_id, status);
+      await audit("set_entity_status", entity_id, { status, note });
+      return json({ ...entity, drifted_products: await driftSweep(store, entity_id) });
+    },
   );
 
   server.registerTool(
@@ -411,7 +436,7 @@ export function registerAdminTools(server: McpServer, store: Store, user: User, 
       if (!held) return fail(`No registered licence '${license_record_id}'`);
       const reviewed = await store.reviewLicense(held.id, decision, user.id, note ?? null);
       await audit("review_license", held.id, { decision, entity_id: held.entity_id, license: held.license_id });
-      return json(reviewed);
+      return json({ ...reviewed, drifted_products: await driftSweep(store, held.entity_id) });
     },
   );
 
@@ -520,17 +545,17 @@ export function registerAdminTools(server: McpServer, store: Store, user: User, 
     "admin_set_product_composition",
     {
       title: "Set a reference product's composition",
-      description: "Admin: the regulated primitives one of Mynt's reference products (or any product) is made of, per jurisdiction. Its regulatory regime follows from them (get_product_regime).",
-      inputSchema: { product_id: z.string(), components: z.array(ComponentSchema).min(1).max(20) },
+      description: "Admin: the regulated primitives one of Mynt's reference products (or any product) is made of, per jurisdiction. Reference products name no providers; a firm's product names them from its roster. Its regulatory regime follows (get_product_regime).",
+      inputSchema: { product_id: z.string(), components: z.array(ComponentSchema).min(1).max(20), parties: z.array(PartyBindingSchema).max(100).default([]) },
     },
-    async ({ product_id, components }) => {
+    async ({ product_id, components, parties }) => {
       const record = await store.getProduct(product_id);
       if (!record) return fail(`No product '${product_id}'`);
-      const errors = await validateComponents(store, record, components);
+      const errors = await validateComposition(store, record, components, parties);
       if (errors.length) return { ...json({ error: "The composition can't be saved", errors }), isError: true };
-      await store.setComponents(product_id, components);
+      await store.setComposition(product_id, components, parties);
       await audit("admin_set_product_composition", product_id, { components: components.length });
-      return json(await productRegime(store, { ...record, components }));
+      return json(await productRegime(store, { ...record, components, parties }));
     },
   );
 

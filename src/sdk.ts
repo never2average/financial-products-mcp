@@ -15,6 +15,8 @@ export const WEBHOOK_EVENTS = [
   "product.version_published",
   "product.unpublished",
   "product.suspended",
+  "product.drifted",
+  "product.drift_cleared",
   "access.approved",
   "access.revoked",
   "request.decided",

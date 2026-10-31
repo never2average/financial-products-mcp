@@ -29,6 +29,8 @@ const DEVELOPER_TOOLS = [
   // SDKs and experiences
   "create_sdk", "generate_sdk_release", "get_sdk_release", "list_sdk_releases", "list_sdks",
   "render_experience_preview", "set_experience",
+  // journeys
+  "check_journey", "get_data_dictionary", "get_default_journey", "list_journeys", "preview_journey", "save_journey",
 ];
 const INNOVATOR_TOOLS = [
   "create_product", "list_my_products", "publish_product", "test_product", "unpublish_product", "update_product",

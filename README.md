@@ -109,6 +109,18 @@ A developer can have Mynt **build and ship** one of their experiences. `start_bu
 
 **Configuration:** `BOAT_API_KEY`, `PUBLIC_URL` and a model backend for the agent proxy (builds are disabled without them): either `GOOGLE_APPLICATION_CREDENTIALS` (a service account key file with Vertex AI User on a project where the Claude models are enabled; optional `VERTEX_PROJECT_ID`, `VERTEX_REGION`, default `global`) or `ANTHROPIC_API_KEY` (a dedicated key with a spend limit); `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` and `GITHUB_APP_SLUG` (pushing is disabled without them); optional `BUILD_AGENT_MODEL` (default `claude-opus-5-5`), `BUILD_SANDBOX_TYPE` and `BUILD_SANDBOX_TTL_SECONDS`.
 
+### The product desk (innovators)
+
+The desk works out whether a product makes sense, financially and legally. Each firm connects its own GitHub repository as its **workspace** (`connect_desk_repository`, after installing the Mynt GitHub App on it). Its computational logic accumulates there as models: `models/<name>/model.json` declares which products a model applies to, the inputs it needs, and how to run it. The code reads the product, its term sheet and the relevant regulation, and writes a report: a verdict (feasible, marginal or infeasible), metrics, checks that cite the law by `legal_ref`, and stress scenarios.
+
+Work is split by what it needs:
+- **Code runs (no AI).** `analyze_product` checks the workspace for a model that applies. If the product's term sheet (`set_product_terms`) has that model's inputs, Mynt clones the repository in a sandbox and executes the model. This is deterministic and re-runnable, costs cents, and never involves an agent. The clone token is removed before any model code runs. If inputs are missing, you get the list to fill in.
+- **Agent tasks (intelligence).** If no model applies yet, or you ask for one with `desk_task` (e.g. "add an ALM liquidity ladder for our FD book"), the desk agent takes over. That's Claude Code in a sandbox, through Mynt's agent proxy. It designs the model, chooses and states the assumptions, interprets the regulation from the admins' model, and writes the code and tests on a branch. All arithmetic happens in code. **Mynt then runs that branch itself** in a clean sandbox with no credentials, saves that report, and opens a pull request on the workspace with Mynt's numbers. The agent's own numbers are never used.
+
+`test_product` adds an advisory `feasibility` check from the latest report for the current term sheet. It reports stale when the terms changed. `get_product_terms` shows the term sheet and its analysis; `list_desk_jobs`, `get_desk_job` and `stop_desk_job` track the work.
+
+**Configuration:** a boat.dev key and the GitHub App, plus a model backend for agent tasks. Optional: `DESK_JOB_CAP_USD` (per agent task, default 5), `DESK_RUN_CAP_USD` (per code run, default 1) and `DESK_MONTHLY_CAP_USD` (per firm, default 50; unfinished jobs count at their cap).
+
 ### The connector: business development by an agent
 
 Mynt's **connector** is an AI agent that grows Mynt. It finds innovators (licensed firms that could offer products) and developers (who could build on them), talks with them, and introduces people who should work together. It runs on its own schedule on the same harness as builds: Claude Code in a sandbox, using the model through Mynt's agent proxy. Its only tools are Mynt's MCP server: the `bd_*` tools and the public catalogue. Prospects, conversations and introductions live only in Mynt's database.

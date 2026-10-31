@@ -90,7 +90,8 @@ async function handle(
   // Build agents reach Anthropic through Mynt with a per-build token (see agent-proxy.ts).
   if (ctx.builds && url.pathname.startsWith("/agent/")) {
     const builds = ctx.builds;
-    const active = async (t: string) => (await builds.agentTokenActive(t)) || (!!ctx.bd && (await ctx.bd.agentTokenActive(t)));
+    const active = async (t: string) =>
+      (await builds.agentTokenActive(t)) || (!!ctx.bd && (await ctx.bd.agentTokenActive(t))) || (!!ctx.desk && (await ctx.desk.agentTokenActive(t)));
     return agentProxy(builds.config.agentBackend, active, req, res, url);
   }
   // One-click opt-out from the connector's messages.

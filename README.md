@@ -498,6 +498,17 @@ Every error comes back at once.
 
 **At publish.** The definition is checked again, since parties, licences and records may have changed. Its hash is then pinned as `pins.definition_hash`.
 
+**Developer contract.** Publishing a defined product freezes its **developer contract**: exactly what developers build against. It comes from `get_developer_contract`, and it's also returned by `get_product_sdk`. Innovators preview it in `check_product_definition`.
+- **Offers** per customer segment: eligibility, terms, rates, fees and customer-facing limits, with segment overrides applied.
+- **Actions:**
+  - `view_offers`;
+  - each partner handoff, as the provider's hosted flow on the customer's device, with its consent purpose and typed inputs and outputs;
+  - each customer-triggered lifecycle event, as an idempotent server call.
+- **Lifecycle events** an app can listen to, the **consent purposes** it must hold and the **documents** it must show.
+- **Never included:** algorithms, risk models, fraud and velocity controls, costs, revenue shares and the parties behind the product.
+
+Each version's contract carries a `contract_hash`, which changes whenever the contract does.
+
 **Product GRC folders.** Each product has its own GRC folder: `file_grc_record` and `get_grc_folder` with `product_id`. This is where, for example, the governance of the product's risk models lives.
 
 Variants (a template plus a patch) can't be saved yet. Save the resolved product as `plane.role: "standalone"`.

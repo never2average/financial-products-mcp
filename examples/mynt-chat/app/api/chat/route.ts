@@ -1,17 +1,33 @@
 import { NextResponse, type NextRequest } from "next/server";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { runTurn, toClaudeTools } from "@/lib/agent";
-import { chatModel } from "@/lib/config";
+import { chatDailyMessages, chatModel } from "@/lib/config";
 import { encodeEvent, type ChatEvent } from "@/lib/events";
 import { createLlm } from "@/lib/llm";
-import { callMyntTool, connectMynt, listChatTools, NotSignedInError } from "@/lib/mynt";
+import { callMyntTool, connectMynt, listChatTools, NotAllowedError, NotSignedInError } from "@/lib/mynt";
 import { currentSession, fromOwnOrigin } from "@/lib/session";
+import type { Session } from "@/lib/session-store";
 import { appendEvent } from "@/lib/transcript";
+import { DailyLimiter } from "@/lib/usage";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 const MAX_MESSAGE = 4000;
+const limiter = new DailyLimiter(chatDailyMessages());
+
+// The Mynt user behind this session, asked once (sessions can be re-created, users can't).
+async function myntUserId(session: Session, client: Client): Promise<string | null> {
+  if (session.userId) return session.userId;
+  const me = await callMyntTool(client, "whoami", {});
+  try {
+    const id = (JSON.parse(me.text) as { id?: unknown }).id;
+    if (typeof id === "string" && id) session.userId = id;
+  } catch {
+    // leave it unset; the cap then can't apply to this turn
+  }
+  return session.userId ?? null;
+}
 
 // One user message in, the assistant's reply streamed out as server-sent events.
 export async function POST(req: NextRequest) {
@@ -41,6 +57,11 @@ export async function POST(req: NextRequest) {
       let mynt: Client | undefined;
       try {
         mynt = await connectMynt(session);
+        const userId = await myntUserId(session, mynt);
+        if (userId && !limiter.take(userId)) {
+          emit({ type: "error", message: `You've reached today's limit of ${limiter.max} messages. It resets at midnight UTC.` });
+          return;
+        }
         const tools = toClaudeTools(await listChatTools(mynt));
         const client = mynt;
         // Anything the user did outside the chat since the last turn goes first, as data.
@@ -73,6 +94,7 @@ export async function POST(req: NextRequest) {
         }
       } catch (err) {
         if (err instanceof NotSignedInError) emit({ type: "auth_required" });
+        else if (err instanceof NotAllowedError) emit({ type: "error", message: `${err.message}. Sign-up may be invite-only right now; ask the Mynt team for access.` });
         else {
           console.error("chat turn failed:", err instanceof Error ? err.message : err);
           emit({ type: "error", message: "Something went wrong reaching Mynt. Please try again." });

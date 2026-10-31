@@ -34,3 +34,10 @@ export function oauthScope(): string {
 export function chatModel(): string {
   return process.env.CHAT_MODEL?.trim() || "claude-opus-5-5";
 }
+
+// Chat messages each Mynt user may send per day (UTC); 0 turns the cap off.
+export function chatDailyMessages(): number {
+  const raw = process.env.CHAT_DAILY_MESSAGES?.trim();
+  const n = raw ? Number(raw) : 50;
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 50;
+}

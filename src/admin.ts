@@ -448,11 +448,27 @@ export function registerAdminTools(server: McpServer, store: Store, user: User, 
     "list_whitelist",
     {
       title: "Whitelist",
-      description: "Admin: who may sign in to Mynt and with which roles, plus the users who have signed in.",
+      description: "Admin: who may sign in to Mynt and with which roles, plus the users who have signed in, and whether public sign-up is on.",
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
-    async () => json({ whitelist: await store.listInvites(), users: await store.listUsers() }),
+    async () => json({ public_signup: await store.publicSignup(), whitelist: await store.listInvites(), users: await store.listUsers() }),
+  );
+
+  server.registerTool(
+    "set_public_signup",
+    {
+      title: "Open or close public sign-up",
+      description:
+        "Admin: when on, anyone who signs in with a verified email joins as a consumer (an invite is written for them, so they show in list_whitelist and can be revoked). Higher roles still need invite_user. People an admin revoked stay out. Also turns the sign-in provider's allowlist off (on when closing), best effort.",
+      inputSchema: { enabled: z.boolean() },
+    },
+    async ({ enabled }) => {
+      await store.setSetting("public_signup", { enabled }, user.id);
+      const warning = ctx.clerkAdmin ? await ctx.clerkAdmin.setAllowlist(!enabled) : "no Clerk admin key configured: the sign-in provider's allowlist wasn't changed";
+      await audit("set_public_signup", "public_signup", { enabled });
+      return json({ public_signup: enabled, ...(warning ? { warning } : {}) });
+    },
   );
 
   server.registerTool(
@@ -472,6 +488,7 @@ export function registerAdminTools(server: McpServer, store: Store, user: User, 
       if (admins.includes(lower) && !roles.includes("admin") && admins.length === 1)
         return fail("That would remove the last admin; make someone else an admin first");
       const invite = await store.upsertInvite(lower, [...new Set(roles)] as Role[]);
+      await store.unblockSignup(lower);
       const warnings = [(await ctx.clerkAdmin?.allow(lower)) ?? null, await mirrorToClerk(lower, invite.roles)].filter(Boolean);
       await audit("invite_user", lower, { roles: invite.roles });
       return json({ ...invite, ...(warnings.length ? { warnings } : {}) });
@@ -503,6 +520,8 @@ export function registerAdminTools(server: McpServer, store: Store, user: User, 
       const admins = await adminInvites();
       if (admins.length === 1 && admins[0] === lower) return fail("That is the last admin; make someone else an admin first");
       if (!(await store.deleteInvite(lower))) return fail(`${lower} is not on the whitelist`);
+      // Public sign-up mustn't let them straight back in as a consumer.
+      await store.blockSignup(lower, user.id);
       await ctx.clerkAdmin?.disallow(lower);
       // Clear roles granted in Clerk too, or they would re-grant access on the next sign-in.
       const warning = await mirrorToClerk(lower, null);

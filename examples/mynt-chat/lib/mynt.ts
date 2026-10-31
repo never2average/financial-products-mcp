@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js";
 import { myntMcpUrl } from "./config";
 import { oauthProviderFor } from "./session";
@@ -10,6 +10,22 @@ export class NotSignedInError extends Error {
   constructor() {
     super("Sign in to Mynt to continue");
   }
+}
+
+// Signed in, but Mynt doesn't let this account in (sign-up is invite-only, the email isn't
+// verified, or an admin revoked it). The message is Mynt's own.
+export class NotAllowedError extends Error {}
+
+function refusal(err: unknown): string | null {
+  if (!(err instanceof StreamableHTTPError) || err.code !== 403) return null;
+  const body = err.message.match(/\{.*\}/s)?.[0];
+  try {
+    const message = body ? (JSON.parse(body) as { message?: unknown }).message : undefined;
+    if (typeof message === "string" && message) return message;
+  } catch {
+    // not JSON; fall through
+  }
+  return "Your account isn't allowed on Mynt";
 }
 
 // Mynt tools this app offers to Claude. Tools that act for the user are deliberately absent:
@@ -42,6 +58,8 @@ export async function connectMynt(session: Session): Promise<Client> {
       session.tokens = undefined;
       throw new NotSignedInError();
     }
+    const refused = refusal(err);
+    if (refused) throw new NotAllowedError(refused);
     throw err;
   }
   return client;

@@ -187,6 +187,7 @@ export interface GrcRecord {
   id: string;
   entity_id: string;
   party_id: string | null;
+  product_id: string | null; // a record in one of the entity's products' folders
   licence_id: string | null;
   section: string;
   ref: string | null;
@@ -205,6 +206,7 @@ export interface Pins {
   parties: PartyBinding[];
   entity_ids: string[];
   state: { entities: Record<string, string>; licences: Record<string, string>; parties: Record<string, string> };
+  definition_hash?: string; // the live v2 definition (see definition.ts), when the product has one
 }
 export type DriftChange = { kind: "entity" | "licence" | "party"; id: string; was: string; now: string };
 export interface ProductRecord {
@@ -220,6 +222,7 @@ export interface ProductRecord {
   parties: PartyBinding[]; // parties from the owner's roster, bound to components
   pins: Pins | null; // the live version's composition and the state of everything it rests on (see pins.ts)
   drift: { detected_at: string; changes: DriftChange[] } | null; // pinned state that changed: new sales pause
+  definition: Record<string, unknown> | null; // the v2 product definition (working copy; see definition.ts)
   access_mode: AccessMode;
   build_terms: BuildTerms;
   created_at: string;
@@ -891,6 +894,12 @@ const TABLES = `
   ALTER TABLE financial_products.products ADD COLUMN IF NOT EXISTS parties jsonb NOT NULL DEFAULT '[]';
   ALTER TABLE financial_products.products ADD COLUMN IF NOT EXISTS pins jsonb;
   ALTER TABLE financial_products.products ADD COLUMN IF NOT EXISTS drift jsonb;
+  -- v2 product definitions, and product GRC folders (records scoped to one of the entity's products).
+  ALTER TABLE financial_products.products ADD COLUMN IF NOT EXISTS definition jsonb;
+  ALTER TABLE financial_products.grc_records ADD COLUMN IF NOT EXISTS product_id text REFERENCES financial_products.products(id);
+  DROP INDEX IF EXISTS financial_products.grc_records_current_idx;
+  CREATE UNIQUE INDEX IF NOT EXISTS grc_records_current_v2_idx ON financial_products.grc_records
+    (entity_id, COALESCE(party_id::text, ''), COALESCE(product_id, ''), COALESCE(licence_id::text, ''), section, key) WHERE status = 'current';
   -- Deployment settings admins change from Mynt (e.g. whether anyone may sign up).
   CREATE TABLE IF NOT EXISTS financial_products.settings (
     key text PRIMARY KEY,
@@ -1003,6 +1012,7 @@ const toProductRecord = (r: Row): ProductRecord => ({
   parties: (r.parties as PartyBinding[]) ?? [],
   pins: (r.pins as Pins | null) ?? null,
   drift: (r.drift as ProductRecord["drift"]) ?? null,
+  definition: (r.definition as Record<string, unknown> | null) ?? null,
   // Mynt's reference catalogue (no owner) is open to every developer.
   access_mode: (r.owner_id == null ? "open" : ((r.access_mode as string) ?? "approval")) as AccessMode,
   build_terms: (r.build_terms as BuildTerms) ?? {},
@@ -1028,6 +1038,7 @@ const toGrcRecord = (r: Row): GrcRecord => ({
   id: r.id as string,
   entity_id: r.entity_id as string,
   party_id: (r.party_id as string | null) ?? null,
+  product_id: (r.product_id as string | null) ?? null,
   licence_id: (r.licence_id as string | null) ?? null,
   section: r.section as string,
   ref: (r.ref as string | null) ?? null,
@@ -1950,6 +1961,10 @@ export class Store {
 
   // Products
 
+  async setDefinition(productId: string, definition: Record<string, unknown> | null): Promise<void> {
+    await this.db.query("UPDATE financial_products.products SET definition = $2, updated_at = now() WHERE id = $1", [productId, definition && JSON.stringify(definition)]);
+  }
+
   async setComposition(productId: string, components: Component[], parties: PartyBinding[]): Promise<void> {
     await this.db.query("UPDATE financial_products.products SET components = $2, parties = $3, updated_at = now() WHERE id = $1", [
       productId,
@@ -2348,17 +2363,20 @@ export class Store {
 
   // GRC folders
 
-  async fileGrcRecord(createdBy: string | null, r: Pick<GrcRecord, "entity_id" | "party_id" | "licence_id" | "section" | "ref" | "key" | "record">): Promise<GrcRecord> {
+  async fileGrcRecord(
+    createdBy: string | null,
+    r: Pick<GrcRecord, "entity_id" | "party_id" | "licence_id" | "section" | "ref" | "key" | "record"> & { product_id?: string | null },
+  ): Promise<GrcRecord> {
     await this.db.query(
       `UPDATE financial_products.grc_records SET status = 'superseded'
        WHERE entity_id = $1 AND COALESCE(party_id::text, '') = COALESCE($2::text, '') AND COALESCE(licence_id::text, '') = COALESCE($3::text, '')
-         AND section = $4 AND key = $5 AND status = 'current'`,
-      [r.entity_id, r.party_id, r.licence_id, r.section, r.key],
+         AND section = $4 AND key = $5 AND COALESCE(product_id, '') = COALESCE($6::text, '') AND status = 'current'`,
+      [r.entity_id, r.party_id, r.licence_id, r.section, r.key, r.product_id ?? null],
     );
     const row = await this.one(
-      `INSERT INTO financial_products.grc_records (id, entity_id, party_id, licence_id, section, ref, key, record, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-      [randomUUID(), r.entity_id, r.party_id, r.licence_id, r.section, r.ref, r.key, JSON.stringify(r.record), createdBy],
+      `INSERT INTO financial_products.grc_records (id, entity_id, party_id, licence_id, section, ref, key, record, created_by, product_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [randomUUID(), r.entity_id, r.party_id, r.licence_id, r.section, r.ref, r.key, JSON.stringify(r.record), createdBy, r.product_id ?? null],
     );
     return toGrcRecord(row!);
   }

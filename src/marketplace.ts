@@ -86,6 +86,7 @@ export function registerMarketplaceTools(server: McpServer, store: Store, user: 
       const filed = await store.fileGrcRecord(user.id, {
         entity_id,
         party_id: input.party_id ?? null,
+        product_id: input.product_id ?? null,
         licence_id: input.licence_id ?? null,
         section: input.section,
         ref: input.ref ?? null,
@@ -102,19 +103,21 @@ export function registerMarketplaceTools(server: McpServer, store: Store, user: 
     {
       title: "Your GRC folder",
       description:
-        "Innovator: your entity's GRC folder (registers and repositories, current records), or one party's (party_id), with each held licence's GRC matched against it: what's answered and the gaps (no record, an owner who doesn't fill the stakeholder the regulator makes accountable, non-compliance). history: true includes superseded records.",
-      inputSchema: { party_id: z.string().uuid().optional(), history: z.boolean().default(false) },
+        "Innovator: your entity's GRC folder (registers and repositories, current records), one party's (party_id) or one product's (product_id: where its risk models' governance lives), with each held licence's GRC matched against it: what's answered and the gaps (no record, an owner who doesn't fill the stakeholder the regulator makes accountable, non-compliance). history: true includes superseded records.",
+      inputSchema: { party_id: z.string().uuid().optional(), product_id: z.string().optional(), history: z.boolean().default(false) },
       annotations: { readOnlyHint: true },
     },
-    async ({ party_id, history }) => {
+    async ({ party_id, product_id, history }) => {
       const { entity_id } = await me();
       if (!entity_id) return fail("You don't belong to an entity yet; create one with create_entity");
       if (party_id && (await store.getParty(party_id))?.entity_id !== entity_id) return fail(`No party '${party_id}' on your entity's roster`);
       const all = await store.grcRecords(entity_id, { history });
-      const records = party_id ? all.filter((r) => r.party_id === party_id) : all.filter((r) => !r.party_id);
+      if (product_id && (await store.getProduct(product_id))?.entity_id !== entity_id) return fail(`No product '${product_id}' of your entity`);
+      const records = party_id ? all.filter((r) => r.party_id === party_id) : product_id ? all.filter((r) => r.product_id === product_id) : all.filter((r) => !r.party_id && !r.product_id);
       return json({
         entity_id,
         party_id: party_id ?? null,
+        product_id: product_id ?? null,
         ...folder(records),
         ...(history ? { history: records.filter((r) => r.status === "superseded") } : {}),
         reconciliation: await reconcileEntityGrc(store, entity_id),

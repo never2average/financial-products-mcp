@@ -51,7 +51,12 @@ async function setup() {
   const auth = new ClerkAuth({ secretKey: "sk_test_x", publishableKey: PUBLISHABLE_KEY, publicUrl: PUBLIC_URL, requireAudience: true }, store, clerk);
   // Stand-in for Clerk's Backend API: role changes land in the fake users' public metadata.
   const roleWrites = [];
+  const allowlistWrites = [];
   const clerkAdmin = {
+    setAllowlist: async (enabled) => {
+      allowlistWrites.push(enabled);
+      return null;
+    },
     allow: async () => null,
     disallow: async () => {},
     setRoles: async (id, roles) => {
@@ -78,7 +83,13 @@ async function setup() {
     const text = await res.text();
     return JSON.parse(text.match(/^data: (.*)$/m)?.[1] ?? text).result.tools.map((t) => t.name);
   };
-  return { store, clerk, base, rpc, tools, roleWrites, close: () => http.close() };
+  const callTool = async (name, args, token) => {
+    const res = await rpc("tools/call", { name, arguments: args }, token);
+    const text = await res.text();
+    const result = JSON.parse(text.match(/^data: (.*)$/m)?.[1] ?? text).result;
+    return { isError: result.isError ?? false, data: JSON.parse(result.content[0].text) };
+  };
+  return { store, clerk, base, rpc, tools, callTool, roleWrites, allowlistWrites, close: () => http.close() };
 }
 
 test("decodes the Clerk frontend API host from the publishable key", () => {
@@ -211,6 +222,52 @@ test("roles granted in Clerk (public metadata mynt_roles) whitelist the user; My
     assert.equal(res.status, 200);
     assert.deepEqual(roleWrites.at(-1), ["d1", null]);
     assert.equal((await rpc("tools/list", {}, devToken)).status, 403);
+  } finally {
+    close();
+  }
+});
+
+test("public sign-up: verified strangers join as consumers through an invite; revoked people stay out", async () => {
+  const { store, clerk, rpc, tools, callTool, allowlistWrites, close } = await setup();
+  try {
+    await store.upsertInvite("boss@example.com", ["admin"]);
+    const adminToken = clerk.addUser("a1", "boss@example.com");
+    const strangerToken = clerk.addUser("s1", "Stranger@Example.com");
+    assert.equal((await rpc("tools/list", {}, strangerToken)).status, 403, "invite-only by default");
+
+    const opened = await callTool("set_public_signup", { enabled: true }, adminToken);
+    assert.deepEqual(opened.data, { public_signup: true });
+    assert.deepEqual(allowlistWrites, [false], "the sign-in provider's allowlist goes off");
+    assert.equal((await callTool("list_whitelist", {}, adminToken)).data.public_signup, true);
+
+    const joined = await tools(strangerToken);
+    assert.ok(joined.includes("enroll_in_product"));
+    assert.ok(!joined.includes("create_app") && !joined.includes("create_product"), "consumer only");
+    assert.deepEqual((await store.getInvite("stranger@example.com")).roles, ["consumer"]);
+    assert.ok((await store.auditLog(10)).some((a) => a.action === "invite_via_public_signup" && a.target === "stranger@example.com"));
+
+    // An unverified email still gets nothing, and says why.
+    const unverified = clerk.addUser("u9", "maybe@example.com", { verified: false });
+    const refused = await rpc("tools/list", {}, unverified);
+    assert.equal(refused.status, 403);
+    assert.match((await refused.json()).message, /Verify your email/);
+
+    // Revoked: public sign-up doesn't let them back in, until an admin invites them again.
+    assert.equal((await callTool("revoke_user", { email: "stranger@example.com" }, adminToken)).isError, false);
+    assert.equal((await rpc("tools/list", {}, strangerToken)).status, 403);
+    assert.equal(await store.getInvite("stranger@example.com"), undefined);
+    await callTool("invite_user", { email: "stranger@example.com", roles: ["developer"] }, adminToken);
+    assert.ok((await tools(strangerToken)).includes("create_app"));
+
+    // Closing it again: new strangers are refused; people already in keep their invites.
+    await callTool("set_public_signup", { enabled: false }, adminToken);
+    assert.deepEqual(allowlistWrites, [false, true]);
+    const late = clerk.addUser("l1", "late@example.com");
+    assert.equal((await rpc("tools/list", {}, late)).status, 403);
+    assert.ok((await tools(strangerToken)).includes("create_app"));
+    // Only admins can flip it.
+    assert.equal((await rpc("tools/call", { name: "set_public_signup", arguments: { enabled: true } }, strangerToken)).status, 200);
+    assert.equal(await store.publicSignup(), false);
   } finally {
     close();
   }

@@ -119,10 +119,21 @@ export class ClerkAuth {
         invite = await this.store.upsertInvite(email, granted);
         await this.store.audit(null, "invite_via_clerk", email, { roles: granted, clerk_user_id: subject });
       }
+      // Public sign-up: anyone with a verified email joins as a consumer, through an invite like
+      // everyone else (so admins can see and revoke it), unless an admin revoked them before.
+      if (email && !invite && (await this.store.publicSignup()) && !(await this.store.isSignupBlocked(email))) {
+        invite = await this.store.upsertInvite(email, ["consumer"]);
+        await this.store.audit(null, "invite_via_public_signup", email, { roles: ["consumer"], clerk_user_id: subject });
+      }
     }
 
     if (!email || !invite) {
-      return { ok: false, status: 403, error: "not_whitelisted", message: "Your account is not on this server's whitelist" };
+      return {
+        ok: false,
+        status: 403,
+        error: "not_whitelisted",
+        message: email ? "Your account is not on this server's whitelist" : "Verify your email address with the sign-in provider, then sign in again",
+      };
     }
     if (linked && linked.roles.join() === invite.roles.join()) return { ok: true, user: linked };
     return { ok: true, user: await this.store.upsertClerkUser(subject, email, name, invite.roles) };
@@ -156,19 +167,27 @@ export class ClerkAdmin {
   // and audience claims so a token is bound to the resource it was issued for.
   // Returns warnings: Clerk's allowlist is a second layer (the invites table always decides), so a plan
   // without it doesn't stop the setup.
-  async setup(): Promise<string[]> {
+  async setup(opts: { allowlist: boolean } = { allowlist: true }): Promise<string[]> {
     const warnings: string[] = [];
-    try {
-      await this.call("PATCH", "/instance/restrictions", { allowlist: true });
-    } catch (e) {
-      warnings.push(`Clerk allowlist not enabled (${(e as Error).message}); the server's own whitelist still applies`);
-    }
+    const allowlist = await this.setAllowlist(opts.allowlist);
+    if (allowlist) warnings.push(allowlist);
     await this.call("PATCH", "/instance/oauth_application_settings", {
       dynamic_oauth_client_registration: true,
       pkce_required: true,
       aud_claim_enabled: true,
     });
     return warnings;
+  }
+
+  // Clerk's allowlist on (invite-only) or off (public sign-up). Best effort: Mynt's invites decide
+  // access either way, so a failure comes back as a warning.
+  async setAllowlist(enabled: boolean): Promise<string | null> {
+    try {
+      await this.call("PATCH", "/instance/restrictions", { allowlist: enabled });
+      return null;
+    } catch (e) {
+      return `Clerk allowlist not turned ${enabled ? "on" : "off"} (${(e as Error).message}); ${enabled ? "the server's own whitelist still applies" : "Clerk may still refuse sign-ups from emails not on its allowlist"}`;
+    }
   }
 
   // Best effort: the invite is what grants access; Clerk's allowlist only stops other sign-ups.

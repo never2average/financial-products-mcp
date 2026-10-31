@@ -891,6 +891,19 @@ const TABLES = `
   ALTER TABLE financial_products.products ADD COLUMN IF NOT EXISTS parties jsonb NOT NULL DEFAULT '[]';
   ALTER TABLE financial_products.products ADD COLUMN IF NOT EXISTS pins jsonb;
   ALTER TABLE financial_products.products ADD COLUMN IF NOT EXISTS drift jsonb;
+  -- Deployment settings admins change from Mynt (e.g. whether anyone may sign up).
+  CREATE TABLE IF NOT EXISTS financial_products.settings (
+    key text PRIMARY KEY,
+    value jsonb NOT NULL,
+    updated_by uuid REFERENCES financial_products.users(id),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  );
+  -- Emails an admin revoked: public sign-up doesn't let them back in.
+  CREATE TABLE IF NOT EXISTS financial_products.signup_blocks (
+    email text PRIMARY KEY,
+    blocked_by uuid REFERENCES financial_products.users(id),
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
 `;
 
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -1901,6 +1914,38 @@ export class Store {
 
   async listInvites(): Promise<Invite[]> {
     return (await this.all("SELECT * FROM financial_products.invites ORDER BY created_at")).map(toInvite);
+  }
+
+  async blockSignup(email: string, by: string | null): Promise<void> {
+    await this.db.query("INSERT INTO financial_products.signup_blocks (email, blocked_by) VALUES ($1, $2) ON CONFLICT (email) DO NOTHING", [email.toLowerCase(), by]);
+  }
+
+  async unblockSignup(email: string): Promise<void> {
+    await this.db.query("DELETE FROM financial_products.signup_blocks WHERE email = $1", [email.toLowerCase()]);
+  }
+
+  async isSignupBlocked(email: string): Promise<boolean> {
+    return Boolean(await this.one("SELECT 1 FROM financial_products.signup_blocks WHERE email = $1", [email.toLowerCase()]));
+  }
+
+  // Settings
+
+  async getSetting<T>(key: string): Promise<T | undefined> {
+    const r = await this.one("SELECT value FROM financial_products.settings WHERE key = $1", [key]);
+    return r ? (r.value as T) : undefined;
+  }
+
+  async setSetting(key: string, value: unknown, by: string | null): Promise<void> {
+    await this.db.query(
+      `INSERT INTO financial_products.settings (key, value, updated_by) VALUES ($1, $2, $3)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+      [key, JSON.stringify(value), by],
+    );
+  }
+
+  // Whether anyone with a verified email may sign in (as a consumer) without an invite.
+  async publicSignup(): Promise<boolean> {
+    return (await this.getSetting<{ enabled: boolean }>("public_signup"))?.enabled === true;
   }
 
   // Products

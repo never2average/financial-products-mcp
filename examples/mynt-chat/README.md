@@ -37,8 +37,11 @@ All configuration is through environment variables. Copy `.env.example` to `.env
 | `CHAT_MODEL` | no | Default `claude-opus-5-5` |
 | `CHAT_FALLBACK_MODEL` | no | Vertex only: the model to retry on if a request is declined by Claude's safety classifiers. Default `claude-opus-4-8`. (On the Claude API the fallback happens server side.) |
 | `MYNT_OAUTH_SCOPE` | no | Scopes to request. Default `openid profile email`. |
+| `CHAT_DAILY_MESSAGES` | no | Messages each Mynt user may send per day (UTC). Default `50`; `0` turns the cap off. Counted in memory, so run a single instance. |
 
 On Mynt's side, the authorization server (Clerk) must allow dynamic client registration. Mynt itself needs no change: the user signs in as an ordinary Mynt user, and what they can do follows their Mynt roles.
+
+**Public use.** Open the chat to anyone by turning on Mynt's public sign-up (an admin runs `set_public_signup` with `enabled: true`). New people who sign in with a verified email become consumers. While sign-up is invite-only, someone Mynt doesn't let in sees Mynt's reason in the chat, not a generic error. The daily message cap keeps an open chat's model costs bounded.
 
 ## Run locally
 

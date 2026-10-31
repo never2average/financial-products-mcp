@@ -564,7 +564,17 @@ node dist/index.js users revoke --email asha@example.com
 node dist/index.js users list
 ```
 
-`users invite` and `users revoke` also update Clerk's allowlist, so people who aren't invited can't sign up at all. Connect a client with just the URL; it will open Clerk's sign-in page:
+`users invite` and `users revoke` also update Clerk's allowlist, so people who aren't invited can't sign up at all.
+
+**Public sign-up.** An admin can open sign-up with `set_public_signup` (`enabled: true`). It works like this:
+- Anyone who signs in with a **verified** email then joins as a **consumer**. Mynt writes a consumer invite for them, so they show in `list_whitelist` and can be revoked like anyone else.
+- Higher roles still come only from `invite_user`.
+- `revoke_user` also blocks the email from signing up again, until an admin invites it once more.
+- Turning it on turns Clerk's allowlist off, and turning it off turns the allowlist back on. Both are best effort; Mynt's invites decide access either way.
+- Closing sign-up stops new people joining. People already in keep their invites.
+- `clerk setup` follows the setting.
+
+Connect a client with just the URL; it will open Clerk's sign-in page:
 
 ```bash
 claude mcp add --transport http mynt https://mcp.example.com/mcp

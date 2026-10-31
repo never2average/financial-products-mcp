@@ -2,11 +2,18 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { APP_EVENT_TYPES, appProducts, buildTerms, HANDOFF_ACTIONS, resolveHandoff } from "./runtime.js";
+import type { DeveloperContract } from "./contract.js";
 import type { ApiKey, App, ProductRecord, Store } from "./store.js";
 
 // The runtime REST API under /v1, for developers' shipped apps. Authenticated with a per-app key
 // (Authorization: Bearer mynt_live_… / mynt_test_…), read-only over products, plus hand-offs to
 // the innovator's own flow and analytics events. It never takes or returns consumer financial data.
+//
+// Keys belong on the app's server. A customer's browser or phone gets a client session instead: the
+// server mints it (POST /v1/client_sessions) for one customer, some products and some client-safe
+// contract actions, for at most an hour, and the device calls /v1/client/* with its mcs_… secret: the
+// contract's offers, the provider-hosted actions (only once their consent is recorded), and evidence of
+// what was shown and agreed.
 
 export interface RuntimeApiOptions {
   publicUrl?: string; // origin used for sandbox hand-off URLs (default PUBLIC_URL, else the Host header)
@@ -86,6 +93,26 @@ const EventBody = z
   })
   .strict();
 const SandboxOutcome = z.object({ outcome: z.enum(["completed", "failed"]) }).strict();
+const ActionId = z.string().regex(/^[a-z][a-z0-9_]*$/);
+const ClientSessionBody = z
+  .object({
+    product_ids: z.array(z.string().min(1).max(100)).min(1).max(20),
+    scopes: z.array(ActionId).max(50).default(["view_offers"]),
+    customer_ref: consumerRef.optional(),
+    ttl_seconds: z.number().int().min(60).max(3600).default(1800),
+  })
+  .strict();
+const ClientActionBody = z.object({ product_id: z.string().min(1).max(100) }).strict();
+const EvidenceBody = z
+  .object({
+    product_id: z.string().min(1).max(100),
+    type: z.enum(["disclosure_shown", "consent_given", "consent_withdrawn"]),
+    subject: z.string().min(1).max(100).describe("A document key from the contract, or a consent purpose"),
+    content_hash: z.string().regex(/^sha256:[0-9a-f]{64}$/).optional(),
+  })
+  .strict();
+// Actions a customer's device may start: those the contract marks client or either.
+const clientActions = (c: DeveloperContract) => c.actions.filter((a) => a.surface === "client" || a.surface === "either");
 
 // A product as the API shows it: its fields, live version, and build terms (the innovator's
 // hand-off URL is used through POST /v1/handoffs, not handed out).
@@ -112,6 +139,129 @@ export function createRuntimeApi(store: Store, opts: RuntimeApiOptions = {}) {
     return found;
   };
 
+  // /v1/client/*: a customer's device, on a client session.
+  const clientRoute = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+    path: string,
+    method: string,
+    cors: Record<string, string>,
+    allow: (methods: string) => void,
+  ) => {
+    const auth = req.headers.authorization;
+    const secret = auth?.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+    if (!/^mcs_(live|test)_/.test(secret))
+      throw new ApiError(401, "unauthorized", "Send the client_secret your server created as Authorization: Bearer mcs_…", { "WWW-Authenticate": "Bearer" });
+    const found = await store.clientSessionBySecret(secret);
+    if (!found) throw new ApiError(401, "session_expired", "The client session is unknown, revoked or expired; ask your server for a new one", { "WWW-Authenticate": 'Bearer error="invalid_token"' });
+    const { session, key, app } = found;
+    const origin = req.headers.origin;
+    if (origin) {
+      if (!key.allowed_origins.includes(origin)) throw new ApiError(403, "origin_not_allowed", `Origin ${origin} isn't allowed for this app's key`);
+      Object.assign(cors, { "Access-Control-Allow-Origin": origin, Vary: "Origin" });
+    }
+    const wait = limiter.take(`session:${session.id}`);
+    if (wait) throw new ApiError(429, "rate_limited", "Too many requests for this session", { "Retry-After": String(wait) });
+    if (!session.sandbox && app.status !== "published") throw new ApiError(403, "app_not_published", "Live sessions work once the app is published");
+
+    type Contracted = ProductRecord & { pins: { contract: DeveloperContract } };
+    const inSession = async (productId: string): Promise<Contracted> => {
+      if (!session.product_ids.includes(productId)) throw new ApiError(403, "product_not_in_session", `'${productId}' isn't part of this client session`);
+      const record = (await appProducts(store, app)).find((r) => r.product.id === productId);
+      if (!record?.pins?.contract) throw new ApiError(404, "product_not_found", `Product '${productId}' isn't available to this app`);
+      return record as Contracted;
+    };
+
+    if (path === "/v1/client/offers") {
+      allow("GET");
+      const records = await appProducts(store, app);
+      const products = [];
+      for (const id of session.product_ids) {
+        const record = records.find((r) => r.product.id === id);
+        if (!record?.pins?.contract) continue;
+        const c = record.pins.contract;
+        products.push({
+          product_id: id,
+          name: record.product.name,
+          version: c.version,
+          contract_hash: c.contract_hash,
+          sales_paused: Boolean(record.drift),
+          offers: c.offers,
+          documents: c.documents,
+          consent_purposes: c.consent_purposes,
+          actions: clientActions(c).filter((a) => session.scopes.includes(a.id)),
+        });
+      }
+      return send(res, 200, { products, expires_at: session.expires_at }, cors);
+    }
+    const action = path.match(/^\/v1\/client\/actions\/([a-z][a-z0-9_]*)$/);
+    if (action) {
+      allow("POST");
+      const body = parse(ClientActionBody, await readJson(req, maxBody));
+      const record = await inSession(body.product_id);
+      const a = clientActions(record.pins.contract).find((x) => x.id === action[1]);
+      if (!a || !session.scopes.includes(a.id)) throw new ApiError(403, "action_not_in_scope", `'${action[1]}' isn't a client action this session may start`);
+      if (a.flow !== "hosted") throw new ApiError(400, "not_startable", `'${a.id}' isn't a hosted flow; read it from /v1/client/offers`);
+      if (record.drift) throw new ApiError(409, "sales_paused", `New applications to '${record.product.id}' are paused`);
+      // The consent the action needs must be recorded in this session, and not withdrawn since.
+      if (a.consent_purpose) {
+        const latest = (await store.clientEvidence(app.id, 1000)).find(
+          (e) => e.session_id === session.id && e.product_id === record.product.id && e.subject === a.consent_purpose && e.type !== "disclosure_shown",
+        );
+        if (latest?.type !== "consent_given") throw new ApiError(409, "consent_required", `Record consent '${a.consent_purpose}' (POST /v1/client/evidence) before starting '${a.id}'`);
+      }
+      const id = randomUUID();
+      let redirect: string;
+      if (session.sandbox) {
+        const base = opts.publicUrl ?? process.env.PUBLIC_URL ?? `http://${req.headers.host ?? "localhost"}`;
+        redirect = `${base.replace(/\/+$/, "")}/v1/sandbox/handoffs/${id}`;
+      } else {
+        const terms = buildTerms(record);
+        if (!terms.handoff_url) throw new ApiError(409, "handoff_not_configured", `'${record.product.id}' has no handoff_url yet`);
+        const u = new URL(terms.handoff_url);
+        u.searchParams.set("handoff_id", id);
+        u.searchParams.set("app_id", app.id);
+        u.searchParams.set("action", a.id);
+        redirect = u.toString();
+      }
+      const h = await store.createHandoff({
+        id,
+        app_id: app.id,
+        key_id: session.key_id,
+        product_id: record.product.id,
+        action: a.id,
+        consumer_ref: session.customer_ref,
+        sandbox: session.sandbox,
+        redirect_url: redirect,
+      });
+      return send(res, 201, { handoff_id: h.id, redirect_url: h.redirect_url, action: a.id, sandbox: session.sandbox }, cors);
+    }
+    if (path === "/v1/client/evidence") {
+      allow("POST");
+      const body = parse(EvidenceBody, await readJson(req, maxBody));
+      const record = await inSession(body.product_id);
+      const c = record.pins.contract;
+      if (body.type === "disclosure_shown" && !(body.subject in c.documents))
+        throw new ApiError(400, "unknown_document", `'${body.subject}' isn't a document of this product (documents: ${Object.keys(c.documents).join(", ") || "none"})`);
+      if (body.type !== "disclosure_shown" && !c.consent_purposes.includes(body.subject))
+        throw new ApiError(400, "unknown_purpose", `'${body.subject}' isn't a consent purpose of this product (${c.consent_purposes.join(", ") || "none"})`);
+      const e = await store.recordClientEvidence({
+        app_id: app.id,
+        session_id: session.id,
+        product_id: record.product.id,
+        contract_hash: c.contract_hash,
+        type: body.type,
+        subject: body.subject,
+        content_hash: body.content_hash ?? null,
+        customer_ref: session.customer_ref,
+        sandbox: session.sandbox,
+      });
+      return send(res, 201, { evidence_id: e.id, recorded_at: e.created_at }, cors);
+    }
+    throw new ApiError(404, "not_found", `No route ${method} ${url.pathname}`);
+  };
+
   const route = async (req: IncomingMessage, res: ServerResponse, url: URL, cors: Record<string, string>) => {
     const method = req.method ?? "GET";
     const path = url.pathname.replace(/\/+$/, "");
@@ -132,6 +282,8 @@ export function createRuntimeApi(store: Store, opts: RuntimeApiOptions = {}) {
       });
     }
 
+    if (path.startsWith("/v1/client/")) return clientRoute(req, res, url, path, method, cors, allow);
+
     const { key, app } = await authenticate(req);
     const origin = req.headers.origin;
     if (origin) {
@@ -149,6 +301,37 @@ export function createRuntimeApi(store: Store, opts: RuntimeApiOptions = {}) {
       return record;
     };
 
+    if (path === "/v1/client_sessions") {
+      allow("POST");
+      // Minting is server-to-server: a request from a browser would mean the key is in the browser.
+      if (origin) throw new ApiError(403, "server_only", "Create client sessions from your server, never from a browser: send the client_secret to the device instead");
+      const body = parse(ClientSessionBody, await readJson(req, maxBody));
+      const allowed = new Set<string>();
+      for (const id of body.product_ids) {
+        const record = await available(id);
+        if (!record.pins?.contract) throw new ApiError(409, "no_contract", `'${id}' has no developer contract yet (published without a v2 definition)`);
+        for (const a of clientActions(record.pins.contract)) allowed.add(a.id);
+      }
+      const bad = body.scopes.filter((s) => !allowed.has(s));
+      if (bad.length) throw new ApiError(400, "invalid_scope", `Not client actions of these products: ${bad.join(", ")} (client actions: ${[...allowed].join(", ")})`);
+      const { session, secret } = await store.createClientSession({
+        app_id: app.id,
+        key_id: key.id,
+        customer_ref: body.customer_ref ?? null,
+        product_ids: [...new Set(body.product_ids)],
+        scopes: [...new Set(body.scopes)],
+        sandbox,
+        ttl_seconds: body.ttl_seconds,
+      });
+      return send(res, 201, { client_secret: secret, session_id: session.id, expires_at: session.expires_at, product_ids: session.product_ids, scopes: session.scopes, sandbox });
+    }
+    const contractOf = path.match(/^\/v1\/products\/([^/]+)\/contract$/);
+    if (contractOf) {
+      allow("GET");
+      const record = await available(decodeURIComponent(contractOf[1]));
+      if (!record.pins?.contract) throw new ApiError(404, "no_contract", `'${record.product.id}' has no developer contract yet`);
+      return send(res, 200, { ...record.pins.contract, sales_paused: Boolean(record.drift) }, cors);
+    }
     if (path === "/v1/products") {
       allow("GET");
       return send(res, 200, { products: (await appProducts(store, app)).map(productView) }, cors);

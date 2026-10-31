@@ -2,8 +2,6 @@
 
 **Lovable for finance apps.** Describe the financial product you want; Mynt's AI agents design it, price it, test it, clear compliance, build it and launch it.
 
-Mynt was built for the Paytm Build for India AI Hackathon (Bengaluru).
-
 ## The problem
 
 The need for a better financial product is usually obvious from the data. Examples:

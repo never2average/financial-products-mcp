@@ -20,6 +20,15 @@ export type BdChannel = (typeof BD_CHANNELS)[number];
 // asked to be contacted on this channel; opted_out: never again.
 export const CONSENTS = ["none", "public_business", "referred", "opted_in", "opted_out"] as const;
 export type Consent = (typeof CONSENTS)[number];
+// What a person can consent to, separately. Every grant or withdrawal is a row in an append-only ledger.
+export const PURPOSES = ["contact_email", "contact_whatsapp", "contact_phone", "introductions", "profile"] as const;
+export type Purpose = (typeof PURPOSES)[number];
+// Why Mynt may hold or use it: they asked (consent), their business contact is published, a referral, or the
+// profile was built from information they made publicly available.
+export type Basis = "consent" | "public_business" | "referral" | "publicly_available";
+const contactPurpose = (c: BdChannel) => `contact_${c}` as Purpose;
+const basisOf = (c: Consent): Basis => (c === "opted_in" ? "consent" : c === "referred" ? "referral" : "public_business");
+
 export const STAGES = ["sourced", "contacted", "engaged", "interested", "onboarded", "declined", "suppressed"] as const;
 export const SOURCES = ["regulator_register", "company_site", "github", "apollo", "referral", "inbound", "event", "import"] as const;
 
@@ -33,6 +42,7 @@ export interface BdConfig extends AgentHostConfig {
   everyHours: number;
   sandboxType: string;
   senderName: string;
+  profileRetentionDays: number; // public-source profiles of people who never replied are erased after this
 }
 
 export function bdConfigFromEnv(host: AgentHostConfig, env = process.env): BdConfig {
@@ -47,6 +57,7 @@ export function bdConfigFromEnv(host: AgentHostConfig, env = process.env): BdCon
     everyHours: Number(env.BD_RUN_EVERY_HOURS ?? 6),
     sandboxType: env.BUILD_SANDBOX_TYPE ?? "default",
     senderName: env.BD_SENDER_NAME ?? "Mynt connector",
+    profileRetentionDays: Number(env.BD_PROFILE_RETENTION_DAYS ?? 180),
   };
 }
 
@@ -130,6 +141,28 @@ const TABLES = `
     created_at timestamptz NOT NULL DEFAULT now(),
     finished_at timestamptz
   );
+  CREATE TABLE IF NOT EXISTS financial_products.bd_consents (
+    id uuid PRIMARY KEY,
+    prospect_id uuid NOT NULL REFERENCES financial_products.bd_prospects(id) ON DELETE CASCADE,
+    purpose text NOT NULL,
+    granted boolean NOT NULL,
+    basis text NOT NULL,
+    evidence text NOT NULL,
+    actor text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS bd_consents_prospect_idx ON financial_products.bd_consents (prospect_id, purpose, created_at DESC);
+  -- Erasures keep no personal data: only the hashes that stay suppressed, and why.
+  CREATE TABLE IF NOT EXISTS financial_products.bd_erasures (
+    id uuid PRIMARY KEY,
+    address_hashes text[] NOT NULL,
+    suppressed boolean NOT NULL,
+    reason text NOT NULL,
+    requested_by text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+  ALTER TABLE financial_products.bd_prospects ADD COLUMN IF NOT EXISTS legal_basis text;
+  ALTER TABLE financial_products.bd_prospects ADD COLUMN IF NOT EXISTS retain_until timestamptz;
   CREATE TABLE IF NOT EXISTS financial_products.bd_settings (
     key text PRIMARY KEY,
     value jsonb NOT NULL
@@ -246,7 +279,70 @@ export class BdService {
     for (const c of await this.all("SELECT channel, address FROM financial_products.bd_contacts WHERE prospect_id = $1", [prospectId])) {
       await this.suppress(c.channel as string, c.address as string, reason);
     }
+    for (const purpose of PURPOSES.filter((x) => x !== "profile")) await this.ledger(prospectId, purpose, false, "consent", reason, "system");
     await this.db.query("UPDATE financial_products.bd_prospects SET stage = 'suppressed', updated_at = now() WHERE id = $1", [prospectId]);
+  }
+
+  // ---- the consent ledger ----
+
+  async ledger(prospectId: string, purpose: Purpose, granted: boolean, basis: Basis, evidence: string, actor: string) {
+    await this.db.query(
+      "INSERT INTO financial_products.bd_consents (id, prospect_id, purpose, granted, basis, evidence, actor, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+      [randomUUID(), prospectId, purpose, granted, basis, evidence.slice(0, 500), actor, this.now().toISOString()],
+    );
+  }
+
+  // The current state per purpose: the latest ledger row for each.
+  async consents(prospectId: string) {
+    const rows = await this.all(
+      `SELECT DISTINCT ON (purpose) purpose, granted, basis, evidence, actor, created_at FROM financial_products.bd_consents
+       WHERE prospect_id::text = $1 ORDER BY purpose, created_at DESC, id`,
+      [prospectId],
+    );
+    return Object.fromEntries(rows.map((r) => [r.purpose as string, { granted: r.granted, basis: r.basis, evidence: r.evidence, at: r.created_at }]));
+  }
+
+  // Whether the connector may do `purpose` with this person now, and on what basis.
+  async checkConsent(prospectId: string, purpose: Purpose): Promise<{ allowed: boolean; basis: Basis | null; reason: string }> {
+    const p = await this.one("SELECT stage FROM financial_products.bd_prospects WHERE id::text = $1", [prospectId]);
+    if (!p) return { allowed: false, basis: null, reason: "No such prospect" };
+    const state = (await this.consents(prospectId))[purpose] as { granted: boolean; basis: Basis } | undefined;
+    if (p.stage === "suppressed") return { allowed: false, basis: null, reason: "They opted out of all contact" };
+    if (!state) return { allowed: false, basis: null, reason: purpose === "introductions" ? "Ask them before proposing an introduction" : "No basis recorded for this" };
+    if (!state.granted) return { allowed: false, basis: state.basis, reason: "They withdrew it" };
+    if ((purpose === "contact_whatsapp" || purpose === "contact_phone") && state.basis !== "consent") {
+      return { allowed: false, basis: state.basis, reason: "WhatsApp and calls need their opt-in; offer it by email" };
+    }
+    return { allowed: true, basis: state.basis, reason: state.basis === "consent" ? "They agreed" : `Basis: ${state.basis}` };
+  }
+
+  // Erases a person's connector data: messages, introductions, contacts, consents and profile. With
+  // `suppress` (a person's request) their addresses stay suppressed; only hashes and the reason remain.
+  async erase(prospectId: string, reason: string, requestedBy: string, opts: { suppress: boolean } = { suppress: true }) {
+    const contacts = await this.all("SELECT channel, address, address_hash FROM financial_products.bd_contacts WHERE prospect_id::text = $1", [prospectId]);
+    const p = await this.one("SELECT id FROM financial_products.bd_prospects WHERE id::text = $1", [prospectId]);
+    if (!p) return false;
+    if (opts.suppress) for (const c of contacts) await this.suppress(c.channel as string, c.address as string, reason);
+    await this.db.query(
+      "INSERT INTO financial_products.bd_erasures (id, address_hashes, suppressed, reason, requested_by) VALUES ($1, $2, $3, $4, $5)",
+      [randomUUID(), opts.suppress ? contacts.map((c) => c.address_hash as string) : [], opts.suppress, reason, requestedBy],
+    );
+    await this.db.query("DELETE FROM financial_products.bd_messages WHERE prospect_id = $1", [p.id]);
+    await this.db.query("DELETE FROM financial_products.bd_intros WHERE a = $1 OR b = $1", [p.id]);
+    await this.db.query("DELETE FROM financial_products.bd_contacts WHERE prospect_id = $1", [p.id]);
+    await this.db.query("DELETE FROM financial_products.bd_prospects WHERE id = $1", [p.id]);
+    return true;
+  }
+
+  // Public-source profiles of people who never replied aren't kept forever.
+  async sweepRetention() {
+    const due = await this.all(
+      `SELECT id FROM financial_products.bd_prospects p WHERE p.retain_until IS NOT NULL AND p.retain_until < $1 AND p.user_id IS NULL
+       AND NOT EXISTS (SELECT 1 FROM financial_products.bd_messages m WHERE m.prospect_id = p.id AND m.direction = 'in')`,
+      [this.now().toISOString()],
+    );
+    for (const r of due) await this.erase(r.id as string, "retention period ended", "system", { suppress: false });
+    return due.length;
   }
 
   async addProspect(p: {
@@ -281,7 +377,17 @@ export class BdService {
     } else if (p.user_id) {
       await this.db.query("UPDATE financial_products.bd_prospects SET user_id = $2, updated_at = now() WHERE id = $1", [id, p.user_id]);
     }
-    for (const c of p.contacts) await this.upsertContact(id, c.channel, c.address, c.consent, c.consent_source ?? p.source_url ?? p.source);
+    for (const c of p.contacts) {
+      await this.upsertContact(id, c.channel, c.address, c.consent, c.consent_source ?? p.source_url ?? p.source);
+      if (c.consent !== "none") await this.ledger(id, contactPurpose(c.channel), true, basisOf(c.consent), c.consent_source ?? p.source_url ?? p.source, p.user_id ? `user ${p.user_id}` : "connector");
+    }
+    if (!found) {
+      // Why Mynt holds this profile: their own request, a referral, or information they made public (kept for a limited time).
+      const basis: Basis = p.source === "inbound" ? "consent" : p.source === "referral" ? "referral" : "publicly_available";
+      const until = basis === "consent" ? null : new Date(this.now().getTime() + this.config.profileRetentionDays * 86400e3).toISOString();
+      await this.db.query("UPDATE financial_products.bd_prospects SET legal_basis = $2, retain_until = $3 WHERE id = $1", [id, basis, until]);
+      await this.ledger(id, "profile", true, basis, p.source_url ?? p.source, p.user_id ? `user ${p.user_id}` : "connector");
+    }
     return { id, existing: !!found };
   }
 
@@ -305,7 +411,8 @@ export class BdService {
       this.all("SELECT id, channel, direction, subject, body, status, created_at FROM financial_products.bd_messages WHERE prospect_id = $1 ORDER BY created_at", [id]),
       this.all("SELECT * FROM financial_products.bd_intros WHERE a = $1 OR b = $1 ORDER BY created_at", [id]),
     ]);
-    return { ...(p as Row), contacts, messages, intros } as Row & { contacts: Row[]; messages: Row[]; intros: Row[] };
+    const consents = await this.all("SELECT purpose, granted, basis, evidence, actor, created_at FROM financial_products.bd_consents WHERE prospect_id = $1 ORDER BY created_at", [id]);
+    return { ...(p as Row), contacts, messages, intros, consents } as Row & { contacts: Row[]; messages: Row[]; intros: Row[]; consents: Row[] };
   }
 
   async prospectForUser(userId: string) {
@@ -346,6 +453,7 @@ export class BdService {
     const owner = await this.one("SELECT prospect_id FROM financial_products.bd_contacts WHERE address_hash = $1", [hash(normalize(channel, contact.address))]);
     if (owner && owner.prospect_id !== prospectId) throw new Error("That address belongs to someone else in the pipeline");
     await this.upsertContact(prospectId, channel, contact.address, "opted_in", evidence);
+    await this.ledger(prospectId, contactPurpose(channel), true, "consent", evidence, "connector");
   }
 
   // ---- messages: the one way to reach a person ----
@@ -454,6 +562,7 @@ export class BdService {
     const side = intro.a === prospectId ? "a" : intro.b === prospectId ? "b" : null;
     if (!side) throw new Error("That person isn't part of this introduction");
     await this.db.query(`UPDATE financial_products.bd_intros SET ${side}_yes = $2, updated_at = now() WHERE id = $1`, [intro.id, yes]);
+    await this.ledger(prospectId, "introductions", yes, "consent", `introduction ${intro.id}`, "connector");
     const now = (await this.one("SELECT * FROM financial_products.bd_intros WHERE id = $1", [intro.id]))!;
     const status = now.a_yes === false || now.b_yes === false ? "declined" : now.a_yes && now.b_yes ? "agreed" : "proposed";
     await this.db.query("UPDATE financial_products.bd_intros SET status = $2 WHERE id = $1 AND status <> 'made'", [intro.id, status]);
@@ -511,6 +620,7 @@ export class BdService {
   }
 
   async tick() {
+    await this.sweepRetention();
     if (!this.runnable) return;
     const active = await this.one("SELECT * FROM financial_products.bd_runs WHERE status <> ALL($1) ORDER BY created_at LIMIT 1", [RUN_DONE]);
     if (active) {
@@ -570,7 +680,7 @@ export class BdService {
   }
 
   startWorker(intervalMs = Number(process.env.BD_POLL_MS ?? 15000)) {
-    if (this.timer || !this.runnable) return;
+    if (this.timer) return;
     this.timer = setInterval(() => void this.tick().catch((e) => console.error("bd worker", e)), intervalMs);
     this.timer.unref();
   }
@@ -714,6 +824,31 @@ export function registerBdAgentTools(server: McpServer, bd: BdService, runId: st
       }),
   );
   server.registerTool(
+    "bd_check_consent",
+    {
+      title: "Check consent",
+      description: "Before you write to someone or propose an introduction: whether Mynt allows it now (contact_email, contact_whatsapp, contact_phone, introductions, profile), on what basis, and why not if it doesn't.",
+      inputSchema: { prospect_id: z.string(), purpose: z.enum(PURPOSES) },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ prospect_id, purpose }) => json(await bd.checkConsent(prospect_id, purpose)),
+  );
+  server.registerTool(
+    "bd_erase_on_request",
+    {
+      title: "Erase someone's data on their request",
+      description: "When a person asks (in a message you received) for their data to be deleted: erases everything Mynt's connector holds about them and keeps them from being contacted again. Give their message as evidence.",
+      inputSchema: { prospect_id: z.string(), evidence_message_id: z.string() },
+    },
+    async ({ prospect_id, evidence_message_id }) =>
+      attempt(async () => {
+        const msg = (await bd.prospect(prospect_id))?.messages.find((m: Row) => m.id === evidence_message_id && m.direction === "in");
+        if (!msg) throw new Error("The evidence must be a message this person sent");
+        await bd.erase(prospect_id, `erasure requested in message ${evidence_message_id}`, "connector");
+        return { erased: true };
+      }),
+  );
+  server.registerTool(
     "bd_propose_intro",
     { title: "Propose an introduction", description: "Two people who should meet (an innovator and a developer, or two innovators for distribution). Ask each of them; an intro is only made once both say yes.", inputSchema: { a: z.string(), b: z.string(), reason: z.string().min(10) } },
     async ({ a, b, reason }) => attempt(async () => ({ intro_id: await bd.proposeIntro(a, b, reason) })),
@@ -795,6 +930,21 @@ export function registerConnectTools(server: McpServer, bd: BdService, user: Use
       }),
   );
   server.registerTool(
+    "connect_forget_me",
+    {
+      title: "Forget me",
+      description: "Erase everything Mynt's connector holds about you (profile, messages, introductions, consents), and never contact you again. Your Mynt account itself isn't affected.",
+      inputSchema: { confirm: z.literal(true) },
+    },
+    async () =>
+      attempt(async () => {
+        const me = await bd.prospectForUser(user.id);
+        if (!me) return { erased: false, note: "The connector holds nothing about you" };
+        await bd.erase(me.id as string, "erasure requested by the person", `user ${user.id}`);
+        return { erased: true };
+      }),
+  );
+  server.registerTool(
     "connect_my_intros",
     { title: "My introductions", description: "Introductions Mynt's connector has proposed for you; answer them with connect_answer_intro.", inputSchema: {}, annotations: { readOnlyHint: true } },
     async () => {
@@ -844,6 +994,20 @@ export function registerBdAdminTools(server: McpServer, bd: BdService, audit: (a
     "bd_suppress",
     { title: "Suppress an address", description: "Admin: never contact this email or number again (e.g. a request received elsewhere).", inputSchema: { channel: z.enum(BD_CHANNELS), address: z.string().min(3), reason: z.string().min(3) } },
     async ({ channel, address, reason }) => attempt(async () => (await bd.suppress(channel, address, reason), await audit("bd_suppress", channel, { reason }), { suppressed: true })),
+  );
+  server.registerTool(
+    "bd_erase",
+    {
+      title: "Erase a prospect's data",
+      description: "Admin: erase everything the connector holds about a person (e.g. a request received elsewhere). By default they also stay suppressed; only the hashes and the reason remain.",
+      inputSchema: { prospect_id: z.string(), reason: z.string().min(3), keep_suppressed: z.boolean().default(true) },
+    },
+    async ({ prospect_id, reason, keep_suppressed }) =>
+      attempt(async () => {
+        if (!(await bd.erase(prospect_id, reason, "admin", { suppress: keep_suppressed }))) throw new Error("No such prospect");
+        await audit("bd_erase", "connector", { reason, keep_suppressed });
+        return { erased: true };
+      }),
   );
   server.registerTool(
     "bd_run_now",

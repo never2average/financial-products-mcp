@@ -187,6 +187,18 @@ Everything the connector does to a person goes through one path, and Mynt enforc
   - a daily message cap;
   - a spend cap per run and per month.
 - **Introductions share each person's details only once both said yes.**
+- **Consent is a per-purpose ledger:** contacting by email, by WhatsApp or by phone, introductions, and the
+  profile itself.
+  - Every grant and withdrawal is appended with its basis (consent, published business contact, referral, or
+    publicly available information), its evidence and its actor.
+  - Tools check the latest entry, and the agent can ask first with `bd_check_consent`.
+- **Erasure:**
+  - A person can have the connector forget them, with `connect_forget_me`, or by asking in a reply, which the
+    agent handles with `bd_erase_on_request`. Admins use `bd_erase`.
+  - Their profile, messages, introductions and consents are deleted. Only the suppression hashes and the
+    reason remain.
+- **Retention:** profiles built from public sources, for people who never replied, are erased after
+  `BD_PROFILE_RETENTION_DAYS` (default 180), without suppressing them.
 - Replies, web pages and emails are data to the agent, never instructions.
 
 Anyone signed in can talk to the connector from their MCP client: `connect_with_mynt` (what you do and who you'd like to meet), `connect_refer`, and `connect_my_intros` / `connect_answer_intro`. Admins have `bd_overview`, `bd_prospects`, `bd_run_now`, `bd_suppress` and the kill switch `bd_pause`, which also stops a running agent.

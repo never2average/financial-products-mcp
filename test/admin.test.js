@@ -5,6 +5,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "../dist/server.js";
 import { Store } from "../dist/store.js";
+import { CATALOG } from "./helpers.js";
 
 const ADMIN_TOOLS = [
   "admin_pause_campaign", "admin_set_product_status", "audit_log", "define_product_category", "define_region",
@@ -15,7 +16,7 @@ const ADMIN_TOOLS = [
 
 async function setup() {
   const pg = new PGlite();
-  const store = await Store.open({ query: (s, p) => pg.query(s, p), exec: (s) => pg.exec(s), close: () => pg.close() });
+  const store = await Store.open({ query: (s, p) => pg.query(s, p), exec: (s) => pg.exec(s), close: () => pg.close() }, CATALOG);
   const allowed = [];
   const disallowed = [];
   const clerkAdmin = { allow: async (e) => (allowed.push(e), null), disallow: async (e) => void disallowed.push(e) };

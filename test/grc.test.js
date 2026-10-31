@@ -5,10 +5,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "../dist/server.js";
 import { Store } from "../dist/store.js";
+import { CATALOG } from "./helpers.js";
 
 async function setup() {
   const pg = new PGlite();
-  const store = await Store.open({ query: (s, p) => pg.query(s, p), exec: (s) => pg.exec(s), close: () => pg.close() });
+  const store = await Store.open({ query: (s, p) => pg.query(s, p), exec: (s) => pg.exec(s), close: () => pg.close() }, CATALOG);
   const as = async (name, roles) => (await store.createUser(name, roles)).user;
   const connect = async (user) => {
     const [c, s] = InMemoryTransport.createLinkedPair();

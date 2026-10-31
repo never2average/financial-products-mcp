@@ -1,4 +1,8 @@
+import { readFileSync } from "node:fs";
 import { normalizeModel } from "../dist/regulatory.js";
+
+// Mynt ships no catalogue; tests seed this fixture (with the regions and categories it implies).
+export const CATALOG = JSON.parse(readFileSync(new URL("./fixtures/catalog.json", import.meta.url), "utf8"));
 
 // Gives `user` a firm holding a verified licence for `action` on `category` in `region`, with a
 // matching licence type in the regulatory model. Mutates `user.entity_id` so servers built for that

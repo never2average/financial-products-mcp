@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { loadCatalog, type FinancialProduct } from "./catalog.js";
+import type { FinancialProduct } from "./catalog.js";
 import type { Db } from "./db.js";
 import type { TestReport } from "./product-tests.js";
 import {
@@ -918,10 +918,12 @@ const toSdkRelease = (r: Row): SdkRelease => ({
 export class Store {
   private constructor(private readonly db: Db) {}
 
-  // Creates the schema if needed and seeds the bundled catalog as published, read-only products.
+  // Creates the schema if needed. Mynt ships no catalogue: products come from innovators, regions and
+  // categories from admins. `seed` (tests only) inserts published, read-only products and the regions and
+  // categories they imply.
   // A least-privilege role can own a pre-created schema without database-level CREATE rights,
   // and CREATE SCHEMA IF NOT EXISTS would still demand them, so only create it when missing.
-  static async open(db: Db, seed: FinancialProduct[] = loadCatalog()): Promise<Store> {
+  static async open(db: Db, seed: FinancialProduct[] = []): Promise<Store> {
     const { rows } = await db.query("SELECT 1 FROM pg_namespace WHERE nspname = 'financial_products'");
     if (rows.length === 0) await db.exec("CREATE SCHEMA financial_products");
     await db.exec(TABLES);
@@ -1487,6 +1489,33 @@ export class Store {
   }
 
   // Products
+
+  // Products left from the bundled catalogue earlier versions shipped (no owner). Those nothing uses are
+  // deleted when `apply` is set; ones an app, enrollment, campaign, request, SDK or other product still
+  // uses are kept and reported.
+  async removeBundledProducts(apply: boolean): Promise<{ removed: string[]; kept: { id: string; used_by: string[] }[] }> {
+    const rows = await this.all(
+      `SELECT p.id,
+         ARRAY_REMOVE(ARRAY[
+           CASE WHEN EXISTS (SELECT 1 FROM financial_products.enrollments e WHERE e.product_id = p.id) THEN 'enrollments' END,
+           CASE WHEN EXISTS (SELECT 1 FROM financial_products.apps a WHERE p.id = ANY(a.product_ids)) THEN 'apps' END,
+           CASE WHEN EXISTS (SELECT 1 FROM financial_products.campaigns c WHERE p.id = ANY(c.product_ids)) THEN 'campaigns' END,
+           CASE WHEN EXISTS (SELECT 1 FROM financial_products.requests r WHERE r.product_id = p.id) THEN 'requests' END,
+           CASE WHEN EXISTS (SELECT 1 FROM financial_products.sdks s WHERE p.id = ANY(s.product_ids)) THEN 'sdks' END,
+           CASE WHEN EXISTS (SELECT 1 FROM financial_products.handoffs h WHERE h.product_id = p.id) THEN 'handoffs' END,
+           CASE WHEN EXISTS (SELECT 1 FROM financial_products.app_events v WHERE v.product_id = p.id) THEN 'app_events' END,
+           CASE WHEN EXISTS (SELECT 1 FROM financial_products.products o WHERE p.id = ANY(o.underlying_product_ids)) THEN 'products' END
+         ], NULL) AS used_by
+       FROM financial_products.products p WHERE p.owner_id IS NULL ORDER BY p.id`,
+    );
+    const kept = rows.filter((r) => (r.used_by as string[]).length > 0).map((r) => ({ id: r.id as string, used_by: r.used_by as string[] }));
+    const removed = rows.filter((r) => (r.used_by as string[]).length === 0).map((r) => r.id as string);
+    if (apply && removed.length) {
+      await this.db.query("DELETE FROM financial_products.product_versions WHERE product_id = ANY($1)", [removed]);
+      await this.db.query("DELETE FROM financial_products.products WHERE owner_id IS NULL AND id = ANY($1)", [removed]);
+    }
+    return { removed, kept };
+  }
 
   async getProduct(id: string): Promise<ProductRecord | undefined> {
     const r = await this.one("SELECT * FROM financial_products.products WHERE id = $1", [id]);

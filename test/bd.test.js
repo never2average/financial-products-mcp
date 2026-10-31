@@ -6,6 +6,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { BdService, bdConfigFromEnv, withinWorkingHours } from "../dist/bd.js";
 import { createServer } from "../dist/server.js";
 import { Store } from "../dist/store.js";
+import { CATALOG } from "./helpers.js";
 
 const A = "/home/user/mynt-agent";
 // A Monday, 11:00 in India.
@@ -49,7 +50,7 @@ function fakeBoat() {
 async function setup({ senders = {}, config = {}, boat = fakeBoat() } = {}) {
   const pg = new PGlite();
   const db = { query: (s, p) => pg.query(s, p), exec: (s) => pg.exec(s), close: () => pg.close() };
-  const store = await Store.open(db);
+  const store = await Store.open(db, CATALOG);
   const clock = { now: MONDAY_IST };
   const host = { agentBackend: { kind: "anthropic", apiKey: "sk-ant-test" }, model: "claude-opus-5-5", publicUrl: "https://mynt.example.com" };
   const bd = await BdService.open(db, boat, { ...bdConfigFromEnv(host, { BD_ENABLED: "1" }), ...config }, senders, () => clock.now);

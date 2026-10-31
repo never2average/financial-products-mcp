@@ -428,6 +428,27 @@ Each error names the step and the fix. The check also lists every path through t
 
 **Serving to devices.** Devices fetch a saved journey with `GET /v1/client/journeys/{journey}`. It's served only while it was checked against the product's live contract. Once a new contract is published, it returns `journey_outdated` until the developer checks and saves it again.
 
+**The customer vault.** Data a customer gives once is kept per app and per customer reference, so the next journey can skip asking for it. It's encrypted at rest with AES-256-GCM, using `MYNT_VAULT_KEY`; the host installer generates that key once and keeps it across runs. Sandbox sessions use a key that exists only in that process.
+
+The device routes need a client session that has a `customer_ref`:
+- **`POST /v1/client/fields`** stores values. The server enforces the rules:
+  - only fields one of the product's client actions needs;
+  - only after an active consent;
+  - sensitive fields only from a secure field;
+  - every value validated against the data dictionary.
+- **`GET /v1/client/fields`** shows what's held, masked.
+- **`POST /v1/client/prefill`** fetches fields from Account Aggregator, DigiLocker or CKYC, with consent. Sandbox sessions get realistic fixture values. Live connectors return `501` until they're configured.
+- **`DELETE /v1/client/fields`** erases everything held for the customer.
+
+A hosted action refuses to start (`data_required`) until the personal data it sends is held for the customer.
+
+**The journey runner.** The browser SDK has methods for all of this: `saveFields`, `knownFields`, `prefill`, `forgetMe` and `journey`. It also has `createJourneyRunner(client, journeyId)`, a headless runner: the app renders the current step however it likes, then calls `complete()` with what the customer did. The runner then:
+- records document and consent evidence;
+- stores fields, with secure ones sent as secure;
+- triggers prefill;
+- starts hosted actions and returns where to send the customer;
+- follows the journey's branches.
+
 **Analytics.**
 - Developers: `get_app_metrics(app_id, from?, to?, include_sandbox?)` gives views, clicks and hand-offs (started, completed, failed) per product and per day. It also gives conversion (completed hand-offs per view) and the hand-off completion rate. Only live traffic counts unless you set `include_sandbox`.
 - Innovators: `get_product_distribution_metrics(product_id)` shows how one of their products performs across every app that shows it.

@@ -221,6 +221,45 @@ export function openApiDocument(name: string, version: string, baseUrl: string, 
           responses: { "201": { description: "Where to send the customer", content: { "application/json": { schema: ref("ClientActionResult") } } }, ...errors },
         },
       },
+      "/client/fields": {
+        get: {
+          operationId: "knownFields",
+          summary: "Fields held for this customer (masked)",
+          security: [{ clientSession: [] }],
+          responses: { "200": { description: "Held fields", content: { "application/json": { schema: ref("HeldFields") } } }, ...errors },
+        },
+        post: {
+          operationId: "saveFields",
+          summary: "Store customer data a product's actions need (after consent; sensitive fields from secure inputs)",
+          security: [{ clientSession: [] }],
+          requestBody: { required: true, content: { "application/json": { schema: ref("FieldsRequest") } } },
+          responses: { "201": { description: "Stored", content: { "application/json": { schema: { type: "object", properties: { stored: { type: "array", items: { type: "string" } } }, required: ["stored"] } } } }, ...errors },
+        },
+        delete: {
+          operationId: "forgetCustomer",
+          summary: "Erase everything held for this customer",
+          security: [{ clientSession: [] }],
+          responses: { "200": { description: "Erased", content: { "application/json": { schema: { type: "object", properties: { erased: { type: "integer" } }, required: ["erased"] } } } }, ...errors },
+        },
+      },
+      "/client/prefill": {
+        post: {
+          operationId: "prefill",
+          summary: "Fetch fields from Account Aggregator, DigiLocker or CKYC with the customer's consent",
+          security: [{ clientSession: [] }],
+          requestBody: { required: true, content: { "application/json": { schema: ref("PrefillRequest") } } },
+          responses: { "201": { description: "Filled", content: { "application/json": { schema: ref("PrefillResult") } } }, ...errors },
+        },
+      },
+      "/client/journeys/{journey}": {
+        get: {
+          operationId: "getJourney",
+          summary: "A journey saved to this app, while it's built on the live contract",
+          security: [{ clientSession: [] }],
+          parameters: [{ name: "journey", in: "path", required: true, schema: { type: "string" } }],
+          responses: { "200": { description: "The journey spec", content: { "application/json": { schema: { type: "object" } } } }, ...errors },
+        },
+      },
       "/client/evidence": {
         post: {
           operationId: "recordEvidence",
@@ -368,6 +407,39 @@ export function openApiDocument(name: string, version: string, baseUrl: string, 
           },
           required: ["product_id", "type", "subject"],
         },
+        HeldFields: {
+          type: "object",
+          properties: {
+            fields: {
+              type: "array",
+              items: { type: "object", properties: { field: { type: "string" }, source: { type: "string" }, value: { type: "string" }, updated_at: { type: "string" } }, required: ["field", "source", "value"] },
+            },
+          },
+          required: ["fields"],
+        },
+        FieldsRequest: {
+          type: "object",
+          properties: {
+            product_id: { type: "string", enum: productIds },
+            values: { type: "object", additionalProperties: { type: ["string", "number", "boolean"] } },
+            source: { type: "string", enum: ["typed", "secure_field", "document_upload"] },
+          },
+          required: ["product_id", "values"],
+        },
+        PrefillRequest: {
+          type: "object",
+          properties: {
+            product_id: { type: "string", enum: productIds },
+            source: { type: "string", enum: ["account_aggregator", "digilocker", "ckyc"] },
+            fields: { type: "array", items: { type: "string" } },
+          },
+          required: ["product_id", "source", "fields"],
+        },
+        PrefillResult: {
+          type: "object",
+          properties: { filled: { type: "array", items: { type: "string" } }, missing: { type: "array", items: { type: "string" } } },
+          required: ["filled", "missing"],
+        },
         EvidenceResult: { type: "object", properties: { evidence_id: { type: "string" }, recorded_at: { type: "string" } }, required: ["evidence_id", "recorded_at"] },
         WebhookEvent: {
           type: "object",
@@ -512,9 +584,140 @@ export function createMyntBrowserClient(options: MyntBrowserOptions) {
       if (!data) throw fail(response, error);
       return data;
     },
+    /** Stores customer data the product's actions need. Sensitive fields must come from a secure input. */
+    async saveFields(productId: ProductId, values: Record<string, string | number | boolean>, source: "typed" | "secure_field" | "document_upload" = "typed") {
+      const { data, error, response } = await client.POST("/client/fields", { body: { product_id: productId, values, source } });
+      if (!data) throw fail(response, error);
+      return data;
+    },
+    /** Which fields are already held for this customer (masked), to skip asking again. */
+    async knownFields() {
+      const { data, error, response } = await client.GET("/client/fields");
+      if (!data) throw fail(response, error);
+      return data.fields;
+    },
+    /** Fetches fields from Account Aggregator, DigiLocker or CKYC, with the customer's consent. */
+    async prefill(productId: ProductId, source: "account_aggregator" | "digilocker" | "ckyc", fields: string[]) {
+      const { data, error, response } = await client.POST("/client/prefill", { body: { product_id: productId, source, fields } });
+      if (!data) throw fail(response, error);
+      return data;
+    },
+    /** Erases everything held for this customer. */
+    async forgetMe() {
+      const { data, error, response } = await client.DELETE("/client/fields");
+      if (!data) throw fail(response, error);
+      return data;
+    },
+    /** A journey saved to this app (refused once it's built on an outdated contract). */
+    async journey(id: string): Promise<Journey> {
+      const { data, error, response } = await client.GET("/client/journeys/{journey}", { params: { path: { journey: id } } });
+      if (!data) throw fail(response, error);
+      return data as unknown as Journey;
+    },
   };
 }
 export type MyntBrowserClient = ReturnType<typeof createMyntBrowserClient>;
+
+/** A journey spec, as saved with save_journey. */
+export interface Journey {
+  journey: string;
+  built_on: { product_id: ProductId; contract_version: number };
+  steps: JourneyStep[];
+}
+export interface JourneyStep {
+  id: string;
+  title?: string;
+  screen?: (
+    | { type: "offer_card"; segment?: string }
+    | { type: "disclosure"; document: string }
+    | { type: "field"; field: string; capture: string; required?: boolean; show_if?: Record<string, unknown> }
+    | { type: "text"; text: string }
+    | { type: "outcome"; outcome: string }
+  )[];
+  capture_consent?: string;
+  action?: string;
+  await_event?: string;
+  next?: string;
+  on?: Record<string, string>;
+}
+
+/** What the customer did on a step, for JourneyRunner.complete. */
+export interface StepInput {
+  /** The exact text shown for each document on a screen (it's hashed into the evidence). */
+  documents?: Record<string, string>;
+  /** Field values entered on a screen, by field. */
+  fields?: Record<string, string | number | boolean>;
+  /** The consent wording the customer agreed to, on a consent step. */
+  consentText?: string;
+  /** How a hosted action or wait ended (e.g. completed or failed). */
+  outcome?: string;
+}
+
+/**
+ * A headless journey runner: render \`current\` however you like, then call complete() with what the
+ * customer did. It records document and consent evidence, stores fields (secure ones as secure), starts
+ * hosted actions (returning where to send the customer) and follows the journey's branches.
+ */
+export async function createJourneyRunner(c: MyntBrowserClient, journeyId: string) {
+  const journey = await c.journey(journeyId);
+  const product = journey.built_on.product_id;
+  const byId = new Map(journey.steps.map((s) => [s.id, s]));
+  let current: JourneyStep | null = journey.steps[0] ?? null;
+  const go = (id: string | undefined) => {
+    current = id ? (byId.get(id) ?? null) : null;
+  };
+  return {
+    journey,
+    get current() {
+      return current;
+    },
+    get done() {
+      return current === null || (!current.next && !current.on && !current.action && !current.capture_consent && !current.await_event);
+    },
+    /** Completes the current step; for a hosted action, returns where to send the customer. */
+    async complete(input: StepInput = {}): Promise<{ redirect_url?: string }> {
+      const step = current;
+      if (!step) throw new Error("The journey has ended");
+      if (step.capture_consent) {
+        if (!input.consentText) throw new Error("Pass the consent wording the customer agreed to");
+        await c.giveConsent(product, step.capture_consent, input.consentText);
+        go(step.next);
+        return {};
+      }
+      if (step.action) {
+        if (input.outcome) {
+          go(step.on?.[input.outcome] ?? step.next);
+          return {};
+        }
+        const started = await c.startAction(product, step.action as never);
+        return { redirect_url: started.redirect_url };
+      }
+      if (step.await_event) {
+        go(input.outcome ? (step.on?.[input.outcome] ?? step.next) : step.next);
+        return {};
+      }
+      for (const e of step.screen ?? []) {
+        if (e.type === "disclosure") {
+          const text = input.documents?.[e.document];
+          if (!text) throw new Error("Pass the text shown for document " + e.document);
+          await c.documentShown(product, e.document, text);
+        }
+      }
+      const fields = (step.screen ?? []).filter((e): e is Extract<NonNullable<JourneyStep["screen"]>[number], { type: "field" }> => e.type === "field");
+      for (const source of ["typed", "secure_field", "document_upload"] as const) {
+        const values = Object.fromEntries(fields.filter((f) => (f.capture === source) && input.fields?.[f.field] !== undefined).map((f) => [f.field, input.fields![f.field]]));
+        if (Object.keys(values).length) await c.saveFields(product, values, source);
+      }
+      const prefilled = fields.filter((f) => ["account_aggregator", "digilocker", "ckyc"].includes(f.capture) && input.fields?.[f.field] === undefined);
+      for (const source of ["account_aggregator", "digilocker", "ckyc"] as const) {
+        const wanted = prefilled.filter((f) => f.capture === source).map((f) => f.field);
+        if (wanted.length) await c.prefill(product, source, wanted);
+      }
+      go(input.outcome ? (step.on?.[input.outcome] ?? step.next) : step.next);
+      return {};
+    },
+  };
+}
 `;
 }
 

@@ -1,10 +1,11 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { FinancialProduct } from "./catalog.js";
+import { currentLine, lineForTreasuryCategory, PRODUCT_LINES, UNDERLYINGS, WRAPPERS, type FinancialProduct } from "./catalog.js";
 import type { Component } from "./regime.js";
 import type { Db } from "./db.js";
-import type { TestReport } from "./product-tests.js";
+import { fingerprint, runProductTests, type TestReport } from "./product-tests.js";
 import {
   hydrateRegulators,
+  PRODUCT_ACTIONS,
   stripScopeProducts,
   type ProductAction as RegulatedAction,
   type ProductMapping,
@@ -359,6 +360,19 @@ export interface SdkRelease {
 }
 // --- end SDKs and experiences ---
 
+// What Mynt takes on a product line: a base percentage plus a share per point of the product's
+// compliance and back-office workload, kept within [min_pct, max_pct] (see take-rates.ts).
+export interface TakeRate {
+  line: string;
+  base_pct: number;
+  workload_pct: number;
+  min_pct: number;
+  max_pct: number;
+  basis: string; // what the percentage applies to, e.g. "revenue" or "volume"
+  updated_by: string | null;
+  updated_at: string;
+}
+
 // What a person asked Mynt for in their own words, and the products innovators offered for it.
 export const PRODUCT_REQUEST_STATUSES = ["open", "in_progress", "offered", "closed"] as const;
 export type ProductRequestStatus = (typeof PRODUCT_REQUEST_STATUSES)[number];
@@ -384,6 +398,8 @@ export interface ProductRequestOffer {
 }
 
 export class DuplicateError extends Error {}
+
+const sqlList = (values: readonly string[]) => values.map((v) => `'${v}'`).join(", ");
 
 // Kept out of `public` so Supabase's auto-generated REST API never exposes these tables.
 const TABLES = `
@@ -531,7 +547,7 @@ const TABLES = `
     description text NOT NULL DEFAULT '',
     type_id text NOT NULL,
     actions text[] NOT NULL CHECK (
-      cardinality(actions) > 0 AND actions <@ ARRAY['issuance', 'sale', 'purchase', 'secondary_sale', 'repackaging']::text[]
+      cardinality(actions) > 0 AND actions <@ ARRAY[${sqlList(PRODUCT_ACTIONS)}]::text[]
     ),
     updated_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (region, id)
@@ -546,6 +562,15 @@ const TABLES = `
   );
   CREATE INDEX IF NOT EXISTS regulator_product_types_product_idx
     ON financial_products.regulator_product_types (region, product_type_id);
+  -- Tables created before advice, servicing, underwriting and assessment carry the five-action check.
+  ALTER TABLE financial_products.regulated_product_types DROP CONSTRAINT IF EXISTS regulated_product_types_actions_check;
+  ALTER TABLE financial_products.regulated_product_types ADD CONSTRAINT regulated_product_types_actions_check
+    CHECK (cardinality(actions) > 0 AND actions <@ ARRAY[${sqlList(PRODUCT_ACTIONS)}]::text[]);
+  -- What a primitive is made of, and the statutory or tax structure around it.
+  ALTER TABLE financial_products.regulated_product_types ADD COLUMN IF NOT EXISTS underlying text
+    CHECK (underlying IN (${sqlList(UNDERLYINGS)}));
+  ALTER TABLE financial_products.regulated_product_types ADD COLUMN IF NOT EXISTS wrapper text
+    CHECK (wrapper IN (${sqlList(WRAPPERS)}));
   -- ---- Runtime layer: per-app API keys, hand-offs, analytics events, webhooks, app releases ----
   CREATE TABLE IF NOT EXISTS financial_products.api_keys (
     id uuid PRIMARY KEY,
@@ -742,6 +767,17 @@ const TABLES = `
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (request_id, product_id)
   );
+  -- Take rates: what Mynt takes per product line, scaled by each product's compliance workload.
+  CREATE TABLE IF NOT EXISTS financial_products.take_rates (
+    line text PRIMARY KEY CHECK (line IN (${sqlList(PRODUCT_LINES)})),
+    base_pct numeric NOT NULL CHECK (base_pct >= 0),
+    workload_pct numeric NOT NULL CHECK (workload_pct >= 0),
+    min_pct numeric NOT NULL CHECK (min_pct >= 0),
+    max_pct numeric NOT NULL CHECK (max_pct >= min_pct AND max_pct <= 100),
+    basis text NOT NULL,
+    updated_by uuid REFERENCES financial_products.users(id),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  );
 `;
 
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -924,6 +960,17 @@ const toProductRequest = (r: Row): ProductRequest => ({
   created_at: iso(r.created_at)!,
 });
 
+const toTakeRate = (r: Row): TakeRate => ({
+  line: r.line as string,
+  base_pct: Number(r.base_pct),
+  workload_pct: Number(r.workload_pct),
+  min_pct: Number(r.min_pct),
+  max_pct: Number(r.max_pct),
+  basis: r.basis as string,
+  updated_by: (r.updated_by as string | null) ?? null,
+  updated_at: iso(r.updated_at)!,
+});
+
 const toProductRequestOffer = (r: Row): ProductRequestOffer => ({
   request_id: r.request_id as string,
   product_id: r.product_id as string,
@@ -1023,7 +1070,75 @@ export class Store {
     );
     const store = new Store(db);
     await store.liftScopeProductTypes();
+    await store.migrateProductLines();
     return store;
+  }
+
+  // Products used to sit in four lines (credit, wealth, insurance, treasury). Move stored products,
+  // their versions, categories, launch procedures and requests onto the functional lines once; rows
+  // already on them are left alone. A product whose last test was current is re-tested, so published
+  // products stay published with a report that matches their data.
+  private async migrateProductLines(): Promise<void> {
+    const lines = [...PRODUCT_LINES];
+    const oldLine = (l: string) => !lines.includes(l as never);
+    const mapLines = (id: string, current: string[]) => {
+      if (id === "exchange_traded" && (current.some(oldLine) || (current.length === 1 && current[0] === "wealth"))) return ["wealth", "securitization"];
+      const mapped = current.map((l) => (l === "treasury" ? lineForTreasuryCategory(id) : l === "retirement" ? "wealth" : l));
+      return [...new Set(mapped)];
+    };
+    const categories = await this.all(
+      `SELECT id, product_lines FROM financial_products.product_categories
+       WHERE NOT (product_lines <@ $1::text[]) OR (id = 'exchange_traded' AND product_lines = '{wealth}')`,
+      [lines],
+    );
+    for (const c of categories) {
+      await this.db.query("UPDATE financial_products.product_categories SET product_lines = $2 WHERE id = $1", [
+        c.id,
+        mapLines(c.id as string, c.product_lines as string[]),
+      ]);
+    }
+
+    const stale = `(NOT (data->>'product_line' = ANY($1::text[])) OR (data->>'id' IN ('reit', 'invit') AND data->>'product_line' = 'wealth'))`;
+    const products = await this.all(`SELECT id, data, last_test FROM financial_products.products WHERE ${stale}`, [lines]);
+    const versions = await this.all(
+      `SELECT product_id, version, data, last_test FROM financial_products.product_versions WHERE ${stale}`,
+      [lines],
+    );
+    if (products.length + versions.length > 0) {
+      const ref = await this.referenceData();
+      const migrate = (r: Row) => {
+        const before = r.data as FinancialProduct;
+        const after = { ...before, product_line: currentLine(before) };
+        const test = r.last_test as TestReport | null;
+        const retest = test && test.fingerprint === fingerprint(before) ? runProductTests(after, ref) : test;
+        return [JSON.stringify(after), retest ? JSON.stringify(retest) : null];
+      };
+      for (const r of products) {
+        await this.db.query("UPDATE financial_products.products SET data = $2, last_test = $3 WHERE id = $1", [r.id, ...migrate(r)]);
+      }
+      for (const r of versions) {
+        await this.db.query("UPDATE financial_products.product_versions SET data = $3, last_test = $4 WHERE product_id = $1 AND version = $2", [
+          r.product_id,
+          r.version,
+          ...migrate(r),
+        ]);
+      }
+    }
+
+    // Launch procedures and requests name a line but no category: treasury ones held or ran money.
+    await this.db.query(
+      `UPDATE financial_products.regions SET procedures = (
+         SELECT jsonb_agg(CASE WHEN p->>'product_line' = 'treasury' THEN jsonb_set(p, '{product_line}', '"account_operations"')
+                               WHEN p->>'product_line' = 'retirement' THEN jsonb_set(p, '{product_line}', '"wealth"')
+                               ELSE p END)
+         FROM jsonb_array_elements(procedures) p)
+       WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(procedures) p WHERE p->>'product_line' IN ('treasury', 'retirement'))`,
+    );
+    await this.db.query(
+      `UPDATE financial_products.product_requests
+       SET product_line = CASE product_line WHEN 'retirement' THEN 'wealth' ELSE 'account_operations' END
+       WHERE product_line IN ('treasury', 'retirement')`,
+    );
   }
 
   // Regulators used to carry their product types inline. Move them into the region's catalogue and
@@ -1110,18 +1225,21 @@ export class Store {
       description: r.description as string,
       type_id: r.type_id as string,
       actions: r.actions as RegulatedAction[],
+      ...(r.underlying ? { underlying: r.underlying as RegulatedProductType["underlying"] } : {}),
+      ...(r.wrapper ? { wrapper: r.wrapper as RegulatedProductType["wrapper"] } : {}),
       updated_at: iso(r.updated_at)!,
     }));
   }
 
   async upsertRegulatedProductType(region: string, p: RegulatedProductType): Promise<{ replaced: boolean }> {
     const row = await this.one(
-      `INSERT INTO financial_products.regulated_product_types (region, id, name, description, type_id, actions)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO financial_products.regulated_product_types (region, id, name, description, type_id, actions, underlying, wrapper)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT (region, id) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description,
-         type_id = EXCLUDED.type_id, actions = EXCLUDED.actions, updated_at = now()
+         type_id = EXCLUDED.type_id, actions = EXCLUDED.actions, underlying = EXCLUDED.underlying, wrapper = EXCLUDED.wrapper,
+         updated_at = now()
        RETURNING (xmax <> 0) AS replaced`,
-      [region, p.id, p.name, p.description, p.type_id, p.actions],
+      [region, p.id, p.name, p.description, p.type_id, p.actions, p.underlying ?? null, p.wrapper ?? null],
     );
     return { replaced: Boolean(row?.replaced) };
   }
@@ -1202,6 +1320,30 @@ export class Store {
       [c.id, c.name, c.product_lines, c.description, c.active],
     );
     return { ...(row as unknown as ProductCategory), updated_at: iso(row!.updated_at)! };
+  }
+
+  // Take rates
+
+  async takeRates(): Promise<TakeRate[]> {
+    return (await this.all("SELECT * FROM financial_products.take_rates ORDER BY line")).map(toTakeRate);
+  }
+
+  async takeRate(line: string): Promise<TakeRate | undefined> {
+    const r = await this.one("SELECT * FROM financial_products.take_rates WHERE line = $1", [line]);
+    return r && toTakeRate(r);
+  }
+
+  async upsertTakeRate(r: Omit<TakeRate, "updated_by" | "updated_at">, actorId: string): Promise<TakeRate> {
+    const row = await this.one(
+      `INSERT INTO financial_products.take_rates (line, base_pct, workload_pct, min_pct, max_pct, basis, updated_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (line) DO UPDATE SET base_pct = EXCLUDED.base_pct, workload_pct = EXCLUDED.workload_pct,
+         min_pct = EXCLUDED.min_pct, max_pct = EXCLUDED.max_pct, basis = EXCLUDED.basis,
+         updated_by = EXCLUDED.updated_by, updated_at = now()
+       RETURNING *`,
+      [r.line, r.base_pct, r.workload_pct, r.min_pct, r.max_pct, r.basis, actorId],
+    );
+    return toTakeRate(row!);
   }
 
   // Audit log

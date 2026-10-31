@@ -35,6 +35,7 @@ import {
 import { registerMarketplaceTools } from "./marketplace.js";
 import { registerProductRequestInnovatorTools, registerProductRequestTools, requestOffersFor } from "./product-requests.js";
 import { registerVersioningTools } from "./versions.js";
+import { registerTakeRateAdminTools, registerTakeRateTools } from "./take-rates.js";
 import { emitProductEvent, ensureRelease, registerRuntimeInnovatorTools, registerRuntimeTools } from "./runtime.js";
 // SDKs and experiences (developer build layer)
 import { experienceStructure, registerBuildTools } from "./build.js";
@@ -89,10 +90,12 @@ export function createServer(store: Store, user: User | null = null, ctx: AdminC
     registerMarketplaceTools(server, store, user!);
     registerProductRequestInnovatorTools(server, store, user!);
     registerRuntimeInnovatorTools(server, store, user!);
+    registerTakeRateTools(server, store, user!);
   }
   if (has("developer") && ctx.builds) registerCodingAgentTools(server, store, user!, ctx.builds);
   if (has("admin")) {
     registerAdminTools(server, store, user!, ctx);
+    registerTakeRateAdminTools(server, store, user!);
     if (ctx.builds) registerCodingAgentAdminTools(server, ctx.builds);
     if (ctx.bd) registerBdAdminTools(server, ctx.bd, (action, target, details = {}) => store.audit(user!.id, action, target, details));
     if (ctx.review) registerReviewTools(server, ctx.review, user!);
@@ -223,7 +226,7 @@ function registerCatalogTools(server: McpServer, store: Store, user: User | null
     {
       title: "Which licence do I need?",
       description:
-        "Licences in a region that permit an action (issuance, sale, purchase, secondary_sale, repackaging) on a product category for a customer persona, with the application steps, mandatory stakeholders and filings each brings.",
+        "Licences in a region that permit an action (issuance, sale, purchase, secondary_sale, repackaging, advice, servicing, underwriting, assessment) on a product category for a customer persona, with the application steps, mandatory stakeholders and filings each brings.",
       inputSchema: {
         region: z.string(),
         category: z.string().optional().describe("A Mynt product category id, e.g. deposits"),
@@ -245,7 +248,7 @@ function registerCatalogTools(server: McpServer, store: Store, user: User | null
     {
       title: "Regulated product types in a region",
       description:
-        "A region's catalogue of regulated product types (each with its Mynt category and possible actions) and, for each, the regulators that supervise it with the actions they cover. Optionally narrow by category or regulator.",
+        "A region's catalogue of regulated product types (each with its Mynt category, possible actions, and its underlying and wrapper when recorded) and, for each, the regulators that supervise it with the actions they cover. Optionally narrow by category or regulator.",
       inputSchema: {
         region: z.string(),
         category: z.string().optional().describe("A Mynt product category id, e.g. bonds"),
@@ -323,7 +326,7 @@ function registerCatalogTools(server: McpServer, store: Store, user: User | null
     "list_product_categories",
     {
       title: "Product categories",
-      description: "The product types products can have, and the product lines each is used in (defined by admins).",
+      description: "The product types products can have, and the product lines each is used in (defined by admins). Lines group products by economic function: credit, securitization, payments, account_operations, custody_settlement, wealth, insurance, guarantees_trade, exchange, derivatives and information.",
       inputSchema: {
         product_line: z.enum(PRODUCT_LINES).optional(),
         include_inactive: z.boolean().default(false).describe("Admins: include retired categories"),
@@ -355,10 +358,10 @@ function registerCatalogTools(server: McpServer, store: Store, user: User | null
     {
       title: "List financial products",
       description:
-        "Return published financial products, optionally filtered by product line (credit, wealth, insurance, treasury), category, region, risk level or a free-text query. Use list_categories to see valid filter values.",
+        "Return published financial products, optionally filtered by product line (credit, securitization, payments, account_operations, custody_settlement, wealth, insurance, guarantees_trade, exchange, derivatives, information), category, region, risk level or a free-text query. Use list_categories to see valid filter values.",
       inputSchema: {
         product_line: z.enum(PRODUCT_LINES).optional(),
-        category: z.string().optional().describe("e.g. deposits, mutual_funds, bonds, insurance, credit"),
+        category: z.string().optional().describe("e.g. deposits, mutual_funds, bonds, money_market, derivatives, insurance, credit"),
         region: z.string().optional().describe("IN, US or global; global products are included for every region"),
         risk_level: z.string().optional().describe("low, moderate, high, very_high, not_applicable"),
         query: z.string().optional().describe("Case-insensitive match on name, description and features"),
@@ -393,7 +396,7 @@ function registerCatalogTools(server: McpServer, store: Store, user: User | null
     "list_categories",
     {
       title: "List categories and filter values",
-      description: "Return the product lines, categories, regions and risk levels of published products with counts.",
+      description: "Return the product lines (every line, including those with no products yet), categories, regions and risk levels of published products with counts.",
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },

@@ -743,7 +743,7 @@ export function registerBdAgentTools(server: McpServer, bd: BdService, runId: st
     {
       title: "Add a prospect",
       description:
-        "Record someone worth talking to: an innovator (a licensed firm that could offer products on Mynt: bank, NBFC, AMC, insurer, broker, distributor/MFD, payments or treasury provider) or a developer (who could build experiences on Mynt). Only contact details they or their firm published for business contact, or that a referrer gave; say where in source_url. Refused for anyone who opted out.",
+        "Record someone worth talking to: an innovator (a licensed firm that could offer products on Mynt: bank, NBFC, AMC, insurer, broker, distributor/MFD, payments provider, custodian or exchange) or a developer (who could build experiences on Mynt). Only contact details they or their firm published for business contact, or that a referrer gave; say where in source_url. Refused for anyone who opted out.",
       inputSchema: {
         kind: z.enum(["innovator", "developer"]),
         name: z.string().min(1),

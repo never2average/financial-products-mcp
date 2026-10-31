@@ -11,7 +11,11 @@ import type { ProductRecord, Store } from "./store.js";
 export const ComponentSchema = z.object({
   region: z.string().regex(/^(global|[A-Z]{2})$/).describe("The jurisdiction this component is regulated in (a global product lists components per jurisdiction)"),
   primitive: z.string().min(1).describe("A regulated product type id in that region (see list_regulated_product_types)"),
-  action: z.enum(PRODUCT_ACTIONS).describe("What is done with it in this product: issuance, sale, purchase, secondary_sale or repackaging"),
+  action: z
+    .enum(PRODUCT_ACTIONS)
+    .describe(
+      "What is done with it in this product: issuance, sale, purchase, secondary_sale, repackaging, advice, servicing, underwriting or assessment (an independent rating, valuation, index, actuarial certification, audit or accreditation)",
+    ),
   role: z.string().min(3).max(300).describe("What it does in the product, e.g. 'collects the monthly instalment'"),
   provided_by: z.enum(["self", "partner"]).default("self").describe("self: your firm provides it under its own licence; partner: another licensed firm does"),
   partner_entity_id: z.string().uuid().nullable().optional().describe("The partner's firm on Mynt, if it's on Mynt (its licences are then checked)"),
@@ -95,7 +99,7 @@ export async function productRegime(store: Store, product: ProductRecord) {
         const by = await coveredBy(product.entity_id);
         coverage = by.length ? { status: "covered", by } : { status: "uncovered", reason: licences.length ? `Needs one of: ${licences.map((l) => l.license_id).join(", ")}` : "No licence in the regulatory model grants this yet" };
       }
-      components.push({ ...c, primitive_info: { name: primitive.name, category: primitive.type_id, actions: primitive.actions }, supervised_by, licences, law, coverage });
+      components.push({ ...c, primitive_info: { name: primitive.name, category: primitive.type_id, actions: primitive.actions, underlying: primitive.underlying ?? null, wrapper: primitive.wrapper ?? null }, supervised_by, licences, law, coverage });
     }
     const statuses: string[] = components.map((x) => x.coverage.status);
     out.push({

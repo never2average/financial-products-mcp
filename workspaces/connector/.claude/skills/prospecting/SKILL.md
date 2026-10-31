@@ -7,9 +7,11 @@ description: Who Mynt's connector looks for (innovators and developers), where t
 
 **Innovators** are licensed firms that could offer products on Mynt:
 - banks, NBFCs, asset managers and insurers;
-- brokers and other intermediaries;
+- brokers, exchanges and other intermediaries;
 - mutual fund distributors;
-- payment and treasury providers.
+- payment providers, custodians, depositories and trustees;
+- trade-finance and guarantee providers, and securitisation and asset reconstruction firms;
+- credit bureaus, account aggregators and rating agencies.
 
 Start from public regulator registers and the firms' own websites. Look for the person who owns products,
 distribution or partnerships.

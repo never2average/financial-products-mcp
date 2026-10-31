@@ -10,6 +10,7 @@ import { createServer } from "../dist/server.js";
 import { createMcpHttpServer } from "../dist/http.js";
 import { Store } from "../dist/store.js";
 import { runProductTests } from "../dist/product-tests.js";
+import { PRODUCT_LINES } from "../dist/catalog.js";
 import { CATALOG, licensed } from "./helpers.js";
 
 const CATALOG_TOOLS = ["find_licenses", "get_product", "get_product_regime", "get_region", "get_regulator", "get_template", "list_apps", "list_categories", "list_legal_instruments", "list_product_categories", "list_products", "list_regions", "list_regulated_product_types", "list_template_defaults", "whoami"];
@@ -41,6 +42,8 @@ const INNOVATOR_TOOLS = [
   "get_product_distribution_metrics", "report_handoff_outcome",
   // product requests
   "list_product_requests", "respond_to_product_request", "set_product_composition",
+  // take rates
+  "get_product_take_rate",
 ];
 
 async function connect(store, user = null) {
@@ -78,7 +81,7 @@ async function setup() {
 const greenFd = {
   id: "green-fd",
   name: "Green Fixed Deposit",
-  product_line: "treasury",
+  product_line: "account_operations",
   category: "deposits",
   region: "IN",
   risk_level: "low",
@@ -114,14 +117,22 @@ test("a developer can enroll and an innovator can build apps", async () => {
   assert.equal((await dev.listTools()).tools.some((t) => t.name === "create_product"), false);
 });
 
-test("catalog covers credit, wealth, insurance and treasury", async () => {
+test("catalog counts every functional product line the fixture uses, with T-bills under credit", async () => {
   const client = await connect((await setup()).store);
   const { data } = await call(client, "list_categories");
-  for (const line of ["credit", "wealth", "insurance", "treasury"]) assert.ok(data.product_lines[line] >= 5, line);
-  const treasury = (await call(client, "list_products", { product_line: "treasury", limit: 100 })).data;
-  assert.equal(treasury.total, data.product_lines.treasury);
-  assert.ok(treasury.products.every((p) => p.product_line === "treasury"));
-  assert.ok(treasury.products.some((p) => p.id === "treasury-bills"));
+  // Every line is listed, used or not.
+  assert.deepEqual(Object.keys(data.product_lines).sort(), [...PRODUCT_LINES].sort());
+  for (const line of new Set(CATALOG.map((p) => p.product_line))) {
+    const listed = (await call(client, "list_products", { product_line: line, limit: 100 })).data;
+    assert.equal(data.product_lines[line], CATALOG.filter((p) => p.product_line === line).length, line);
+    assert.equal(listed.total, data.product_lines[line], line);
+    assert.ok(listed.products.every((p) => p.product_line === line), line);
+  }
+  assert.equal(data.product_lines.payments, 0);
+  const credit = (await call(client, "list_products", { product_line: "credit", limit: 100 })).data.products.map((p) => p.id);
+  for (const id of ["treasury-bills", "commercial-paper", "government-bonds", "personal-loan"]) assert.ok(credit.includes(id), id);
+  const units = (await call(client, "list_products", { product_line: "securitization" })).data.products.map((p) => p.id).sort();
+  assert.deepEqual(units, ["invit", "reit"]);
 });
 
 test("every fixture product passes the product test suite, including the seeded regions and categories", async () => {
@@ -215,9 +226,20 @@ test("product tests enforce product-line rules and catch misleading claims", asy
   assert.equal(report.checks.find((c) => c.name === "misleading_claims").status, "fail");
   assert.equal((await call(inno, "publish_product", { id: "sure-win-fund" })).isError, true);
 
-  await call(inno, "create_product", { ...greenFd, id: "cheap-loan", product_line: "credit" });
+  // Credit covers debt bought as an investment: a bond paying fixed interest passes...
+  await call(inno, "create_product", { ...greenFd, id: "green-bond", product_line: "credit", category: "bonds" });
+  const bond = (await call(inno, "test_product", { id: "green-bond" })).data;
+  assert.equal(bond.checks.find((c) => c.name === "credit_consistency").status, "pass");
+  // ...but not a market-linked return, and cost_of_credit needs risk_level not_applicable.
+  await call(inno, "create_product", { ...greenFd, id: "punt-loan", product_line: "credit", return_type: "market_linked" });
+  assert.equal((await call(inno, "test_product", { id: "punt-loan" })).data.checks.find((c) => c.name === "credit_consistency").status, "fail");
+  await call(inno, "create_product", { ...greenFd, id: "cheap-loan", product_line: "credit", return_type: "cost_of_credit" });
   const credit = (await call(inno, "test_product", { id: "cheap-loan" })).data;
   assert.equal(credit.checks.find((c) => c.name === "credit_consistency").status, "fail");
+  // cost_of_credit is only for credit products.
+  await call(inno, "create_product", { ...greenFd, id: "odd-fund", product_line: "wealth", category: "mutual_funds", return_type: "cost_of_credit", risk_level: "not_applicable" });
+  const fund = (await call(inno, "test_product", { id: "odd-fund" })).data;
+  assert.equal(fund.checks.find((c) => c.name === "credit_consistency").status, "fail");
 
   await call(inno, "create_product", { ...greenFd, id: "odd-cover", product_line: "insurance" });
   const insurance = (await call(inno, "test_product", { id: "odd-cover" })).data;

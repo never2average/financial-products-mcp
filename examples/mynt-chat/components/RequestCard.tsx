@@ -2,7 +2,19 @@
 
 import type { RequestProposal } from "@/lib/events";
 
-const LINES: Record<string, string> = { credit: "Credit", wealth: "Savings and investing", insurance: "Insurance", treasury: "Deposits" };
+const LINES: Record<string, string> = {
+  credit: "Credit",
+  securitization: "Securitisation",
+  payments: "Payments",
+  account_operations: "Deposits and accounts",
+  custody_settlement: "Custody and settlement",
+  wealth: "Savings and investing",
+  insurance: "Insurance",
+  guarantees_trade: "Guarantees and trade finance",
+  exchange: "Currency and trading",
+  derivatives: "Hedging",
+  information: "Credit reports and data",
+};
 
 function details(request: RequestProposal): string {
   const parts: string[] = [];

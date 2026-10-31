@@ -17,6 +17,11 @@ Each model lives in `models/<name>/` in the firm's repository.
 ```
 - `applies_to` can name lines and/or categories. A model that names a category wins over one that names only the
   line.
+- Lines are Mynt's line ids, by economic function: `credit`, `securitization`, `payments`, `account_operations`,
+  `custody_settlement`, `wealth`, `insurance`, `guarantees_trade`, `exchange`, `derivatives`, `information`. A
+  deposit model applies to `account_operations`; a bond or T-bill model to `credit` (with category `bonds` or
+  `money_market`); a fixed-deposit model, for example:
+  `"applies_to": { "product_lines": ["account_operations"], "categories": ["deposits"] }`.
 - Input keys are lower snake case, matching the term sheet's `inputs`.
 
 **The code**

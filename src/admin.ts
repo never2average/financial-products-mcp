@@ -75,7 +75,7 @@ export function registerAdminTools(server: McpServer, store: Store, user: User, 
             }),
           )
           .optional()
-          .describe("How each product line is legally brought to market here. Replaces the region's whole list when given."),
+          .describe("How each product line (credit, securitization, payments, account_operations, custody_settlement, wealth, insurance, guarantees_trade, exchange, derivatives, information) is legally brought to market here. Replaces the region's whole list when given."),
         sources: z.array(z.string().url()).optional().describe("Official regulator or statute pages the content is drawn from"),
         active: z.boolean().optional(),
       },
@@ -92,7 +92,7 @@ export function registerAdminTools(server: McpServer, store: Store, user: User, 
     {
       title: "Define a product category",
       description:
-        "Admin: add or change a product type and the product lines (credit, wealth, insurance, treasury) it can be used in. Set active=false to retire it for new products.",
+        "Admin: add or change a product type and the product lines it can be used in. Lines are by economic function, not asset class: credit, securitization, payments, account_operations, custody_settlement, wealth, insurance, guarantees_trade, exchange, derivatives, information. A category can sit in several (e.g. exchange_traded: wealth and securitization). Set active=false to retire it for new products.",
       inputSchema: {
         id: z.string().regex(/^[a-z][a-z0-9_]*$/, "Use a snake_case id like mutual_funds"),
         name: z.string().min(1),
@@ -117,7 +117,7 @@ export function registerAdminTools(server: McpServer, store: Store, user: User, 
     {
       title: "Define a regulated product type",
       description:
-        "Admin: add or replace a product type in a region's regulated product catalogue (e.g. term deposit, listed NCD, ULIP): its Mynt category and every action that can be taken on it. Product types live apart from regulators; each regulator then maps the ones it supervises (define_regulator scope.product_types), so one product type can sit under several regulators. Narrowing actions is refused while a regulator still supervises the dropped ones.",
+        "Admin: add or replace a product type in a region's regulated product catalogue (e.g. term deposit, listed NCD, ULIP): its Mynt category, every action that can be taken on it (issuance, sale, purchase, secondary_sale, repackaging, advice, servicing, underwriting, assessment; assessment is an independent rating, valuation, index, actuarial certification, audit or accreditation), and optionally its underlying (what it is made of) and wrapper (a statutory pension, tax-advantaged or government-scheme structure around it). Product types live apart from regulators; each regulator then maps the ones it supervises (define_regulator scope.product_types), so one product type can sit under several regulators. Narrowing actions is refused while a regulator still supervises the dropped ones.",
       inputSchema: { region: z.string().describe("Region code, e.g. IN"), product_type: RegulatedProductTypeSchema },
     },
     async ({ region: code, product_type }) => {
@@ -132,7 +132,13 @@ export function registerAdminTools(server: McpServer, store: Store, user: User, 
       }
       if (errors.length) return { ...json({ error: "The product type can't be saved", errors }), isError: true };
       const { replaced } = await store.upsertRegulatedProductType(code, product_type);
-      await audit("define_regulated_product_type", `${code}/${product_type.id}`, { replaced, type_id: product_type.type_id, actions: product_type.actions });
+      await audit("define_regulated_product_type", `${code}/${product_type.id}`, {
+        replaced,
+        type_id: product_type.type_id,
+        actions: product_type.actions,
+        underlying: product_type.underlying ?? null,
+        wrapper: product_type.wrapper ?? null,
+      });
       return json({ region: code, product_type: product_type.id, replaced });
     },
   );

@@ -61,15 +61,13 @@ Each new product, review and inspection makes the loop better. Everything has an
 
 ## Business model
 
-A simple take rate on every product sold:
+A take rate on every product sold, with no fixed percentage per line: admins configure a take rate per line, proportional to each product's compliance and back-office workload. Each line's rate is a base percentage plus a percentage per workload point, kept between a floor and a cap, and applied to a stated basis (such as revenue or volume).
 
-| Credit | Insurance | Treasury | Asset management |
-| --- | --- | --- | --- |
-| 1% | 20% | 10% | 5% |
+A product's workload score comes from its composition. Each regulated primitive it is made of scores 1 point. It adds a tenth of the average number of obligations, filings and controls carried by the licences that may provide it, and 1 more point if the product services it. A product that carries more regulation and more ongoing operations pays proportionally more.
 
 ## What's in this repository
 
-This repository is Mynt's platform, published as an [MCP](https://modelcontextprotocol.io) server (MCP clients show it as `mynt`). It covers **credit, wealth, insurance and treasury** products, and serves the people and agents around a product:
+This repository is Mynt's platform, published as an [MCP](https://modelcontextprotocol.io) server (MCP clients show it as `mynt`). It covers products in eleven lines, grouped by economic function: **credit, securitization, payments, account operations, custody and settlement, wealth, insurance, guarantees and trade, exchange, derivatives and information**. It serves the people and agents around a product:
 
 | Who | What Mynt gives them |
 | --- | --- |
@@ -92,8 +90,8 @@ Mynt has four kinds of user:
 | --- | --- | --- |
 | **Consumer** | Use financial products, respond to offers and request products that don't exist yet | `enroll_in_product`, `list_my_enrollments`, `cancel_enrollment`, `list_offers`, `upgrade_enrollment`, `request_product`, `list_my_product_requests` (the last two for any signed-in user) |
 | **Developer** | Build app experiences and do GTM engineering around financial products | Apps: `create_app`, `update_app`, `list_my_apps`, `preview_app`, `publish_app`. GTM: `create_segment`, `list_my_segments`, `create_campaign`, `update_campaign`, `lint_campaign`, `launch_campaign`, `pause_campaign`, `end_campaign`, `list_my_campaigns`, `get_campaign_metrics`. Runtime: `create_api_key`, `list_api_keys`, `rotate_api_key`, `revoke_api_key`, `create_webhook`, `list_webhooks`, `delete_webhook`, `rotate_webhook_secret`, `list_webhook_deliveries`, `create_test_consumer`, `simulate_handoff`, `release_app`, `list_app_releases`, `rollback_app`, `get_app_metrics` |
-| **Innovator** | Create, test, publish, version and upgrade financial products | `create_product`, `update_product`, `test_product`, `publish_product`, `unpublish_product`, `list_my_products`, `create_product_version`, `update_product_version`, `list_product_versions`, `diff_product_versions`, `restore_product_version`, `upgrade_enrollments`, `get_product_distribution_metrics`, `report_handoff_outcome`. Product requests: `list_product_requests` (requesters shown only by a pseudonymous id), `respond_to_product_request` (offer one of your published products; audited) |
-| **Admin** | Run Mynt: geographies, product types, the whitelist, and oversight, all from Mynt itself | `define_region`, `define_product_category`, `list_whitelist`, `invite_user`, `revoke_user`, `list_all_campaigns`, `admin_pause_campaign`, `admin_set_product_status`, `audit_log` |
+| **Innovator** | Create, test, publish, version and upgrade financial products | `create_product`, `update_product`, `test_product`, `publish_product`, `unpublish_product`, `list_my_products`, `create_product_version`, `update_product_version`, `list_product_versions`, `diff_product_versions`, `restore_product_version`, `upgrade_enrollments`, `get_product_distribution_metrics`, `report_handoff_outcome`, `get_product_take_rate`. Product requests: `list_product_requests` (requesters shown only by a pseudonymous id), `respond_to_product_request` (offer one of your published products; audited) |
+| **Admin** | Run Mynt: geographies, product types, the whitelist, and oversight, all from Mynt itself | `define_region`, `define_product_category`, `list_whitelist`, `invite_user`, `revoke_user`, `list_all_campaigns`, `admin_pause_campaign`, `admin_set_product_status`, `define_take_rate`, `list_take_rates`, `audit_log` |
 
 Everyone (including guests without a token) gets the catalog tools: `whoami`, `list_products`, `get_product`, `list_categories`, `list_regions`, `list_product_categories`, `list_apps`, plus the resource `mynt://catalog`.
 
@@ -101,7 +99,7 @@ Everyone (including guests without a token) gets the catalog tools: `whoami`, `l
 
 Admins own Mynt's reference data and access. **Every admin action is written to the audit log with who did it.**
 - **Geographies** (`define_region`): where products may be offered. Each region records its regulators, its regulatory ecosystem (each regulator's remit, the key laws and bodies), the legal procedure to launch each product line there (licences, approvals, filings, timeline), and the official sources. Fields you leave out keep their values. Innovators read the full picture with `get_region`.
-- **Regulated product types** (`define_regulated_product_type`, `list_regulated_product_types`): per region, a catalogue of the product types regulators supervise, kept apart from any one regulator. Each has a Mynt category and the actions that can be taken on it (issuance, sale, purchase, secondary sale, repackaging). Regulators map onto it **many to many**: one product type, such as a sovereign gold bond, can be supervised by several regulators, each for its own subset of actions. A product type can't be removed, or lose an action, while a regulator still supervises it.
+- **Regulated product types** (`define_regulated_product_type`, `list_regulated_product_types`): per region, a catalogue of the product types regulators supervise, kept apart from any one regulator. Each has a Mynt category, the actions that can be taken on it, and optionally its underlying and wrapper (see [Product lines, actions and primitives](#product-lines-actions-and-primitives)). Regulators map onto it **many to many**: one product type, such as a sovereign gold bond, can be supervised by several regulators, each for its own subset of actions. A product type can't be removed, or lose an action, while a regulator still supervises it.
 - **Regulatory model** (`define_regulator`, `define_legislation`, `define_judgment`): per region, each regulator's **scope** (the regulated product types it supervises, by id, with the actions it covers; and the customer personas with their qualifications), and the **licence types** it grants. A licence **grants specific actions on specific product types** (a bare id grants everything its regulator supervises on it), so `find_licenses` returns only licences that actually permit the action. Persona and licence ids belong to one regulator: they must start with `<regulator id>_` and can't be reused by another regulator in the region. Each licence carries **GRC**: registers of obligations, reporting/disclosure filings, risks and controls; repositories of regulatory communications, enforcement actions, press releases, policies and risk models; the product types and customer segments it allows; mandatory internal and external stakeholders; and how to apply. **Legal** is recorded alongside in two branches. **Legislative** covers acts, ordinances, rules, regulations, master directions, circulars, guidelines, notifications and orders, each with its issuer, the instrument it's made under (`parent_id`), status and effective date. **Judiciary** covers court and tribunal decisions, each with court and level, bench, holding, the legislation it interprets, and whether it's still good law. Obligations and filings cite either kind by `legal_ref`. Broken links inside a regulator are refused; looser links come back as warnings. Innovators read it with `get_regulator` and `list_legal_instruments` (both branches, filterable), and ask `find_licenses` which licence covers a category, action and persona. `test_product` names the covering licence or warns when there is none.
 - **GRC: data and templates.** Each licence's GRC holds two kinds of thing.
   - **Data the regulator requires or has identified:**
@@ -118,7 +116,8 @@ Admins own Mynt's reference data and access. **Every admin action is written to 
     - a **field schema** licensees' records must follow
 
     Schemas start from Mynt's defaults (a control's type, test method, test frequency, test status and last test rating; a risk model's scoring methods, factors and thresholds; an inspection's type, outcome and findings by severity). The regulator adds or overrides fields by key, each with its own guidance, or opts out of the defaults. Innovators read a template's resolved schema with `get_template`, and the defaults with `list_template_defaults`.
-- **Product types** (`define_product_category`): the categories products may have, and which of the four product lines each may be used in.
+- **Product types** (`define_product_category`): the categories products may have, and which product lines each may be used in (a category can sit in several, e.g. `exchange_traded` in wealth and securitization).
+- **Take rates** (`define_take_rate`, `list_take_rates`): what Mynt takes on each product line, as a base percentage plus a percentage per workload point, with a floor, a cap and the basis it applies to. Every change is audited. A product's owner, its firm and admins see the rate and its full per-component breakdown with `get_product_take_rate`. If no rate is configured for the line, it says so.
 - **How products are checked against them:** `test_product` fails a product whose region or category isn't defined and active, or whose category doesn't allow its product line. It warns when the regulator isn't one listed for the region, and when no launch procedure is documented for the product's line there. Retiring a region or category (`active: false`) stops new products from using it; live products stay. A new Mynt starts with neither: admins define them.
 - **Whitelist** (`invite_user`, `revoke_user`, `list_whitelist`): kept in step with Clerk's allowlist. Mynt refuses any change that would remove the last admin.
 - **Oversight:** see every campaign and pause any of them. Unpublish any product, or republish one; republishing re-runs the tests first.
@@ -392,14 +391,42 @@ function verifyMynt(secret, header, rawBody, toleranceSec = 300) {
 
 Roles nest: **every admin is also an innovator, every innovator a developer, and every developer a consumer**. Each role gets its own tools plus everything below it. Tools are registered per user, so a client only *sees* the tools its roles allow. `whoami` shows both the granted and the effective roles.
 
-## Product lines
+## Product lines, actions and primitives
 
-Every product has a `product_line`:
+Product lines group products by **economic function**, not asset class: what a product does for the person or firm using it. Every product has one `product_line`:
 
-- **credit**: cards, personal/home/auto/education/gold loans, BNPL, working-capital loans
-- **wealth**: mutual funds, ETFs, REITs/InvITs, stocks, retirement accounts, government savings schemes
+- **credit**: lending and debt instruments, issued or bought: cards, personal/home/auto/education/gold loans, BNPL, working-capital loans, leasing, government and corporate bonds, T-bills, commercial paper
+- **securitization**: pooling assets into securities: PTCs, ABS/MBS, direct assignment, co-lending pools, REIT/InvIT unit issuance, asset reconstruction
+- **payments**: moving money: acceptance, payouts, mandates, wallets, remittances, CBDC
+- **account_operations**: holding and running money: savings, current, term and recurring deposits, sweep accounts, money-market accounts, certificates of deposit, cash management
+- **custody_settlement**: safekeeping and settlement: custody, depositories, clearing and CCPs, escrow, trustees, vaults
+- **wealth**: investment exposure: mutual funds (money-market and liquid funds too), ETFs, equities, PMS/AIF, REIT/InvIT units bought as an investment, government savings schemes, and retirement products such as pensions, provident funds, 401(k)s and IRAs
 - **insurance**: term/whole life, health, motor, home, travel, ULIPs, annuities
-- **treasury**: deposits, sweep accounts, liquid/money-market funds, T-bills, commercial paper, government and corporate bonds, FX forwards, interest-rate swaps, derivatives
+- **guarantees_trade**: bank guarantees, letters of credit, surety, credit and deposit guarantee schemes, factoring, supply-chain and export finance
+- **exchange**: currency conversion, securities trading and execution, commodities and bullion trading, digital assets
+- **derivatives**: forwards, swaps, futures, options
+- **information**: credit bureaus, account aggregators, ratings, KYC registries, market data
+
+A product that spans functions is a **composition** of primitives rather than a line of its own. A cross-border transfer is an exchange primitive (the currency conversion) plus a payments primitive (moving the money). Retirement is wealth plus a statutory wrapper, and commodities are an underlying, not a line.
+
+The **regulated primitives** are each region's regulated product types. Each one lists the **actions** that can be taken on it:
+
+- **issuance**: creating it as the issuer
+- **sale**: distributing it for its issuer
+- **purchase**: buying it
+- **secondary_sale**: selling it on after purchase
+- **repackaging**: bundling it into something else
+- **advice**: advising on it
+- **servicing**: running it after the sale (collections, reconciliation, record-keeping)
+- **underwriting**: taking on its risk or guaranteeing its placement
+- **assessment**: producing an independent rating, valuation, index, actuarial certification, audit or accreditation of it
+
+Two optional attributes describe the primitive itself:
+
+- `underlying`: what it is made of: `cash`, `securities`, `commodities`, `real_assets`, `receivables`, `risk` or `data`
+- `wrapper`: a statutory or tax structure around it: `statutory_pension`, `tax_advantaged` or `government_scheme`
+
+Stores created under the original four lines (credit, wealth, insurance and the old cash-and-markets line) are moved onto these lines once, when Mynt starts. Old cash-and-markets products go by category: deposits to account_operations, bonds and money-market instruments to credit, derivatives to derivatives, and funds to wealth. REIT and InvIT units go to securitization. Published products stay published, and their test reports are re-run so they match the migrated data.
 
 `list_products` filters by `product_line`, `category`, `region` (`IN`, `US`, `global`), `risk_level` or free text, and `list_categories` returns counts for each.
 

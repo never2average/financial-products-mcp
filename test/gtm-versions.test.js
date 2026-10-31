@@ -29,7 +29,7 @@ async function setup() {
 const product = {
   id: "flexi-fd",
   name: "Flexi Fixed Deposit",
-  product_line: "treasury",
+  product_line: "account_operations",
   category: "deposits",
   region: "IN",
   risk_level: "low",
@@ -118,7 +118,7 @@ test("versioning is owner-only and bundled products can't be versioned", async (
 test("compliance lint blocks misleading copy and missing disclosures", () => {
   const fund = { id: "fund", product_line: "wealth", return_type: "market_linked" };
   const loan = { id: "loan", product_line: "credit", return_type: "cost_of_credit" };
-  const fd = { id: "fd", product_line: "treasury", return_type: "fixed_interest" };
+  const fd = { id: "fd", product_line: "account_operations", return_type: "fixed_interest" };
   const bad = lintCampaign([{ key: "a", headline: "Guaranteed 15% returns!", body: "Invest now", cta: "Start" }], [fund]);
   assert.equal(bad.passed, false);
   assert.deepEqual(bad.checks.filter((c) => c.status === "fail").map((c) => c.name).sort(), ["no_guarantee_claims", "risk_disclosure"]);

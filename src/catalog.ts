@@ -1,8 +1,57 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-export const PRODUCT_LINES = ["credit", "wealth", "insurance", "treasury"] as const;
+// Product lines group products by economic function, not asset class: what the product does for
+// the person or firm using it. A product spanning functions is a composition of primitives (see
+// regime.ts): a cross-border transfer is an exchange primitive plus a payments primitive.
+export const PRODUCT_LINES = [
+  "credit", // lending and debt instruments, issued or bought: loans, bonds, T-bills, commercial paper, leasing
+  "securitization", // pooling assets into securities: PTC/ABS/MBS, direct assignment, co-lending pools, REIT/InvIT units, asset reconstruction
+  "payments", // moving money: acceptance, payouts, mandates, wallets, remittances, CBDC
+  "account_operations", // holding and running money: deposits, savings/current/term/recurring, sweep, money-market accounts, CDs, cash management
+  "custody_settlement", // safekeeping and settlement: custody, depositories, clearing/CCPs, escrow, trustees, vaults
+  "wealth", // investment exposure: funds, ETFs, equities, PMS/AIF, REIT/InvIT units bought, government savings schemes, retirement products
+  "insurance",
+  "guarantees_trade", // bank guarantees, LCs, surety, credit/deposit guarantee schemes, factoring, supply-chain and export finance
+  "exchange", // currency conversion, securities trading and execution, commodities and bullion trading, digital assets
+  "derivatives", // forwards, swaps, futures, options
+  "information", // credit bureaus, account aggregators, ratings, KYC registries, market data
+] as const;
 export type ProductLine = (typeof PRODUCT_LINES)[number];
+
+// What a regulated primitive is made of. Commodities are an underlying, not a line.
+export const UNDERLYINGS = ["cash", "securities", "commodities", "real_assets", "receivables", "risk", "data"] as const;
+export type Underlying = (typeof UNDERLYINGS)[number];
+
+// A statutory or tax structure around a primitive: retirement is wealth plus a wrapper, not a line.
+export const WRAPPERS = ["statutory_pension", "tax_advantaged", "government_scheme"] as const;
+export type Wrapper = (typeof WRAPPERS)[number];
+
+// The four lines Mynt started with, which stored products may still carry, and what each became.
+// treasury is split by category; anything not listed there holds or runs money.
+const TREASURY_BY_CATEGORY: Record<string, ProductLine> = {
+  deposits: "account_operations",
+  bonds: "credit",
+  money_market: "credit",
+  derivatives: "derivatives",
+  mutual_funds: "wealth",
+};
+const SECURITIZED_UNITS = ["reit", "invit"];
+
+// The line a stored product belongs to now. Lines already in PRODUCT_LINES are kept, except REIT and
+// InvIT units still filed under wealth, which are securitization.
+export function currentLine(product: Pick<FinancialProduct, "id" | "category"> & { product_line: string }): ProductLine {
+  const line = product.product_line;
+  if (line === "wealth" && SECURITIZED_UNITS.includes(product.id)) return "securitization";
+  if (line === "retirement") return "wealth";
+  if (line === "treasury") return lineForTreasuryCategory(product.category);
+  return line as ProductLine;
+}
+
+// What an old treasury category became.
+export function lineForTreasuryCategory(category: string): ProductLine {
+  return TREASURY_BY_CATEGORY[category] ?? "account_operations";
+}
 
 export const RISK_LEVELS =["low", "moderate", "high", "very_high", "not_applicable"] as const;
 export const LIQUIDITY = ["high", "moderate", "low", "none", "not_applicable"] as const;

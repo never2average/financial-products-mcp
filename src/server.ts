@@ -14,6 +14,7 @@ import { attributionFor, offersFor, registerGtmTools } from "./gtm.js";
 import { registerAdminTools, type AdminContext } from "./admin.js";
 import { registerCodingAgentAdminTools, registerCodingAgentTools } from "./builds.js";
 import { registerBdAdminTools, registerBdAgentTools, registerConnectTools } from "./bd.js";
+import { feasibilityCheck, registerDeskTools, type DeskService } from "./desk.js";
 import { accessStatus, BuildTermsSchema, coveringLicenses, EXPERIENCE_ACTIONS, lintExperience, productEntity } from "./access.js";
 import { runProductTests } from "./product-tests.js";
 import { COURT_LEVELS, findLicenses, LEGISLATIVE_KINDS, normalizeModel, PRODUCT_ACTIONS, summarizeModel, type Regulator } from "./regulatory.js";
@@ -78,7 +79,8 @@ export function createServer(store: Store, user: User | null = null, ctx: AdminC
     registerGtmTools(server, store, user!);
   }
   if (has("innovator")) {
-    registerInnovatorTools(server, store, user!);
+    registerInnovatorTools(server, store, user!, ctx.desk ?? null);
+    if (ctx.desk) registerDeskTools(server, store, user!, ctx.desk);
     registerVersioningTools(server, store, user!, productFields);
     registerMarketplaceTools(server, store, user!);
     registerRuntimeInnovatorTools(server, store, user!);
@@ -798,7 +800,7 @@ function registerDeveloperTools(server: McpServer, store: Store, user: User) {
   registerRuntimeTools(server, store, user, readiness);
 }
 
-function registerInnovatorTools(server: McpServer, store: Store, user: User) {
+function registerInnovatorTools(server: McpServer, store: Store, user: User, desk: DeskService | null = null) {
   const ownProduct = async (id: string) => {
     const record = await store.getProduct(id);
     return record && record.owner_id === user.id ? record : undefined;
@@ -875,7 +877,9 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User) {
               ? `Your entity holds no verified licence for ${record.action} of '${data.category}' in ${data.region}; register one with register_license`
               : "You don't belong to an entity yet; create one with create_entity, then register its licences",
           };
-      const result = { ...report, checks: [...report.checks, licence] };
+      // Advisory too: the latest feasibility analysis of the current term sheet, when the desk is on.
+      const feasibility = desk ? [await feasibilityCheck(desk, id)] : [];
+      const result = { ...report, checks: [...report.checks, licence, ...feasibility] };
       return json(draft ? { version: draft.version, ...result } : result);
     },
   );

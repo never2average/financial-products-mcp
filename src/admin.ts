@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { ClerkAdmin } from "./auth.js";
 import type { BuildService } from "./builds.js";
 import type { BdService } from "./bd.js";
+import type { DeskService } from "./desk.js";
 import { PRODUCT_LINES } from "./catalog.js";
 import { runProductTests } from "./product-tests.js";
 import {
@@ -32,6 +33,7 @@ export interface AdminContext {
   clerkAdmin?: ClerkAdmin | null; // keeps Clerk's allowlist in step with the whitelist
   builds?: BuildService | null; // coding-agent builds, when enabled
   bd?: BdService | null; // the business-development connector agent
+  desk?: DeskService | null; // innovators' product desk: workspaces, term sheets, feasibility
   bdRun?: { id: string } | null; // set when the caller is a connector agent run, not a person
 }
 

@@ -226,7 +226,9 @@ test("runs: the agent gets Mynt's MCP server and the proxy with one run token, w
   const auth = JSON.parse(files.get(`${A}/auth.json`));
   assert.deepEqual(auth.mcp, { url: "https://mynt.example.com/mcp", token: auth.token });
   assert.match(auth.token, /^mynt_bd_/);
-  assert.match(JSON.parse(files.get(`${A}/config.json`)).prompt, /You are Mynt's connector/);
+  assert.match(files.get("/home/user/workspaces/connector/CLAUDE.md"), /You are Mynt's connector/);
+  assert.ok(files.has("/home/user/workspaces/connector/.claude/skills/replies-and-consent/SKILL.md"));
+  assert.equal(JSON.parse(files.get(`${A}/config.json`)).cwd, "/home/user/workspaces/connector");
   assert.equal(await bd.agentTokenActive(auth.token), true);
 
   boat.sandboxes.get(sbx).running = false;

@@ -3,7 +3,6 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { agentState, launchAgent, type AgentHostConfig } from "./agent-host.js";
 import type { BoatClient } from "./boat.js";
-import { BD_PLAYBOOK } from "./bd-playbook.js";
 import type { Db } from "./db.js";
 import type { User } from "./store.js";
 
@@ -548,7 +547,13 @@ export class BdService {
       if (!["ready", "idle", "running"].includes(s.state)) return;
       const token = `mynt_bd_${randomBytes(24).toString("base64url")}`;
       await this.db.query("UPDATE financial_products.bd_runs SET token_hash = $2 WHERE id = $1", [r.id, hash(token)]);
-      const pid = await launchAgent(boat, this.config, r.sandbox_id as string, { prompt: BD_PLAYBOOK, cwd: "/home/user", budgetUsd: Number(r.cap_usd), token, mcp: true });
+      const pid = await launchAgent(boat, this.config, r.sandbox_id as string, {
+        prompt: "Run one connector session, following CLAUDE.md and its skills.",
+        budgetUsd: Number(r.cap_usd),
+        token,
+        mcp: true,
+        workspace: "connector",
+      });
       await this.db.query("UPDATE financial_products.bd_runs SET status = 'running', process_id = $2 WHERE id = $1", [r.id, pid]);
       return;
     }

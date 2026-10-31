@@ -121,6 +121,25 @@ Work is split by what it needs:
 
 **Configuration:** a boat.dev key and the GitHub App, plus a model backend for agent tasks. Optional: `DESK_JOB_CAP_USD` (per agent task, default 5), `DESK_RUN_CAP_USD` (per code run, default 1) and `DESK_MONTHLY_CAP_USD` (per firm, default 50; unfinished jobs count at their cap).
 
+### Agent workspaces
+
+Every hosted agent is steered by a folder in this repository, not by prompts in the code. When an agent starts, Mynt copies its folder into the sandbox and makes it the agent's working directory. Claude Code picks up its `CLAUDE.md` and skills from there, the skills call the folder's scripts, and the job's data arrives under `job/`. To improve an agent, change its folder.
+
+```
+workspaces/
+├── coding-build/        developers' coding agent: CLAUDE.md, skills (mynt-sdk, maxwell-audit, production-readiness), scripts/report_status.py
+├── build-audit/         the audit-only agent in a build's clean verification sandbox (maxwell-static-audit)
+├── product-desk/        innovators' desk agent: designs models in the firm's repo (model-contract, financial-modelling)
+├── governance-review/   admins' review agent: checklists, register skills, evidence scripts
+└── connector/           the business-development agent (prospecting, outreach, replies-and-consent, introductions)
+```
+
+Whatever an agent produces, Mynt checks it itself afterwards:
+- **builds:** a clean-sandbox verification;
+- **the desk:** running the agent's code;
+- **reviews:** re-verifying quotes and computing the recommendation;
+- **the connector:** the rules in `send()`.
+
 ### The governance desk (admins)
 
 Admins can have an agent review a firm, a licence it registered, or a product it offers, before they decide (`open_review_case`). With `REVIEW_AUTO_OPEN=1`, a case opens for every licence awaiting review. The agent only researches and judges; it can't change anything, and the admin makes every decision.

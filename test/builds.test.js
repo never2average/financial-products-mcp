@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { PGlite } from "@electric-sql/pglite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { BuildService, buildConfigFromEnv, buildTask } from "../dist/builds.js";
+import { BuildService, buildConfigFromEnv } from "../dist/builds.js";
+import { workspaceFiles } from "../dist/agent-host.js";
 import { createServer } from "../dist/server.js";
 import { Store } from "../dist/store.js";
 import { CATALOG } from "./helpers.js";
@@ -12,6 +13,8 @@ const SHA = "a".repeat(64);
 const COMMIT = "c".repeat(40);
 const V = "/home/user/mynt-verify";
 const A = "/home/user/mynt-agent";
+const BUILD = "/home/user/workspaces/coding-build";
+const AUDIT = "/home/user/workspaces/build-audit";
 
 // A stand-in for boat.dev: sandboxes become ready when told to, files live in memory, the agents' work
 // is simulated by writing files (the runner's state.json among them), and shell commands are matched by
@@ -161,7 +164,7 @@ async function runBuild(ctx, { dev, startArgs, agent = agentReport, verification
   const sbx = (await builds.get(started.id)).sandbox_id;
   boat.ready(sbx);
   await builds.tick(); // agent prompted
-  boat.write(sbx, "/home/user/mynt/result.json", agent);
+  boat.write(sbx, `${BUILD}/job/result.json`, agent);
   boat.finishAgent(sbx);
   await builds.tick(); // source packaged, verifier requested
   const vid = (await builds.get(started.id)).verify_sandbox_id;
@@ -206,17 +209,23 @@ test("a build is verified by Mynt in a clean sandbox, then Mynt opens the PR", a
   assert.equal(await builds.agentTokenActive(auditAuth.token), false, "and that one died with the build");
   assert.equal(coding.opts.env.GITHUB_TOKEN, "ghs_short_lived");
   assert.match(coding.opts.env.MYNT_SANDBOX_KEY, /^mynt_test_/);
-  const task = coding.files.get("/home/user/mynt/TASK.md");
-  assert.match(task, /Do not open a pull request/);
-  assert.match(task, /re-runs the audit and the checks itself/);
-  assert.ok(coding.files.has("/home/user/mynt/sdk/openapi.json"));
+  // The coding agent works in Mynt's coding-build workspace: its instructions, skills and scripts, plus job files.
+  const instructions = coding.files.get(`${BUILD}/CLAUDE.md`);
+  assert.match(instructions, /Do not open a pull request/);
+  assert.match(instructions, /re-runs the audit and the checks itself/);
+  assert.ok(coding.files.has(`${BUILD}/.claude/skills/maxwell-audit/SKILL.md`) && coding.files.has(`${BUILD}/scripts/report_status.py`));
+  assert.equal(config.cwd, BUILD);
+  assert.equal(JSON.parse(coding.files.get(`${BUILD}/job/build.json`)).build.repository, "acme/savings-app");
+  assert.ok(coding.files.has(`${BUILD}/job/sdk/openapi.json`));
 
   // The verifier: a fresh sandbox with no secrets, Mynt's own script, and an audit-only agent.
   const verifier = boat.sandboxes.get(vid);
   assert.deepEqual(verifier.opts.env, {});
   assert.match(verifier.files.get(`${V}/verify.sh`), /gitleaks/);
   assert.match(verifier.commands.find((c) => c.detached).command, new RegExp(`verify\\.sh 'https://files\\.example/${sbx}/home/user/mynt-out/app\\.tgz\\?sig=x' ${SHA}`));
-  assert.match(boat.agentConfig(vid).prompt, /Do not modify anything inside \/home\/user\/app/);
+  assert.match(verifier.files.get(`${AUDIT}/CLAUDE.md`), /Do not modify anything inside `app_dir`/);
+  assert.deepEqual(JSON.parse(verifier.files.get(`${AUDIT}/job/audit.json`)), { app_dir: "/home/user/app", maxwell_repo: "https://github.com/OnFinance/Maxwell", output: `${V}/maxwell.json` });
+  assert.equal(boat.agentConfig(vid).cwd, AUDIT);
   assert.ok(verifier.stopped, "the verifier is stopped once it has reported");
 
   assert.equal(build.status, "succeeded");
@@ -298,7 +307,7 @@ test("spend caps count both sandboxes, and the monthly budget refuses new builds
   const sbx = (await builds.get(started.id)).sandbox_id;
   boat.ready(sbx);
   await builds.tick();
-  boat.write(sbx, "/home/user/mynt/result.json", agentReport);
+  boat.write(sbx, `${BUILD}/job/result.json`, agentReport);
   boat.finishAgent(sbx, "success", 1);
   boat.sandboxes.get(sbx).cost = 2;
   await builds.tick(); // verifying
@@ -322,7 +331,7 @@ test("developers track, steer and stop their own builds; admins see all", async 
   const sbx = (await builds.get(started.id)).sandbox_id;
   boat.ready(sbx);
   await builds.tick();
-  boat.write(sbx, "/home/user/mynt/status.json", { phase: "auditing", message: "Running Maxwell" });
+  boat.write(sbx, `${BUILD}/job/status.json`, { phase: "auditing", message: "Running Maxwell" });
   await builds.tick();
   let b = (await call(dev, "get_build", { build_id: started.id })).data;
   assert.equal(b.status, "auditing");
@@ -496,10 +505,8 @@ test("without a boat.dev key builds are disabled cleanly, and agents never conne
   const { as, connect, call } = await setup({ boat: null });
   const dev = await connect(await as("Dev", ["developer"]));
   assert.match((await call(dev, "start_build", { goal: "Build a savings page please" })).data.error, /aren't enabled/);
-  const task = buildTask({ id: "x", repository: null, branch: null, maxwellRepo: "https://github.com/OnFinance/Maxwell", files: { task: "t", spec: "s", status: "st", result: "r", sdk: "k" } });
-  assert.match(task, /Do not connect any external service or sign in anywhere/);
-  const { auditorPrompt } = await import("../dist/verify-script.js");
-  assert.match(auditorPrompt("https://github.com/OnFinance/Maxwell"), /Do not connect any external service or sign in anywhere/);
+  assert.match(workspaceFiles("coding-build")[".claude/skills/maxwell-audit/SKILL.md"], /Do not connect any external service or sign in anywhere/);
+  assert.match(workspaceFiles("build-audit")["CLAUDE.md"], /Don't connect any external service or sign in anywhere/);
 });
 
 test("Mynt's Google service account signs a JWT for a cloud-platform token, and caches it", async () => {

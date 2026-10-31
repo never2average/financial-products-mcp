@@ -5,6 +5,8 @@ description: Writing first messages and follow-ups that Mynt's rules allow and p
 
 # Writing to people
 
+- **Check before you write:** `bd_check_consent` with `contact_email` (or `contact_whatsapp` / `contact_phone`).
+  If it isn't allowed, don't draft the message.
 - **First contact is email only.** Mynt adds who you are (an AI agent for Mynt) and an opt-out to every message;
   don't repeat them.
 - **Keep it short, personal and specific.** Say why you're writing to *them*: something real from their work.

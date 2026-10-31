@@ -72,7 +72,7 @@ async function setup({ senders = {}, config = {}, boat = fakeBoat() } = {}) {
     }
     return { isError: res.isError ?? false, data };
   };
-  return { db, store, bd, boat, clock, connect, call };
+  return { db, pg, store, bd, boat, clock, connect, call };
 }
 
 const prospect = (bd, over = {}) =>
@@ -287,4 +287,86 @@ test("over HTTP: a run token gets the agent's MCP tools, a dead one 401, and uns
   } finally {
     http.close();
   }
+});
+
+test("consent is a per-purpose ledger: what's allowed, on what basis, and every grant and withdrawal", async () => {
+  const { bd, pg } = await setup();
+  const { id } = await prospect(bd);
+  const c = await bd.consents(id);
+  assert.equal(c.contact_email.basis, "public_business");
+  assert.equal(c.profile.basis, "publicly_available");
+  const row = (await pg.query("SELECT legal_basis, retain_until FROM financial_products.bd_prospects WHERE id = $1", [id])).rows[0];
+  assert.equal(row.legal_basis, "publicly_available");
+  assert.ok(row.retain_until, "a public-source profile has a retention limit");
+  assert.deepEqual(await bd.checkConsent(id, "contact_email"), { allowed: true, basis: "public_business", reason: "Basis: public_business" });
+  assert.equal((await bd.checkConsent(id, "contact_whatsapp")).allowed, false);
+  assert.match((await bd.checkConsent(id, "introductions")).reason, /Ask them/);
+
+  await bd.recordConsent(id, "whatsapp", "+91 98765 43210", "opted_in", "message m1");
+  assert.deepEqual(await bd.checkConsent(id, "contact_whatsapp"), { allowed: true, basis: "consent", reason: "They agreed" });
+  await bd.optOut(id, "replied STOP");
+  for (const purpose of ["contact_email", "contact_whatsapp", "introductions"]) {
+    assert.equal((await bd.checkConsent(id, purpose)).allowed, false, purpose);
+  }
+  const history = (await bd.prospect(id)).consents.filter((x) => x.purpose === "contact_whatsapp").map((x) => x.granted);
+  assert.deepEqual(history, [true, false], "the ledger keeps the grant and the withdrawal");
+});
+
+test("an introduction answer is recorded as consent", async () => {
+  const { bd } = await setup();
+  const a = await prospect(bd);
+  const b = await prospect(bd, { name: "Dev", kind: "developer", source: "github", source_url: "https://github.com/dev", contacts: [{ channel: "email", address: "dev@x.example", consent: "public_business" }] });
+  const intro = await bd.proposeIntro(a.id, b.id, "They should build a savings app together");
+  await bd.introConsent(intro, a.id, true);
+  assert.equal((await bd.checkConsent(a.id, "introductions")).allowed, true);
+  await bd.introConsent(intro, b.id, false);
+  assert.match((await bd.checkConsent(b.id, "introductions")).reason, /withdrew/);
+});
+
+test("erasure deletes a person's data, keeps only hashes, and keeps them from being contacted again", async () => {
+  const { bd, pg } = await setup();
+  const { id } = await prospect(bd);
+  await bd.send(id, "email", { subject: "Hi", body: "Hello there" });
+  assert.equal(await bd.erase(id, "asked to be forgotten", "admin"), true);
+  assert.equal(await bd.prospect(id), null);
+  for (const t of ["bd_messages", "bd_contacts", "bd_consents"]) {
+    assert.equal((await pg.query(`SELECT count(*)::int AS n FROM financial_products.${t} WHERE prospect_id = $1`, [id])).rows[0].n, 0, t);
+  }
+  const erasure = (await pg.query("SELECT * FROM financial_products.bd_erasures")).rows[0];
+  assert.ok(erasure.suppressed && erasure.address_hashes.length === 1);
+  assert.ok(!JSON.stringify(erasure).includes("sunrise"), "no personal data in the erasure record");
+  await assert.rejects(prospect(bd), /opted out of contact/);
+});
+
+test("public-source profiles of people who never replied are erased after the retention period, without suppressing them", async () => {
+  const { bd, clock } = await setup({ config: { profileRetentionDays: 30 } });
+  const quiet = await prospect(bd, { name: "Quiet", contacts: [{ channel: "email", address: "quiet@firm.example", consent: "public_business" }] });
+  const replied = await prospect(bd, { name: "Replied", contacts: [{ channel: "email", address: "replied@firm.example", consent: "public_business" }] });
+  await bd.send(replied.id, "email", { subject: "Hi", body: "Hello" });
+  await bd.receive("email", "replied@firm.example", { body: "Interested" });
+  clock.now = new Date(MONDAY_IST.getTime() + 31 * 86400e3);
+  assert.equal(await bd.sweepRetention(), 1);
+  assert.equal(await bd.prospect(quiet.id), null);
+  assert.ok(await bd.prospect(replied.id), "someone who replied is kept");
+  assert.equal(await bd.suppressed("email", "quiet@firm.example"), false, "retention isn't an opt-out");
+});
+
+test("people can have the connector forget them; the agent erases on request only with their message as evidence", async () => {
+  const { store, bd, connect, call } = await setup();
+  const { user } = await store.createUser("Ana", ["consumer"]);
+  user.email = "ana@builders.example";
+  const person = await connect(user);
+  await call(person, "connect_with_mynt", { kind: "developer", about: "I build fintech apps for savers", looking_for: "A deposits issuer" });
+  assert.equal((await call(person, "connect_forget_me", { confirm: true })).data.erased, true);
+  assert.equal(await bd.prospectForUser(user.id), undefined);
+  assert.equal(await bd.suppressed("email", "ana@builders.example"), true);
+
+  const agent = await connect(null, { bdRun: { id: "00000000-0000-0000-0000-000000000001" } });
+  const { id } = await prospect(bd);
+  await bd.send(id, "email", { subject: "Hi", body: "Hello" });
+  const sent = (await bd.prospect(id)).messages[0].id;
+  assert.match((await call(agent, "bd_erase_on_request", { prospect_id: id, evidence_message_id: sent })).data.error, /message this person sent/);
+  const asked = await bd.receive("email", "asha@sunrise.example", { body: "Please delete my data" });
+  assert.equal((await call(agent, "bd_erase_on_request", { prospect_id: id, evidence_message_id: asked })).data.erased, true);
+  assert.equal((await call(agent, "bd_check_consent", { prospect_id: id, purpose: "contact_email" })).data.allowed, false);
 });

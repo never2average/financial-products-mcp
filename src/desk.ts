@@ -6,6 +6,7 @@ import type { BoatClient } from "./boat.js";
 import type { Db } from "./db.js";
 import { DESK_RUNNER, type DeskOutcome, type DeskReport } from "./desk-runner.js";
 import type { RepoAccess } from "./github.js";
+import { REPO_DIR, startRepoRun } from "./repo-run.js";
 import { findLicenses, normalizeModel } from "./regulatory.js";
 import type { ProductRecord, Store, User } from "./store.js";
 
@@ -96,7 +97,7 @@ const TABLES = `
 const DONE = ["finished", "failed", "stopped"];
 const DIR = "/home/user/mynt-desk";
 const JOB = `${DIR}/job`;
-const WORKSPACE = "/home/user/workspace";
+const WORKSPACE = REPO_DIR;
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const stable = (v: unknown): string =>
   Array.isArray(v) ? `[${v.map(stable).join(",")}]` : v && typeof v === "object" ? `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${stable((v as Record<string, unknown>)[k])}`).join(",")}}` : JSON.stringify(v);
@@ -282,30 +283,24 @@ export class DeskService {
 
   // A sandbox job that clones the workspace (at `ref`) and runs the desk runner, credentials removed first.
   private async startRun(j: Row, sandbox: string, ref: string | null) {
-    const boat = this.boat!;
     const ws = (await this.workspace(j.entity_id as string))!;
-    const { token } = await this.repos!.tokenFor(ws.repository, ws.installation_id);
     const p = (await this.store.getProduct(j.product_id as string))!;
     const t = (await this.terms(j.product_id as string))!;
-    await boat.writeFile(sandbox, `${DIR}/desk-runner.mjs`, DESK_RUNNER);
-    await boat.writeFile(sandbox, `${JOB}/product.json`, JSON.stringify({ ...p.product, action: p.action }));
-    await boat.writeFile(sandbox, `${JOB}/terms.json`, JSON.stringify({ ...t.terms, regulatory: await this.regulatoryContext(p) }));
-    if (j.model) await boat.writeFile(sandbox, `${JOB}/model.txt`, String(j.model));
-    await boat.writeFile(sandbox, `/home/user/.mynt-git-credentials`, `https://x-access-token:${token}@github.com\n`);
-    const branch = ref ? `--branch '${ref.replace(/[^\w./-]/g, "")}' ` : "";
-    const script = [
-      "set -u",
-      `rm -rf ${WORKSPACE}`,
-      `git -c credential.helper='store --file=/home/user/.mynt-git-credentials' clone -q --depth 1 ${branch}https://github.com/${ws.repository}.git ${WORKSPACE} > ${JOB}/clone.log 2>&1`,
-      "status=$?",
-      "rm -f /home/user/.mynt-git-credentials",
-      `if [ $status -ne 0 ]; then echo '{"outcome":"error","model":null,"error":"Couldn'"'"'t clone the workspace repository","log":""}' > ${JOB}/outcome.json; exit 0; fi`,
-      `node ${DIR}/desk-runner.mjs ${WORKSPACE} ${JOB}`,
-    ].join("\n");
-    await boat.writeFile(sandbox, `${DIR}/run.sh`, script);
-    const r = await boat.exec(sandbox, `bash ${DIR}/run.sh > ${DIR}/run.log 2>&1`, { detached: true });
-    if (r.processId === undefined) throw new Error("Couldn't start the run");
-    return String(r.processId);
+    return startRepoRun(this.boat!, this.repos!, sandbox, {
+      repository: ws.repository,
+      installationId: ws.installation_id,
+      ref,
+      dir: DIR,
+      outcome: `${JOB}/outcome.json`,
+      cloneFailure: { outcome: "error", model: null, error: "Couldn't clone the workspace repository", log: "" },
+      files: {
+        [`${DIR}/desk-runner.mjs`]: DESK_RUNNER,
+        [`${JOB}/product.json`]: JSON.stringify({ ...p.product, action: p.action }),
+        [`${JOB}/terms.json`]: JSON.stringify({ ...t.terms, regulatory: await this.regulatoryContext(p) }),
+        ...(j.model ? { [`${JOB}/model.txt`]: String(j.model) } : {}),
+      },
+      command: `node ${DIR}/desk-runner.mjs ${WORKSPACE} ${JOB}`,
+    });
   }
 
   private async runOutcome(sandbox: string, processId: string) {

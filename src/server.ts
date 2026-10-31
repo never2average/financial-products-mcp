@@ -15,6 +15,7 @@ import { registerAdminTools, type AdminContext } from "./admin.js";
 import { registerCodingAgentAdminTools, registerCodingAgentTools } from "./builds.js";
 import { registerBdAdminTools, registerBdAgentTools, registerConnectTools } from "./bd.js";
 import { feasibilityCheck, registerDeskTools, type DeskService } from "./desk.js";
+import { registerReviewTools } from "./review.js";
 import { accessStatus, BuildTermsSchema, coveringLicenses, EXPERIENCE_ACTIONS, lintExperience, productEntity } from "./access.js";
 import { runProductTests } from "./product-tests.js";
 import { COURT_LEVELS, findLicenses, LEGISLATIVE_KINDS, normalizeModel, PRODUCT_ACTIONS, summarizeModel, type Regulator } from "./regulatory.js";
@@ -90,6 +91,7 @@ export function createServer(store: Store, user: User | null = null, ctx: AdminC
     registerAdminTools(server, store, user!, ctx);
     if (ctx.builds) registerCodingAgentAdminTools(server, ctx.builds);
     if (ctx.bd) registerBdAdminTools(server, ctx.bd, (action, target, details = {}) => store.audit(user!.id, action, target, details));
+    if (ctx.review) registerReviewTools(server, ctx.review, user!);
   }
 
   return server;

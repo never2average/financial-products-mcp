@@ -2,6 +2,15 @@
 
 **Lovable for finance apps.** Describe the financial product you want; Mynt's AI agents design it, price it, test it, clear compliance, build it and launch it.
 
+**Get early access:** [open an access request](https://github.com/never2average/mynt/issues/new?title=Early%20access%20request) · **Run it yourself:** [Install & build](#install--build) · **Go deeper:** [Reference](#reference)
+
+| If you are… | Mynt gives you |
+| --- | --- |
+| **A licensed firm** (bank, NBFC, insurer, AMC, distributor) | A product foundry: compose a product from regulated building blocks, price it, test it, see exactly which licences and obligations it carries, and publish it to developers |
+| **A developer or vibecoder** | Ready-made regulated products to build on, and a team of coding agents that ships the whole app (server, web and mobile) as one Docker Compose project, audited and hosted |
+| **A customer** | Products shaped around what you actually need, offered in the apps you already use |
+| **A compliance team** | The regulator → licence → obligation → control map for every product, with evidence and an audit trail |
+
 ## The problem
 
 The need for a better financial product is usually obvious from the data. Examples:
@@ -47,6 +56,83 @@ Mynt:  ┌───────────────────────�
 ```
 
 **From months of launch work to one conversation.**
+
+## How it fits together
+
+```mermaid
+flowchart LR
+  subgraph People
+    C[Customers]
+    D[Developers]
+    I[Innovators<br/>licensed firms]
+    A[Admins]
+  end
+
+  subgraph Mynt["Mynt platform"]
+    Chat[Chat agent]
+    Foundry[Product foundry<br/>composition · pricing · feasibility]
+    Reg[Regulatory model<br/>regulators · licences · law · GRC]
+    Desk[Governance desk]
+    Builds[Coding-agent builds<br/>lead + 7 specialists]
+    Runtime[Runtime API<br/>contracts · client sessions · journeys]
+    Vault[(Customer vault<br/>encrypted, consented)]
+    Hosting[Hosted runtime<br/>isolated VM per developer]
+  end
+
+  subgraph Apps["A developer's app (one Compose project)"]
+    API[api/]
+    Web[web/]
+    Mobile[mobile/]
+  end
+
+  Providers[Providers' hosted flows<br/>KYC · mandates · e-sign · payments]
+
+  I --> Foundry --> Reg
+  A --> Reg
+  A --> Desk --> Foundry
+  D --> Builds --> Apps
+  Apps --> Hosting
+  C --> Chat --> Foundry
+  C --> Web & Mobile
+  API -- app key --> Runtime
+  Web & Mobile -- client session --> Runtime
+  Runtime --> Vault
+  Runtime --> Providers
+```
+
+### What a developer ships
+
+Every app Mynt's coding agents build is one Docker Compose project. Only the server ever holds the app key; the web and mobile apps run on short-lived client sessions, and customer data goes straight to Mynt's vault.
+
+```mermaid
+flowchart TB
+  subgraph Compose["compose.yaml"]
+    direction LR
+    API["api/<br/>Node · TypeScript<br/>holds the app key<br/>mints client sessions<br/>verifies webhooks"]
+    Web["web/<br/>React · Vite<br/>offers · documents<br/>consents · journeys"]
+    Mobile["mobile/<br/>Expo React Native<br/>(Kotlin · Swift · Flutter)"]
+  end
+  SDK["packages/mynt-sdk<br/>generated for the app's products,<br/>in TypeScript, React Native, Kotlin,<br/>Swift, Flutter and Python"]
+  SDK -.-> API & Web & Mobile
+  Web -- "POST /api/session" --> API
+  Mobile -- "POST /api/session" --> API
+  API -- "app key" --> M[Mynt runtime API]
+  Web -- "client session" --> M
+  Mobile -- "client session" --> M
+  M -- "webhooks" --> API
+```
+
+```
+my-app/
+├── compose.yaml          api + web (+ mobile web export), hardened: read-only, no capabilities, no host network
+├── .env.example          the app key and webhook secret, for api/ only
+├── api/                  server: sessions, contracts, webhooks, server-side actions
+├── web/                  web app: the journey runner, secure inputs, hosted flows
+├── mobile/               Expo app (or Kotlin / Swift / Flutter), same journeys on a client session
+└── packages/mynt-sdk/    the generated SDK
+```
+
+The coding agents that build it work as a team: an architect plans, server, web and mobile engineers build their parts, a read-only compliance reviewer checks every product's contract and build terms, QA runs every journey against the sandbox, and a release engineer ships the Compose project. Mynt then re-verifies the build itself in a clean sandbox before anything is merged.
 
 ## A self-improving compliance loop
 
@@ -176,6 +262,8 @@ Each product also has **build terms**:
 
 A developer can have Mynt **build and ship** one of their experiences. `start_build` runs a coding agent in a fresh [boat.dev](https://boat.dev) sandbox. boat.dev only provides the machine: Mynt installs a pinned Claude Code there and runs it headless with a dollar budget (`--max-budget-usd`, from the build's cap). The agent reaches the model only through Mynt's agent proxy (`/agent`), using a token that works only while its build runs. Mynt calls Claude on Google Cloud Vertex AI with its own service account, or the Anthropic API with its own key, so no credentials ever enter a sandbox. Developers follow the agent's activity live and can steer it: Mynt interrupts the current turn and sends their message as the next one. The agent writes the code against the app's products and their build terms, using a freshly generated SDK and a Mynt **sandbox key** (simulated hand-offs) for end-to-end tests. It runs the [Maxwell](https://github.com/OnFinance/Maxwell) static probes to find and fix issues, starts a preview, and pushes a branch.
 
+**What the agent builds is a whole app, not just a server:** one Docker Compose project with `api/` (holds the app key, mints client sessions, handles webhooks), `web/` and `mobile/` (Expo React Native by default; Kotlin, Swift or Flutter on request), started from `workspaces/coding-build/templates/mynt-app/` with the build's generated SDKs wired in. The lead agent works with a team of subagents in `workspaces/coding-build/.claude/agents/` (architect, server, web and mobile engineers, a read-only compliance reviewer, QA and release). Their skills are human-written skills found on GitHub by HyDE search (Mynt's own drafts used as the queries) and vendored with their upstream licence and source, plus a short Mynt layer.
+
 **The agent doesn't grade its own work.** When it finishes, Mynt verifies the build itself, in a **fresh sandbox the agent never touched**, with no secrets:
 1. **Package:** Mynt packages the workspace source (without dependencies), records its SHA-256, and the verifier downloads it and checks the checksum.
 2. **Mynt's own checks** (`src/verify-script.ts`): tests; lint and types; a secrets scan with `gitleaks`; a dependency audit; a CycloneDX SBOM with `syft`; and every required disclosure present in the source. `gitleaks` and `syft` are pinned versions, checked against their releases' published checksums.
@@ -212,7 +300,7 @@ Every hosted agent is steered by a folder in this repository, not by prompts in 
 
 ```
 workspaces/
-├── coding-build/        developers' coding agent: CLAUDE.md, skills (mynt-sdk, maxwell-audit, production-readiness), scripts/report_status.py
+├── coding-build/        developers' coding agent: CLAUDE.md, agents/ (its team), skills, templates/mynt-app (Compose app), scripts
 ├── build-audit/         the audit-only agent in a build's clean verification sandbox (maxwell-static-audit)
 ├── product-desk/        innovators' desk agent: designs models in the firm's repo (model-contract, financial-modelling)
 ├── governance-review/   admins' review agent: checklists, register skills, evidence scripts

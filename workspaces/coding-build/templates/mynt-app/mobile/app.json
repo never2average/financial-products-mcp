@@ -1,0 +1,9 @@
+{
+  "expo": {
+    "name": "App",
+    "slug": "mynt-app",
+    "scheme": "myntapp",
+    "web": { "bundler": "metro", "output": "single" },
+    "plugins": ["expo-router"]
+  }
+}

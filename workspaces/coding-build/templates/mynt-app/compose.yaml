@@ -1,0 +1,41 @@
+# One app, one Compose project. Mynt hosts it as it is: services labelled mynt.expose get a route on the
+# app's domain (web at /, api at /api), nothing else is reachable from outside.
+x-hardening: &hardening
+  read_only: true
+  tmpfs: ["/tmp"]
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+
+services:
+  api:
+    <<: *hardening
+    build: { context: ., dockerfile: api/Dockerfile }
+    environment:
+      MYNT_API_KEY: ${MYNT_API_KEY:?set MYNT_API_KEY in .env}
+      MYNT_WEBHOOK_SECRET: ${MYNT_WEBHOOK_SECRET:-}
+      MYNT_API_BASE: ${MYNT_API_BASE:-}
+      PORT: "3000"
+    labels:
+      mynt.expose: "api"
+      mynt.port: "3000"
+
+  web:
+    <<: *hardening
+    build: { context: ., dockerfile: web/Dockerfile }
+    depends_on:
+      api: { condition: service_healthy }
+    environment:
+      MYNT_API_ORIGIN: ${MYNT_API_ORIGIN:?set MYNT_API_ORIGIN in .env}
+    ports: ["127.0.0.1:8080:8080"] # preview only; Mynt routes by label, not by this port
+    labels:
+      mynt.expose: "web"
+      mynt.port: "8080"
+
+  mobile:
+    <<: *hardening
+    build: { context: ., dockerfile: mobile/Dockerfile }
+    profiles: ["mobile"] # the Expo web export, for previews; store builds go through your own pipeline
+    labels:
+      mynt.expose: "mobile"
+      mynt.port: "8081"

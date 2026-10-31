@@ -1,0 +1,11 @@
+{
+  "repo": "vinaosb/austringer",
+  "path": "packs/backend/SKILL.md",
+  "commit": "9749bf492b3a485c9e3a5a33167b13680808a529",
+  "url": "https://github.com/vinaosb/austringer/blob/9749bf492b3a485c9e3a5a33167b13680808a529/packs/backend/SKILL.md",
+  "license": "Apache-2.0",
+  "found_by": "HyDE",
+  "draft": "skill-server",
+  "score": 0.152,
+  "modified": "Removed the unresolved upstream template include line '{{shared:pack-conventions}}'."
+}

@@ -1,0 +1,27 @@
+{
+	admin off
+	auto_https off
+	storage file_system /tmp/caddy
+}
+
+:8080 {
+	handle /api/* {
+		reverse_proxy api:3000
+	}
+	# Mynt's client API (client sessions only; the app key never passes through here).
+	handle /v1/* {
+		reverse_proxy {$MYNT_API_ORIGIN} {
+			header_up Host {upstream_hostport}
+		}
+	}
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		Content-Security-Policy "default-src 'self'; frame-ancestors 'none'"
+	}
+}

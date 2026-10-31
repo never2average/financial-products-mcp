@@ -1802,6 +1802,16 @@ export class Store {
     return (await this.all("DELETE FROM financial_products.customer_vault WHERE app_id = $1 AND customer_ref = $2 AND sandbox = $3 RETURNING field", [appId, customerRef, sandbox])).length;
   }
 
+  // A coding-agent build's outcome (the builds service owns the table; it's absent when builds are off).
+  async buildRun(id: string): Promise<{ id: string; developer_id: string; app_id: string | null; repository: string | null; commit_sha: string | null; status: string } | undefined> {
+    try {
+      const r = await this.one("SELECT id, developer_id, app_id, repository, commit_sha, status FROM financial_products.build_runs WHERE id::text = $1", [id]);
+      return r as never;
+    } catch {
+      return undefined;
+    }
+  }
+
   async saveJourney(j: Omit<AppJourney, "updated_at">): Promise<AppJourney> {
     const r = await this.one(
       `INSERT INTO financial_products.app_journeys (app_id, journey_id, product_id, contract_hash, spec) VALUES ($1, $2, $3, $4, $5)

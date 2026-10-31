@@ -59,6 +59,13 @@ export class GitHubApp implements RepoAccess {
     return r.data as { token: string; expires_at: string };
   }
 
+  // Read-only, for fetching a verified commit onto a hosting VM.
+  async readTokenFor(repo: string, installationId: number) {
+    const r = await this.call("POST", `/app/installations/${installationId}/access_tokens`, { repositories: [repo.split("/")[1]], permissions: { contents: "read" } });
+    if (r.status !== 201) throw new Error(`GitHub refused a token for ${repo} (${r.status})`);
+    return (r.data as { token: string }).token;
+  }
+
   installUrl() {
     return `https://github.com/apps/${this.slug}/installations/new`;
   }

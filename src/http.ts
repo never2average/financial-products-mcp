@@ -143,7 +143,7 @@ export function createMcpHttpServer(
   runtimeOptions: RuntimeApiOptions = {},
 ): Server {
   const meta = clerk ? authServerMetadata(clerk.issuer) : null;
-  const runtime = createRuntimeApi(store, runtimeOptions);
+  const runtime = createRuntimeApi(store, { hosting: ctx.hosting ?? null, ...runtimeOptions });
   return createHttpServer((req, res) =>
     handle(store, clerk, meta, ctx, runtime, req, res).catch((err) => {
       console.error(err);

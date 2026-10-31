@@ -44,6 +44,8 @@ import { emitProductEvent, ensureRelease, registerRuntimeInnovatorTools, registe
 // SDKs and experiences (developer build layer)
 import { experienceStructure, registerBuildTools } from "./build.js";
 import { registerJourneyTools } from "./journeys-tools.js";
+import { registerHostingAdminTools, registerHostingTools } from "./hosting-tools.js";
+import { registerModuleTools } from "./modules.js";
 
 // The name MCP clients show for this server.
 export const SERVER_NAME = "mynt";
@@ -87,6 +89,8 @@ export function createServer(store: Store, user: User | null = null, ctx: AdminC
     registerDeveloperTools(server, store, user!);
     registerBuildTools(server, store, user!);
     registerJourneyTools(server, store, user!);
+    if (ctx.hosting) registerHostingTools(server, store, user!, ctx.hosting);
+    if (ctx.modules) registerModuleTools(server, store, user!, ctx.modules);
     registerGtmTools(server, store, user!);
   }
   if (has("innovator")) {
@@ -102,6 +106,7 @@ export function createServer(store: Store, user: User | null = null, ctx: AdminC
   if (has("developer") && ctx.builds) registerCodingAgentTools(server, store, user!, ctx.builds);
   if (has("admin")) {
     registerAdminTools(server, store, user!, ctx);
+    if (ctx.hosting) registerHostingAdminTools(server, store, user!, ctx.hosting);
     registerTakeRateAdminTools(server, store, user!);
     if (ctx.builds) registerCodingAgentAdminTools(server, ctx.builds);
     if (ctx.bd) registerBdAdminTools(server, ctx.bd, (action, target, details = {}) => store.audit(user!.id, action, target, details));

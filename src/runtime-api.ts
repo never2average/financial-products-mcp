@@ -3,6 +3,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { APP_EVENT_TYPES, appProducts, buildTerms, HANDOFF_ACTIONS, resolveHandoff } from "./runtime.js";
 import type { DeveloperContract } from "./contract.js";
+import type { HostingService } from "./hosting.js";
+import { egressFor } from "./hosting-tools.js";
 import { DATA_DICTIONARY } from "./data-dictionary.js";
 import { masked, open, sandboxPrefill, seal, validateValue, vaultAvailable } from "./vault.js";
 import type { ApiKey, App, ProductRecord, Store } from "./store.js";
@@ -21,6 +23,7 @@ export interface RuntimeApiOptions {
   publicUrl?: string; // origin used for sandbox hand-off URLs (default PUBLIC_URL, else the Host header)
   rateLimit?: { capacity: number; perMinute: number }; // per key (default 60 a minute)
   maxBodyBytes?: number; // default 16 KiB
+  hosting?: HostingService | null; // tenant VMs register and fetch their policy here
 }
 
 class ApiError extends Error {
@@ -383,6 +386,30 @@ export function createRuntimeApi(store: Store, opts: RuntimeApiOptions = {}) {
     }
 
     if (path.startsWith("/v1/client/")) return clientRoute(req, res, url, path, method, cors, allow);
+
+    // Tenant VMs: a one-time registration, then their policy on their agent token.
+    if (path === "/v1/hosting/bootstrap") {
+      allow("POST");
+      if (!opts.hosting?.enabled) throw new ApiError(404, "not_found", "Hosting isn't configured");
+      const body = parse(z.object({ token: z.string().min(16).max(200), wg_public_key: z.string() }).strict(), await readJson(req, maxBody));
+      let registered;
+      try {
+        registered = await opts.hosting.bootstrap(body.token, body.wg_public_key);
+      } catch (e) {
+        throw new ApiError(400, "invalid_request", (e as Error).message);
+      }
+      if (!registered) throw new ApiError(401, "invalid_token", "The bootstrap token is unknown, used or expired");
+      return send(res, 201, registered);
+    }
+    if (path === "/v1/hosting/policy") {
+      allow("GET");
+      if (!opts.hosting) throw new ApiError(404, "not_found", "Hosting isn't configured");
+      const auth = req.headers.authorization;
+      const tenant = auth?.startsWith("Bearer ") ? await opts.hosting.tenantByAgent(auth.slice(7).trim()) : undefined;
+      if (!tenant) throw new ApiError(401, "unauthorized", "Send the tenant's agent token", { "WWW-Authenticate": "Bearer" });
+      const hosting = opts.hosting;
+      return send(res, 200, await hosting.policy(tenant, (appId) => egressFor(store, hosting, appId)));
+    }
 
     const { key, app } = await authenticate(req);
     const origin = req.headers.origin;

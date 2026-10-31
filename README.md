@@ -451,6 +451,27 @@ Every device SDK has the same client and journey runner as `./browser`, and each
 
 The device SDKs are generated from source templates in [`sdk-templates/`](sdk-templates). CI compiles a generated set on every change: Kotlin with `kotlinc`, Dart with `dart analyze`, Swift with `swift build`.
 
+**Hosted runtime.** Developers can run their apps' financial part on Mynt: the server that holds the app key, calls contract actions and handles webhooks. Each developer gets their own VM (`request_hosting`, `hosting_status`). It's never reachable from the internet or from the platform's network:
+- **First boot:** the VM installs Docker, gVisor and WireGuard, then generates its own WireGuard key, which never leaves it.
+- **Registration:** it registers with a one-time token (`POST /v1/hosting/bootstrap`). Mynt then locks its cloud firewall down to WireGuard to the gateway, and nothing else in or out.
+- **All traffic goes through the tunnel.** The gateway forwards nothing directly. Its egress proxy only reaches Mynt's API, GitHub, package registries and the hand-off hosts of the app's products.
+- **Deploying:** `deploy_app(app_id, build_id)` takes only a build that passed Mynt's verification. The VM's agent then polls its policy (`GET /v1/hosting/policy`), which gives it the verified commit, a read-only, short-lived token to fetch it, and the app's dedicated key (stored sealed). The agent builds the image and runs it under gVisor: read-only, with no capabilities, and limited CPU and memory.
+- **Serving:** customers reach the app at `<app>.<HOSTING_APPS_DOMAIN>`, through the edge and the tunnel.
+- **The kill switch:** an admin's `suspend_tenant` takes the VM off the gateway at once (peers, routes and egress) and powers it off. `resume_tenant` brings it back, and `undeploy_app` stops a single app.
+
+[`deploy/host/hosting-gateway.sh`](deploy/host/hosting-gateway.sh) sets up the gateway on the host that runs Mynt, and a timer re-syncs it every minute from `mynt hosting wg-peers`, `egress-allowlist` and `routes`. Hosting is enabled with `HOSTING_DO_TOKEN`, `HOSTING_GATEWAY_ENDPOINT`, `HOSTING_GATEWAY_PUBLIC_KEY` and `PUBLIC_URL`; DigitalOcean is the first provider.
+
+**Developer modules.** Developers publish reusable modules under their own namespace: `check_module`, `publish_module`, `list_modules`. A module is something like an EMI planner component, a journey step or a webhook handler, built on products' developer contracts. Mynt checks each manifest against the live contracts:
+- the actions exist, and may run where the module runs: client modules only client actions, isomorphic ones only actions that run on either side;
+- every consent those actions need is declared;
+- a client component renders every document its products require.
+
+Beyond the checks:
+- **Namespaces** are first come, first served.
+- **Versions** are immutable.
+- **Verified:** a module is marked verified when its code comes from a build Mynt verified.
+- **Outdated:** once a product publishes a new contract, modules built on the old one show as not current.
+
 **The journey runner.** The browser SDK has methods for all of this: `saveFields`, `knownFields`, `prefill`, `forgetMe` and `journey`. It also has `createJourneyRunner(client, journeyId)`, a headless runner: the app renders the current step however it likes, then calls `complete()` with what the customer did. The runner then:
 - records document and consent evidence;
 - stores fields, with secure ones sent as secure;

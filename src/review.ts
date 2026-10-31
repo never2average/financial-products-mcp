@@ -10,6 +10,7 @@ import type { Db } from "./db.js";
 import { feasibilityCheck, type DeskService } from "./desk.js";
 import { evidenceChecker, type Fetcher } from "./evidence.js";
 import { fingerprint } from "./product-tests.js";
+import { blockingComponents, productRegime } from "./regime.js";
 import { normalizeModel } from "./regulatory.js";
 import type { Store, User } from "./store.js";
 
@@ -205,13 +206,29 @@ export class ReviewService {
       const first = held[0];
       regulatory = await this.regulatoryFor(p.product.region, first?.regulator_id ?? null, first?.license_id ?? null);
       const terms = this.desk ? await this.desk.terms(id) : null;
-      subject = { product: { ...p.product, action: p.action, build_terms: p.build_terms }, term_sheet: terms?.terms ?? null, covering_licences: held };
-      facts = { regions: [p.product.region], product_lines: [p.product.product_line], categories: [p.product.category], regulators: held.map((h) => h.regulator_id) };
-      decided.push(
-        held.length
-          ? mine("covered_by_verified_licence", "met", held.map((h) => `${h.regulator_id}/${h.license_id} ${h.registration_number} (verified)`).join("; "))
-          : mine("covered_by_verified_licence", "not_met", `No verified licence covers ${p.action} of ${p.product.category} in ${p.product.region}`),
-      );
+      // A composed product's regime comes from its components; otherwise from its category and action.
+      const regime = p.components.length ? await productRegime(this.store, p) : null;
+      subject = { product: { ...p.product, action: p.action, build_terms: p.build_terms }, term_sheet: terms?.terms ?? null, covering_licences: held, regime };
+      facts = {
+        regions: [p.product.region],
+        product_lines: [p.product.product_line],
+        categories: [p.product.category],
+        regulators: regime ? [...new Set(regime.regions.flatMap((r) => r.regulators))] : held.map((h) => h.regulator_id),
+      };
+      if (regime) {
+        const blocking = blockingComponents(regime, p.product.region);
+        decided.push(
+          blocking.length
+            ? mine("covered_by_verified_licence", "not_met", `Not covered: ${blocking.map((b) => `${b.primitive} (${b.action}, ${b.region})`).join("; ")}`)
+            : mine("covered_by_verified_licence", "met", `Every component is covered (${regime.regions.map((r) => r.region).join(", ")})`),
+        );
+      } else {
+        decided.push(
+          held.length
+            ? mine("covered_by_verified_licence", "met", held.map((h) => `${h.regulator_id}/${h.license_id} ${h.registration_number} (verified)`).join("; "))
+            : mine("covered_by_verified_licence", "not_met", `No verified licence covers ${p.action} of ${p.product.category} in ${p.product.region}`),
+        );
+      }
       const personas = p.build_terms?.allowed_personas ?? [];
       const segments = new Set(((regulatory as { licence_type?: { allowed_customer_segments?: string[] } | null }).licence_type?.allowed_customer_segments) ?? []);
       decided.push(

@@ -26,6 +26,7 @@ import {
 } from "./regulatory.js";
 import { ROLES, type Role, type Store, type User } from "./store.js";
 import { emitProductEvent } from "./runtime.js";
+import { ComponentSchema, productRegime, validateComponents } from "./regime.js";
 
 const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] });
 const fail = (error: string) => ({ ...json({ error }), isError: true });
@@ -506,6 +507,24 @@ export function registerAdminTools(server: McpServer, store: Store, user: User, 
       const saved = await store.saveCampaign({ ...c, status: "paused" });
       await audit("admin_pause_campaign", campaign_id, { reason, owner_id: c.owner_id });
       return json(saved);
+    },
+  );
+
+  server.registerTool(
+    "admin_set_product_composition",
+    {
+      title: "Set a reference product's composition",
+      description: "Admin: the regulated primitives one of Mynt's reference products (or any product) is made of, per jurisdiction. Its regulatory regime follows from them (get_product_regime).",
+      inputSchema: { product_id: z.string(), components: z.array(ComponentSchema).min(1).max(20) },
+    },
+    async ({ product_id, components }) => {
+      const record = await store.getProduct(product_id);
+      if (!record) return fail(`No product '${product_id}'`);
+      const errors = await validateComponents(store, record, components);
+      if (errors.length) return { ...json({ error: "The composition can't be saved", errors }), isError: true };
+      await store.setComponents(product_id, components);
+      await audit("admin_set_product_composition", product_id, { components: components.length });
+      return json(await productRegime(store, { ...record, components }));
     },
   );
 

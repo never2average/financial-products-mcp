@@ -12,7 +12,7 @@ import { Store } from "../dist/store.js";
 import { runProductTests } from "../dist/product-tests.js";
 import { CATALOG, licensed } from "./helpers.js";
 
-const CATALOG_TOOLS = ["find_licenses", "get_product", "get_region", "get_regulator", "get_template", "list_apps", "list_categories", "list_legal_instruments", "list_product_categories", "list_products", "list_regions", "list_regulated_product_types", "list_template_defaults", "whoami"];
+const CATALOG_TOOLS = ["find_licenses", "get_product", "get_product_regime", "get_region", "get_regulator", "get_template", "list_apps", "list_categories", "list_legal_instruments", "list_product_categories", "list_products", "list_regions", "list_regulated_product_types", "list_template_defaults", "whoami"];
 const CONSUMER_TOOLS = ["cancel_enrollment", "enroll_in_product", "list_my_enrollments", "list_my_product_requests", "list_offers", "request_product", "upgrade_enrollment"];
 const DEVELOPER_TOOLS = [
   "create_app", "list_my_apps", "preview_app", "publish_app", "update_app",
@@ -40,7 +40,7 @@ const INNOVATOR_TOOLS = [
   // runtime layer
   "get_product_distribution_metrics", "report_handoff_outcome",
   // product requests
-  "list_product_requests", "respond_to_product_request",
+  "list_product_requests", "respond_to_product_request", "set_product_composition",
 ];
 
 async function connect(store, user = null) {
@@ -304,21 +304,3 @@ test("Mynt ships no catalogue: a new database starts with no products or categor
   assert.equal(ref.categories.length, 0);
 });
 
-test("catalog remove-bundled deletes only unused products left from the old bundled catalogue", async () => {
-  const store = await openStore();
-  const [used, other] = CATALOG.filter((p) => p.region === "IN").map((p) => p.id);
-  const { user } = await store.createUser("Dev", ["developer"]);
-  await store.createApp(user.id, { name: "Uses one", description: "Keeps a bundled product in use", audience: "Savers", product_ids: [used], disclosures: [], actions: ["display"] });
-  const dry = await store.removeBundledProducts(false);
-  assert.ok(dry.removed.includes(other) && !dry.removed.includes(used));
-  assert.deepEqual(dry.kept, [{ id: used, used_by: ["apps"] }]);
-  assert.ok(await store.getProduct(other), "a dry run deletes nothing");
-
-  const done = await store.removeBundledProducts(true);
-  assert.equal(done.removed.length, CATALOG.length - 1);
-  assert.equal(await store.getProduct(other), undefined);
-  assert.ok(await store.getProduct(used), "the product an app uses stays");
-  const { user: inno } = await store.createUser("Ines", ["innovator"]);
-  await store.insertDraft(inno.id, { ...CATALOG[0], id: "ines-own" });
-  assert.deepEqual((await store.removeBundledProducts(true)).removed, [], "innovators' products are never touched");
-});

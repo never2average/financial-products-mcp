@@ -530,7 +530,7 @@ docker compose -f /opt/mynt/src/deploy/docker-compose.yml exec mcp \
 
 ## Starting empty
 
-Mynt ships no product catalogue. A new deployment has no products, regions or categories until admins define the regions and categories and innovators publish products. Databases created by earlier versions may still hold the old bundled products (owner-less, read-only); `mynt catalog remove-bundled` lists them and, with `--yes`, deletes those nothing references. Products still used by an app, enrollment or request are kept and reported.
+A new deployment starts with no products, regions or categories: admins define regions, categories and the regulatory model, and innovators publish products. Mynt's reference catalogue (owner-less, read-only products open to every developer) is kept in the database; its products are composed of regulated primitives like any other (`admin_set_product_composition`, `get_product_regime`).
 
 ## Development
 

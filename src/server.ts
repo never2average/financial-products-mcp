@@ -16,6 +16,7 @@ import { registerCodingAgentAdminTools, registerCodingAgentTools } from "./build
 import { registerBdAdminTools, registerBdAgentTools, registerConnectTools } from "./bd.js";
 import { feasibilityCheck, registerDeskTools, type DeskService } from "./desk.js";
 import { registerReviewTools } from "./review.js";
+import { blockingComponents, ComponentSchema, productRegime, validateComponents } from "./regime.js";
 import { accessStatus, BuildTermsSchema, coveringLicenses, EXPERIENCE_ACTIONS, lintExperience, productEntity } from "./access.js";
 import { runProductTests } from "./product-tests.js";
 import { COURT_LEVELS, findLicenses, LEGISLATIVE_KINDS, normalizeModel, PRODUCT_ACTIONS, summarizeModel, type Regulator } from "./regulatory.js";
@@ -117,6 +118,22 @@ function registerCatalogTools(server: McpServer, store: Store, user: User | null
           procedures_for: [...new Set(procedures.map((p) => p.product_line))],
         })),
       ),
+  );
+
+  server.registerTool(
+    "get_product_regime",
+    {
+      title: "A product's regulatory regime",
+      description:
+        "The regulated primitives a product is made of and, for each, who supervises it, which licences may provide it, the law recorded against it, and whether it's covered (by the firm's licence, a partner's, or not yet).",
+      inputSchema: { product_id: z.string() },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ product_id }) => {
+      const record = await store.getProduct(product_id);
+      if (!record || (record.status !== "published" && record.owner_id !== user?.id && !user?.roles.includes("admin"))) return fail(`No product '${product_id}'`);
+      return json(await productRegime(store, record));
+    },
   );
 
   server.registerTool(
@@ -859,6 +876,25 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User, des
   );
 
   server.registerTool(
+    "set_product_composition",
+    {
+      title: "Set a product's composition",
+      description:
+        "Innovator: the regulated primitives your product is made of, per jurisdiction. Example: a recurring deposit = a recurring payment mandate (sale, by a partner bank) + a term deposit (issuance, by you). The product's regulatory regime follows from its components, and publishing needs every component you provide covered by your firm's verified licences.",
+      inputSchema: { product_id: z.string(), components: z.array(ComponentSchema).min(1).max(20) },
+    },
+    async ({ product_id, components }) => {
+      const record = await ownProduct(product_id);
+      if (!record) return fail(`No product of yours with id '${product_id}'`);
+      const errors = await validateComponents(store, record, components);
+      if (errors.length) return { ...json({ error: "The composition can't be saved", errors }), isError: true };
+      await store.setComponents(product_id, components);
+      await store.audit(user.id, "set_product_composition", product_id, { components: components.length });
+      return json(await productRegime(store, { ...record, components }));
+    },
+  );
+
+  server.registerTool(
     "test_product",
     {
       title: "Test a financial product",
@@ -886,9 +922,23 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User, des
               ? `Your entity holds no verified licence for ${record.action} of '${data.category}' in ${data.region}; register one with register_license`
               : "You don't belong to an entity yet; create one with create_entity, then register its licences",
           };
+      // The product's composition, if it has one: every component covered by a licence (its firm's or a partner's).
+      const composition: { name: string; status: "pass" | "warn" | "fail"; message: string }[] = [];
+      if (record.components.length) {
+        const regime = await productRegime(store, record);
+        const blocking = blockingComponents(regime, data.region);
+        const declared = regime.regions.flatMap((r) => r.components.filter((c) => c.coverage.status === "partner_declared"));
+        composition.push(
+          blocking.length
+            ? { name: "composition_coverage", status: "fail", message: `Not covered: ${blocking.map((b) => `${b.primitive} (${b.action}, ${b.region})`).join(", ")}` }
+            : declared.length
+              ? { name: "composition_coverage", status: "warn", message: `Covered, with partner components not verified on Mynt: ${declared.map((c) => c.primitive).join(", ")}` }
+              : { name: "composition_coverage", status: "pass", message: `Every component is covered (${regime.regions.map((r) => r.region).join(", ")})` },
+        );
+      } else composition.push({ name: "composition_coverage", status: "warn", message: "No composition yet: set_product_composition lists the regulated primitives the product is made of" });
       // Advisory too: the latest feasibility analysis of the current term sheet, when the desk is on.
       const feasibility = desk ? [await feasibilityCheck(desk, id)] : [];
-      const result = { ...report, checks: [...report.checks, licence, ...feasibility] };
+      const result = { ...report, checks: [...report.checks, licence, ...composition, ...feasibility] };
       return json(draft ? { version: draft.version, ...result } : result);
     },
   );
@@ -911,12 +961,19 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User, des
       if (!lastTest || lastTest.fingerprint !== runProductTests(data).fingerprint)
         return fail("Product changed since its last test (or was never tested); run test_product first");
       if (!lastTest.passed) return fail("Last test failed; fix the failing checks and run test_product again");
-      // A regulated action needs a verified, in-force licence held by the innovator's entity.
-      const held = await coveringLicenses(store, user.entity_id, data.region, data.category, record.action);
-      if (held.length === 0)
-        return fail(
-          `Publishing needs a verified licence for ${record.action} of '${data.category}' in ${data.region}, held by your entity (see find_licenses, register_license)`,
-        );
+      // A composed product needs every component it provides itself covered by its firm's verified licences
+      // (partners' components by theirs); otherwise a licence for its category and action.
+      let held: Awaited<ReturnType<typeof coveringLicenses>> = [];
+      if (record.components.length) {
+        const blocking = blockingComponents(await productRegime(store, record), data.region);
+        if (blocking.length) return fail(`Not covered: ${blocking.map((b) => `${b.primitive} (${b.action}, ${b.region}): ${b.reason}`).join("; ")}`);
+      } else {
+        held = await coveringLicenses(store, user.entity_id, data.region, data.category, record.action);
+        if (held.length === 0)
+          return fail(
+            `Publishing needs a verified licence for ${record.action} of '${data.category}' in ${data.region}, held by your entity (see find_licenses, register_license), or a composition whose components your licences cover (set_product_composition)`,
+          );
+      }
       const notLive = [];
       for (const u of record.underlying_product_ids) if ((await store.getProduct(u))?.status !== "published") notLive.push(u);
       if (notLive.length) return fail(`Underlying products aren't published: ${notLive.join(", ")}`);

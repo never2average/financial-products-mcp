@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { FinancialProduct } from "./catalog.js";
+import type { Component } from "./regime.js";
 import type { Db } from "./db.js";
 import type { TestReport } from "./product-tests.js";
 import {
@@ -189,6 +190,7 @@ export interface ProductRecord {
   entity_id: string | null;
   action: ProductAction;
   underlying_product_ids: string[];
+  components: Component[]; // the regulated primitives the product is made of (see regime.ts)
   access_mode: AccessMode;
   build_terms: BuildTerms;
   created_at: string;
@@ -662,6 +664,7 @@ const TABLES = `
   ALTER TABLE financial_products.products ADD COLUMN IF NOT EXISTS entity_id uuid REFERENCES financial_products.entities(id);
   ALTER TABLE financial_products.products ADD COLUMN IF NOT EXISTS action text NOT NULL DEFAULT 'issuance';
   ALTER TABLE financial_products.products ADD COLUMN IF NOT EXISTS underlying_product_ids text[] NOT NULL DEFAULT '{}';
+  ALTER TABLE financial_products.products ADD COLUMN IF NOT EXISTS components jsonb NOT NULL DEFAULT '[]';
   ALTER TABLE financial_products.products ADD COLUMN IF NOT EXISTS access_mode text NOT NULL DEFAULT 'approval';
   ALTER TABLE financial_products.products ADD COLUMN IF NOT EXISTS build_terms jsonb NOT NULL DEFAULT '{}';
   ALTER TABLE financial_products.apps ADD COLUMN IF NOT EXISTS disclosures text[] NOT NULL DEFAULT '{}';
@@ -834,7 +837,8 @@ const toProductRecord = (r: Row): ProductRecord => ({
   entity_id: (r.entity_id as string | null) ?? null,
   action: ((r.action as string) ?? "issuance") as ProductAction,
   underlying_product_ids: (r.underlying_product_ids as string[]) ?? [],
-  // The bundled reference catalogue is open to every developer.
+  components: (r.components as Component[]) ?? [],
+  // Mynt's reference catalogue (no owner) is open to every developer.
   access_mode: (r.owner_id == null ? "open" : ((r.access_mode as string) ?? "approval")) as AccessMode,
   build_terms: (r.build_terms as BuildTerms) ?? {},
   created_at: iso(r.created_at)!,
@@ -1560,31 +1564,8 @@ export class Store {
 
   // Products
 
-  // Products left from the bundled catalogue earlier versions shipped (no owner). Those nothing uses are
-  // deleted when `apply` is set; ones an app, enrollment, campaign, request, SDK or other product still
-  // uses are kept and reported.
-  async removeBundledProducts(apply: boolean): Promise<{ removed: string[]; kept: { id: string; used_by: string[] }[] }> {
-    const rows = await this.all(
-      `SELECT p.id,
-         ARRAY_REMOVE(ARRAY[
-           CASE WHEN EXISTS (SELECT 1 FROM financial_products.enrollments e WHERE e.product_id = p.id) THEN 'enrollments' END,
-           CASE WHEN EXISTS (SELECT 1 FROM financial_products.apps a WHERE p.id = ANY(a.product_ids)) THEN 'apps' END,
-           CASE WHEN EXISTS (SELECT 1 FROM financial_products.campaigns c WHERE p.id = ANY(c.product_ids)) THEN 'campaigns' END,
-           CASE WHEN EXISTS (SELECT 1 FROM financial_products.requests r WHERE r.product_id = p.id) THEN 'requests' END,
-           CASE WHEN EXISTS (SELECT 1 FROM financial_products.sdks s WHERE p.id = ANY(s.product_ids)) THEN 'sdks' END,
-           CASE WHEN EXISTS (SELECT 1 FROM financial_products.handoffs h WHERE h.product_id = p.id) THEN 'handoffs' END,
-           CASE WHEN EXISTS (SELECT 1 FROM financial_products.app_events v WHERE v.product_id = p.id) THEN 'app_events' END,
-           CASE WHEN EXISTS (SELECT 1 FROM financial_products.products o WHERE p.id = ANY(o.underlying_product_ids)) THEN 'products' END
-         ], NULL) AS used_by
-       FROM financial_products.products p WHERE p.owner_id IS NULL ORDER BY p.id`,
-    );
-    const kept = rows.filter((r) => (r.used_by as string[]).length > 0).map((r) => ({ id: r.id as string, used_by: r.used_by as string[] }));
-    const removed = rows.filter((r) => (r.used_by as string[]).length === 0).map((r) => r.id as string);
-    if (apply && removed.length) {
-      await this.db.query("DELETE FROM financial_products.product_versions WHERE product_id = ANY($1)", [removed]);
-      await this.db.query("DELETE FROM financial_products.products WHERE owner_id IS NULL AND id = ANY($1)", [removed]);
-    }
-    return { removed, kept };
+  async setComponents(productId: string, components: Component[]): Promise<void> {
+    await this.db.query("UPDATE financial_products.products SET components = $2, updated_at = now() WHERE id = $1", [productId, JSON.stringify(components)]);
   }
 
   async getProduct(id: string): Promise<ProductRecord | undefined> {

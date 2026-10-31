@@ -130,18 +130,3 @@ open(out, "a").write(json.dumps(row) + "\n")
 PY
 `;
 
-export function auditorPrompt(maxwellRepo: string) {
-  return `You are an independent security auditor for a Mynt build. The application under review is in ${VERIFY_APP}; another
-agent produced it. Do not modify anything inside ${VERIFY_APP}: no edits, new files or deletions, and no fixes.
-
-1. git clone ${maxwellRepo} ~/maxwell, then in ~/maxwell run: npm ci && npm run validate
-2. Register a company "mynt-verify" and an application whose source is the local checkout at ${VERIFY_APP}, with this
-   machine as the scan executor.
-3. Run only its static workflows, headless: execute-scr, probe-cicd-env, probe-agent-graph and probe-schemas, plus
-   probe-iac / probe-app-chart if the application has infrastructure code or charts.
-4. Do not connect any external service or sign in anywhere. If a workflow asks for a login or credential, skip that step.
-5. Take the counts from Maxwell's own findings records, not your judgement, and write ${VERIFY_DIR}/maxwell.json:
-   {"counts": {"critical": n, "high": n, "medium": n, "low": n}, "findings": [{"severity", "title", "file", "workflow"}],
-    "workflows_run": [...], "skipped": [...], "summary": "..."}
-Then stop.`;
-}

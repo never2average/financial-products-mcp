@@ -320,11 +320,13 @@ test("with no model for the product, the agent writes one; Mynt runs the agent's
   boat.ready(coding);
   await desk.tick();
   const files = boat.sandboxes.get(coding).files;
-  const spec = JSON.parse(files.get(`${DIR}/spec.json`));
+  const spec = JSON.parse(files.get("/home/user/workspaces/product-desk/job/spec.json"));
   assert.equal(spec.terms.inputs.apr_pct, 18);
   assert.ok(Array.isArray(spec.regulatory));
   const auth = JSON.parse(files.get(`${A}/auth.json`));
-  assert.match(JSON.parse(files.get(`${A}/config.json`)).prompt, /All arithmetic happens in code/);
+  assert.match(files.get("/home/user/workspaces/product-desk/CLAUDE.md"), /All arithmetic happens in code/);
+  assert.ok(files.has("/home/user/workspaces/product-desk/.claude/skills/model-contract/SKILL.md"));
+  assert.equal(JSON.parse(files.get(`${A}/config.json`)).cwd, "/home/user/workspaces/product-desk");
   assert.equal(await desk.agentTokenActive(auth.token), true);
 
   boat.finishAgent(coding, 1.5);

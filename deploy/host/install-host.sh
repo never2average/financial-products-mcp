@@ -114,6 +114,11 @@ if ! grep -qs '^MYNT_PSEUDONYM_SECRET=' "$ENV_DIR/env"; then
   umask 077
   printf 'MYNT_PSEUDONYM_SECRET=%s\n' "$(openssl rand -hex 32)" >>"$ENV_DIR/env"
 fi
+# Encrypts the customer vault at rest; generated once and kept across runs (losing it loses the vault).
+if ! grep -qs '^MYNT_VAULT_KEY=' "$ENV_DIR/env"; then
+  umask 077
+  printf 'MYNT_VAULT_KEY=%s\n' "$(openssl rand -base64 32)" >>"$ENV_DIR/env"
+fi
 PGPASSWORD=$(grep '^POSTGRES_PASSWORD=' "$SUPABASE_DIR/.env" | cut -d= -f2-)
 export PGPASSWORD
 docker exec -i -e PGPASSWORD supabase-db \
@@ -130,7 +135,7 @@ unset PGPASSWORD
   echo "DATABASE_URL=postgres://financial_products_app:$DB_PASSWORD@127.0.0.1:$DB_PORT/postgres"
   echo "PUBLIC_URL=https://$DOMAIN"
   # Clerk, boat.dev, model (Anthropic or Vertex AI) and GitHub App settings are placed in this file separately and kept across runs.
-  grep -E '^(MYNT_PSEUDONYM_SECRET|CLERK_SECRET_KEY|CLERK_PUBLISHABLE_KEY|MCP_REQUIRE_AUDIENCE|BOAT_API_KEY|ANTHROPIC_API_KEY|GOOGLE_APPLICATION_CREDENTIALS|VERTEX_[A-Z_]+|BD_[A-Z_]+|DESK_[A-Z_]+|REVIEW_[A-Z_]+|BUILD_[A-Z_]+|GITHUB_APP_[A-Z_]+)=' "$ENV_DIR/env" || true
+  grep -E '^(MYNT_PSEUDONYM_SECRET|MYNT_VAULT_KEY|CLERK_SECRET_KEY|CLERK_PUBLISHABLE_KEY|MCP_REQUIRE_AUDIENCE|BOAT_API_KEY|ANTHROPIC_API_KEY|GOOGLE_APPLICATION_CREDENTIALS|VERTEX_[A-Z_]+|BD_[A-Z_]+|DESK_[A-Z_]+|REVIEW_[A-Z_]+|BUILD_[A-Z_]+|GITHUB_APP_[A-Z_]+)=' "$ENV_DIR/env" || true
 } >"$ENV_DIR/env.new"
 install -m 640 -o root -g mynt "$ENV_DIR/env.new" "$ENV_DIR/env"
 rm -f "$ENV_DIR/env.new"

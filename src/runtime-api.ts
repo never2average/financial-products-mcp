@@ -3,6 +3,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { APP_EVENT_TYPES, appProducts, buildTerms, HANDOFF_ACTIONS, resolveHandoff } from "./runtime.js";
 import type { DeveloperContract } from "./contract.js";
+import { DATA_DICTIONARY } from "./data-dictionary.js";
+import { masked, open, sandboxPrefill, seal, validateValue, vaultAvailable } from "./vault.js";
 import type { ApiKey, App, ProductRecord, Store } from "./store.js";
 
 // The runtime REST API under /v1, for developers' shipped apps. Authenticated with a per-app key
@@ -111,6 +113,20 @@ const EvidenceBody = z
     content_hash: z.string().regex(/^sha256:[0-9a-f]{64}$/).optional(),
   })
   .strict();
+const FieldsBody = z
+  .object({
+    product_id: z.string().min(1).max(100),
+    values: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])),
+    source: z.enum(["typed", "secure_field", "document_upload"]).default("typed"),
+  })
+  .strict();
+const PrefillBody = z
+  .object({
+    product_id: z.string().min(1).max(100),
+    source: z.enum(["account_aggregator", "digilocker", "ckyc"]),
+    fields: z.array(z.string()).min(1).max(30),
+  })
+  .strict();
 // Actions a customer's device may start: those the contract marks client or either.
 const clientActions = (c: DeveloperContract) => c.actions.filter((a) => a.surface === "client" || a.surface === "either");
 
@@ -173,6 +189,72 @@ export function createRuntimeApi(store: Store, opts: RuntimeApiOptions = {}) {
       return record as Contracted;
     };
 
+    // Consent purposes whose latest evidence in this session is a grant.
+    const activeConsents = async (productId: string) => {
+      const latest = new Map<string, string>();
+      for (const e of await store.clientEvidence(app.id, 1000))
+        if (e.session_id === session.id && e.product_id === productId && e.type !== "disclosure_shown" && !latest.has(e.subject)) latest.set(e.subject, e.type);
+      return new Set([...latest].filter(([, t]) => t === "consent_given").map(([p]) => p));
+    };
+    // The dictionary fields a product's client actions need: the only ones a device may store for it.
+    const neededFields = (c: DeveloperContract) =>
+      new Set(clientActions(c).flatMap((a) => (a.data_requirements ?? []).filter((r) => r.known).map((r) => r.field)));
+    const requireCustomer = () => {
+      if (!session.customer_ref) throw new ApiError(400, "customer_ref_required", "Create the client session with a customer_ref to keep this customer's data");
+      if (!vaultAvailable(session.sandbox)) throw new ApiError(503, "vault_not_configured", "The customer vault isn't configured on this deployment");
+      return session.customer_ref;
+    };
+
+    if (path === "/v1/client/fields") {
+      allow("GET, POST, DELETE");
+      const customer = requireCustomer();
+      if (method === "GET") {
+        const held = await store.vaultFields(app.id, customer, session.sandbox);
+        return send(res, 200, { fields: held.map((h) => ({ field: h.field, source: h.source, value: masked(h.field, open(h.sealed, session.sandbox)), updated_at: h.updated_at })) }, cors);
+      }
+      if (method === "DELETE") {
+        const erased = await store.eraseVault(app.id, customer, session.sandbox);
+        return send(res, 200, { erased }, cors);
+      }
+      const body = parse(FieldsBody, await readJson(req, maxBody));
+      const record = await inSession(body.product_id);
+      const needed = neededFields(record.pins.contract);
+      const consents = await activeConsents(record.product.id);
+      const problems: string[] = [];
+      for (const [field, value] of Object.entries(body.values)) {
+        const f = DATA_DICTIONARY[field];
+        const invalid = validateValue(field, value);
+        if (invalid) problems.push(invalid);
+        else if (!needed.has(field)) problems.push(`${field}: no action of '${record.product.id}' needs it`);
+        else if (f.sensitivity !== "public" && !consents.size) problems.push(`${field}: record the customer's consent first`);
+        else if (f.sensitivity === "sensitive" && body.source === "typed") problems.push(`${field} is sensitive: send it from a secure field`);
+        else if (!f.capture.includes(body.source)) problems.push(`${field} can't be captured by ${body.source}`);
+      }
+      if (problems.length) throw new ApiError(400, "invalid_fields", problems.join("; "));
+      for (const [field, value] of Object.entries(body.values))
+        await store.putVaultField({ app_id: app.id, customer_ref: customer, sandbox: session.sandbox, field, sealed: seal(String(value).trim(), session.sandbox), source: body.source });
+      return send(res, 201, { stored: Object.keys(body.values) }, cors);
+    }
+    if (path === "/v1/client/prefill") {
+      allow("POST");
+      const customer = requireCustomer();
+      const body = parse(PrefillBody, await readJson(req, maxBody));
+      const record = await inSession(body.product_id);
+      if (!(await activeConsents(record.product.id)).size) throw new ApiError(409, "consent_required", "Record the customer's consent before fetching their data");
+      const needed = neededFields(record.pins.contract);
+      const bad = body.fields.filter((f) => !needed.has(f) || !DATA_DICTIONARY[f]?.capture.includes(body.source));
+      if (bad.length) throw new ApiError(400, "invalid_fields", `Can't prefill ${bad.join(", ")} from ${body.source} for '${record.product.id}'`);
+      if (!session.sandbox) throw new ApiError(501, "connector_not_configured", `The ${body.source} connector isn't configured on this deployment yet`);
+      const filled: string[] = [];
+      for (const field of body.fields) {
+        const value = sandboxPrefill(field, body.source);
+        if (!value) continue;
+        await store.putVaultField({ app_id: app.id, customer_ref: customer, sandbox: true, field, sealed: seal(value, true), source: body.source });
+        filled.push(field);
+      }
+      return send(res, 201, { filled, missing: body.fields.filter((f) => !filled.includes(f)), sandbox: true }, cors);
+    }
+
     if (path === "/v1/client/offers") {
       allow("GET");
       const records = await appProducts(store, app);
@@ -210,6 +292,13 @@ export function createRuntimeApi(store: Store, opts: RuntimeApiOptions = {}) {
           (e) => e.session_id === session.id && e.product_id === record.product.id && e.subject === a.consent_purpose && e.type !== "disclosure_shown",
         );
         if (latest?.type !== "consent_given") throw new ApiError(409, "consent_required", `Record consent '${a.consent_purpose}' (POST /v1/client/evidence) before starting '${a.id}'`);
+      }
+      // The personal data the action sends must be held for this customer first.
+      const required = (a.data_requirements ?? []).filter((r) => r.known && r.sensitivity !== "public" && !r.capture?.includes("derived")).map((r) => r.field);
+      if (required.length) {
+        const held = session.customer_ref ? new Set((await store.vaultFields(app.id, session.customer_ref, session.sandbox)).map((h) => h.field)) : new Set<string>();
+        const missing = required.filter((f) => !held.has(f));
+        if (missing.length) throw new ApiError(409, "data_required", `'${a.id}' needs ${missing.join(", ")} from the customer first (POST /v1/client/fields or /v1/client/prefill)`);
       }
       const id = randomUUID();
       let redirect: string;
@@ -413,7 +502,7 @@ export function createRuntimeApi(store: Store, opts: RuntimeApiOptions = {}) {
       if (origin && (await store.originAllowed(origin)))
         Object.assign(headers, {
           "Access-Control-Allow-Origin": origin,
-          "Access-Control-Allow-Methods": "GET, POST",
+          "Access-Control-Allow-Methods": "GET, POST, DELETE",
           "Access-Control-Allow-Headers": "Authorization, Content-Type",
           "Access-Control-Max-Age": "600",
         });

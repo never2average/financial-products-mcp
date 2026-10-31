@@ -978,6 +978,17 @@ const TABLES = `
     updated_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (app_id, journey_id)
   );
+  -- The customer vault: fields a customer gave once, per app and customer reference, encrypted at rest.
+  CREATE TABLE IF NOT EXISTS financial_products.customer_vault (
+    app_id uuid NOT NULL REFERENCES financial_products.apps(id),
+    customer_ref text NOT NULL,
+    sandbox boolean NOT NULL,
+    field text NOT NULL,
+    sealed text NOT NULL,
+    source text NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (app_id, customer_ref, sandbox, field)
+  );
   -- Deployment settings admins change from Mynt (e.g. whether anyone may sign up).
   CREATE TABLE IF NOT EXISTS financial_products.settings (
     key text PRIMARY KEY,
@@ -1769,6 +1780,26 @@ export class Store {
       [randomUUID(), e.app_id, e.session_id, e.product_id, e.contract_hash, e.type, e.subject, e.content_hash, e.customer_ref, e.sandbox],
     );
     return toClientEvidence(r!);
+  }
+
+  async putVaultField(v: { app_id: string; customer_ref: string; sandbox: boolean; field: string; sealed: string; source: string }): Promise<void> {
+    await this.db.query(
+      `INSERT INTO financial_products.customer_vault (app_id, customer_ref, sandbox, field, sealed, source) VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (app_id, customer_ref, sandbox, field) DO UPDATE SET sealed = EXCLUDED.sealed, source = EXCLUDED.source, updated_at = now()`,
+      [v.app_id, v.customer_ref, v.sandbox, v.field, v.sealed, v.source],
+    );
+  }
+
+  async vaultFields(appId: string, customerRef: string, sandbox: boolean): Promise<{ field: string; sealed: string; source: string; updated_at: string }[]> {
+    const rows = await this.all(
+      "SELECT field, sealed, source, updated_at FROM financial_products.customer_vault WHERE app_id = $1 AND customer_ref = $2 AND sandbox = $3 ORDER BY field",
+      [appId, customerRef, sandbox],
+    );
+    return rows.map((r) => ({ field: r.field as string, sealed: r.sealed as string, source: r.source as string, updated_at: iso(r.updated_at)! }));
+  }
+
+  async eraseVault(appId: string, customerRef: string, sandbox: boolean): Promise<number> {
+    return (await this.all("DELETE FROM financial_products.customer_vault WHERE app_id = $1 AND customer_ref = $2 AND sandbox = $3 RETURNING field", [appId, customerRef, sandbox])).length;
   }
 
   async saveJourney(j: Omit<AppJourney, "updated_at">): Promise<AppJourney> {

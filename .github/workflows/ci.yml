@@ -23,3 +23,37 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+  # Generates every device SDK for a defined product and compiles the native ones with their own toolchains.
+  client-sdks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: node test/fixtures/generate-client-sdks.mjs sdk-out
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Kotlin compiles
+        run: |
+          curl -fsSL -o kotlin.zip https://github.com/JetBrains/kotlin/releases/download/v2.0.21/kotlin-compiler-2.0.21.zip
+          unzip -q kotlin.zip
+          curl -fsSL -o json.jar https://repo1.maven.org/maven2/org/json/json/20240303/json-20240303.jar
+          ./kotlinc/bin/kotlinc sdk-out/kotlin/src/main/kotlin -cp json.jar -d kotlin-sdk.jar
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: "3.5.4"
+      - name: Dart analyzes
+        working-directory: sdk-out/flutter
+        run: dart pub get && dart analyze --fatal-warnings
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "5.10"
+      - name: Swift builds
+        working-directory: sdk-out/swift
+        run: swift build

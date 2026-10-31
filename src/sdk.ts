@@ -1,3 +1,4 @@
+import { flutterSdk, kotlinSdk, reactNativeSdk, swiftSdk } from "./sdk-clients.js";
 import { createHash } from "node:crypto";
 import { BuildTermsSchema, DEFAULT_PERMITTED, EXPERIENCE_ACTIONS } from "./access.js";
 import type { BuildTerms, ProductRecord } from "./store.js";
@@ -7,7 +8,7 @@ import type { BuildTerms, ProductRecord } from "./store.js";
 // POST /v1/events, and signed webhooks. Product text only ever lands in generated code as string
 // literals (never in comments), so innovator-supplied content can't break the output.
 
-export const SDK_LANGUAGES = ["typescript", "python"] as const;
+export const SDK_LANGUAGES = ["typescript", "python", "react_native", "kotlin", "swift", "flutter"] as const;
 export type SdkLanguage = (typeof SDK_LANGUAGES)[number];
 export const HANDOFFS = ["deep_link", "initiate_onboarding"] as const;
 export const EVENT_TYPES = ["view", "click", "handoff_started"] as const;
@@ -1002,6 +1003,15 @@ export async function generateSdk(opts: { name: string; version: string; languag
       },
     );
   }
+  // Device SDKs: the same client as the browser one, for React Native, Android, iOS and Flutter.
+  const deviceData = productData(products);
+  const asLists = (rows: (readonly [string, unknown])[]) => rows.map(([id, v]) => [id, v as string[]] as const);
+  const device = { name, version, baseUrl, slug: pkg, data: { ids: deviceData.ids, clientActions: asLists(deviceData.clientActions), consents: asLists(deviceData.consents), documents: asLists(deviceData.documents) } };
+  if (languages.includes("react_native"))
+    files.push(...reactNativeSdk({ name, version, slug: pkg, browserSource: typescriptBrowser(name, version, products), schema: await typescriptSchema(doc), openapiFetchVersion: OPENAPI_FETCH_VERSION }));
+  if (languages.includes("kotlin")) files.push(...kotlinSdk(device));
+  if (languages.includes("swift")) files.push(...swiftSdk(device));
+  if (languages.includes("flutter")) files.push(...flutterSdk(device));
   if (languages.includes("python")) {
     const mod = pkg.replace(/-/g, "_").replace(/^(\d)/, "sdk_$1");
     files.push(

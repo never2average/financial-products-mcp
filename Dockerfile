@@ -13,6 +13,7 @@ COPY --from=build /app/dist ./dist
 # Agent workspaces (instructions, skills, scripts) are copied into sandboxes from here.
 COPY workspaces ./workspaces
 COPY schemas ./schemas
+COPY sdk-templates ./sdk-templates
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s CMD wget -qO- http://127.0.0.1:3000/healthz || exit 1

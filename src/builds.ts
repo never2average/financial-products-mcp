@@ -8,7 +8,7 @@ import type { BoatClient } from "./boat.js";
 import type { Db } from "./db.js";
 import type { RepoAccess } from "./github.js";
 import { GoogleServiceAccount } from "./google-auth.js";
-import { generateSdk, type SdkProduct } from "./sdk.js";
+import { generateSdk, SDK_LANGUAGES, type SdkProduct } from "./sdk.js";
 import { VERIFY_APP, VERIFY_DIR, VERIFY_SCRIPT } from "./verify-script.js";
 import type { Store, User } from "./store.js";
 
@@ -641,7 +641,7 @@ export class BuildService {
     return generateSdk({
       name: app.name,
       version: "0.0.0",
-      languages: ["typescript", "python"],
+      languages: [...SDK_LANGUAGES], // every stack the app may need: server, web, mobile
       baseUrl: this.config.publicUrl || "https://mynt.example.com",
       products,
     });

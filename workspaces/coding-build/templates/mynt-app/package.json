@@ -1,0 +1,10 @@
+{
+  "name": "mynt-app",
+  "private": true,
+  "workspaces": ["packages/*", "api", "web", "mobile"],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  }
+}

@@ -91,7 +91,10 @@ async function handle(
   if (ctx.builds && url.pathname.startsWith("/agent/")) {
     const builds = ctx.builds;
     const active = async (t: string) =>
-      (await builds.agentTokenActive(t)) || (!!ctx.bd && (await ctx.bd.agentTokenActive(t))) || (!!ctx.desk && (await ctx.desk.agentTokenActive(t)));
+      (await builds.agentTokenActive(t)) ||
+      (!!ctx.bd && (await ctx.bd.agentTokenActive(t))) ||
+      (!!ctx.desk && (await ctx.desk.agentTokenActive(t))) ||
+      (!!ctx.review && (await ctx.review.agentTokenActive(t)));
     return agentProxy(builds.config.agentBackend, active, req, res, url);
   }
   // One-click opt-out from the connector's messages.

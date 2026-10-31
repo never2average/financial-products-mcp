@@ -1,0 +1,9 @@
+{
+  "subject": "entity",
+  "items": [
+    { "id": "registration_ids_given", "by": "mynt", "material": true, "title": "Registration numbers recorded", "requirement": "The firm has recorded at least one official registration number (company number, LEI, or a tax or regulatory identifier)." },
+    { "id": "registry_match", "by": "agent", "material": true, "title": "On the official company registry", "requirement": "An official company registry (or GLEIF for an LEI) lists a company with this registration number and the firm's legal name." },
+    { "id": "active_status", "by": "agent", "material": true, "title": "Active", "requirement": "The registry shows the company as active: not struck off, dissolved, under liquidation or similar." },
+    { "id": "lei_consistent", "by": "agent", "material": false, "title": "LEI consistent", "requirement": "If the firm gave an LEI, GLEIF's record for it names the same legal entity and is not lapsed or retired." }
+  ]
+}

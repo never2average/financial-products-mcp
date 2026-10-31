@@ -121,6 +121,40 @@ Work is split by what it needs:
 
 **Configuration:** a boat.dev key and the GitHub App, plus a model backend for agent tasks. Optional: `DESK_JOB_CAP_USD` (per agent task, default 5), `DESK_RUN_CAP_USD` (per code run, default 1) and `DESK_MONTHLY_CAP_USD` (per firm, default 50; unfinished jobs count at their cap).
 
+### The governance desk (admins)
+
+Admins can have an agent review a firm, a licence it registered, or a product it offers, before they decide (`open_review_case`). With `REVIEW_AUTO_OPEN=1`, a case opens for every licence awaiting review. The agent only researches and judges; it can't change anything, and the admin makes every decision.
+
+**The agent is steered by a workspace folder in this repository**, `workspaces/governance-review/`. It's copied into the sandbox and becomes the agent's working directory:
+
+```
+workspaces/governance-review/
+├── CLAUDE.md                         standing instructions: evidence or nothing, silent ≠ failed, never guess
+├── .claude/skills/
+│   ├── review-entity/SKILL.md        company registries and GLEIF
+│   ├── review-licence/SKILL.md       the regulator's own register: entry, holder, type, in force, enforcement
+│   ├── review-product/SKILL.md       limits, misleading claims, disclosures against the recorded regulation
+│   └── cite-evidence/SKILL.md        how to quote so Mynt can verify it
+├── checklists/{entity,license,product}.json   every item: who checks it (Mynt or the agent), and whether it's material
+└── scripts/
+    ├── fetch_page.py                 saves a page's text for verbatim quoting
+    └── check_review.py               the agent runs it until its review meets Mynt's rules
+```
+
+**Mynt does the rest itself:**
+- **Its own items:** it decides the items it can from its own records (licence coverage, segments, product tests, feasibility, the licence type) and freezes the case.
+- **Evidence:** after the agent finishes, Mynt re-fetches every cited source (public https pages only) and checks each quote is really there. An item backed only by quotes it can't find becomes **unverified**; a "silent" answer that doesn't say what was searched becomes **not reviewed**.
+- **The recommendation is Mynt's, not the agent's:**
+  - any material item that fails → reject;
+  - any material item not confirmed → needs info;
+  - otherwise verify;
+  - no recommendation at all if more than 20% of items weren't reviewed.
+- **Admins:**
+  - `get_review_case` shows the dossier: each item's status, verified and unverified evidence, what was searched, the agent's notes, and its suggestions for improving the workspace.
+  - `decide_review_case` records the decision in the audit log next to Mynt's recommendation. For a licence, verify or reject sets its review status, as `review_license` does.
+
+**Configuration:** a boat.dev key, `PUBLIC_URL` and a model backend. Optional: `REVIEW_AUTO_OPEN`, `REVIEW_CASE_CAP_USD` (default 3) and `REVIEW_MONTHLY_CAP_USD` (default 60).
+
 ### The connector: business development by an agent
 
 Mynt's **connector** is an AI agent that grows Mynt. It finds innovators (licensed firms that could offer products) and developers (who could build on them), talks with them, and introduces people who should work together. It runs on its own schedule on the same harness as builds: Claude Code in a sandbox, using the model through Mynt's agent proxy. Its only tools are Mynt's MCP server: the `bd_*` tools and the public catalogue. Prospects, conversations and introductions live only in Mynt's database.

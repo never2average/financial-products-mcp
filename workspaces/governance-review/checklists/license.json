@@ -1,0 +1,11 @@
+{
+  "subject": "license",
+  "items": [
+    { "id": "licence_type_defined", "by": "mynt", "material": true, "title": "The licence type exists in Mynt's regulatory model", "requirement": "The regulator and licence type the firm names are defined by Mynt's admins for this region." },
+    { "id": "register_entry", "by": "agent", "material": true, "title": "Listed on the regulator's public register", "requirement": "The regulator's official register (or an official list it publishes) shows an entry for this registration number." },
+    { "id": "holder_matches", "by": "agent", "material": true, "title": "Held by this firm", "requirement": "The register entry's holder is this firm: the legal name matches, allowing for punctuation, case and common abbreviations (Ltd/Limited, Pvt/Private)." },
+    { "id": "type_matches", "by": "agent", "material": true, "title": "The right kind of licence", "requirement": "The register shows the registration is of the licence type the firm claims (for example, an NBFC registration rather than another category)." },
+    { "id": "in_force", "by": "agent", "material": true, "title": "In force", "requirement": "The register shows the registration as current: not cancelled, surrendered, suspended or expired, and consistent with the validity dates the firm gave." },
+    { "id": "no_enforcement", "by": "agent", "material": false, "title": "No serious enforcement action", "requirement": "The regulator's published enforcement orders, cancellations or penalties name no action against this registration in the last three years, or any found are minor and resolved." }
+  ]
+}

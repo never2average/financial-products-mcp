@@ -1,0 +1,12 @@
+{
+  "subject": "product",
+  "items": [
+    { "id": "covered_by_verified_licence", "by": "mynt", "material": true, "title": "Covered by a verified licence", "requirement": "The firm holds a verified, in-force licence whose grants include this product's category and action." },
+    { "id": "segments_within_grant", "by": "mynt", "material": true, "title": "Customers within the licence", "requirement": "Any customer personas the product is limited to are segments its covering licence allows." },
+    { "id": "product_tests_pass", "by": "mynt", "material": true, "title": "Passes Mynt's product tests", "requirement": "The product's latest test report for its current data passed." },
+    { "id": "feasibility_current", "by": "mynt", "material": false, "title": "Feasibility analysed", "requirement": "The latest product-desk report for the current term sheet exists and its verdict is feasible." },
+    { "id": "regulatory_limits", "by": "agent", "material": true, "title": "Within regulatory limits", "requirement": "Nothing in the product's description, features or term sheet breaches a limit or requirement in the regulation recorded for it (rate or fee caps, tenor or ticket limits, mandatory features). Cite the regulation by quoting the case (mynt://case) or the regulator's page." },
+    { "id": "claims_not_misleading", "by": "agent", "material": true, "title": "Claims not misleading", "requirement": "The product's name, description and features make no claim the regulation forbids or that its risk and return characteristics contradict (for example, 'guaranteed' returns on a market-linked product)." },
+    { "id": "disclosures_adequate", "by": "agent", "material": false, "title": "Required disclosures", "requirement": "The disclosures the product requires of developers cover what the recorded regulation says customers must be told." }
+  ]
+}

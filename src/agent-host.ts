@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { AGENT_RUNNER, CLAUDE_CODE_VERSION, type AgentState } from "./agent-runner.js";
 import type { BoatClient } from "./boat.js";
 
@@ -6,6 +9,34 @@ import type { BoatClient } from "./boat.js";
 // their caller mints, and optionally reach Mynt's own MCP server with that token as their only tools.
 
 export const AGENT_DIR = "/home/user/mynt-agent";
+// Mynt's agent workspaces: workspaces/<name>/ in this repository (CLAUDE.md, .claude/skills, scripts),
+// copied into the sandbox and used as the agent's working directory, so the workflow steers the agent.
+export const WORKSPACES_ROOT = fileURLToPath(new URL("../workspaces/", import.meta.url));
+export const workspaceCwd = (name: string) => `/home/user/workspaces/${name}`;
+
+// Every file of a workspace, by path relative to it.
+export function workspaceFiles(name: string, root = WORKSPACES_ROOT): Record<string, string> {
+  if (!/^[a-z0-9-]+$/.test(name)) throw new Error(`Bad workspace name '${name}'`);
+  const base = join(root, name);
+  const out: Record<string, string> = {};
+  let size = 0;
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir)) {
+      if (entry === "node_modules" || entry === "__pycache__") continue;
+      const path = join(dir, entry);
+      if (statSync(path).isDirectory()) walk(path);
+      else {
+        const text = readFileSync(path, "utf8");
+        size += text.length;
+        if (size > 2 * 1024 * 1024) throw new Error(`Workspace '${name}' is over 2 MB`);
+        out[relative(base, path)] = text;
+      }
+    }
+  };
+  walk(base);
+  if (!out["CLAUDE.md"]) throw new Error(`Workspace '${name}' has no CLAUDE.md`);
+  return out;
+}
 
 // Where agents' model calls go, through Mynt's agent proxy. The credentials stay on Mynt's server.
 export type AgentBackend =
@@ -50,10 +81,23 @@ export async function launchAgent(
   boat: BoatClient,
   config: AgentHostConfig,
   sandbox: string,
-  o: { prompt: string; cwd: string; budgetUsd: number; token: string; mcp?: boolean },
+  o: {
+    prompt: string;
+    cwd?: string;
+    budgetUsd: number;
+    token: string;
+    mcp?: boolean;
+    workspace?: string; // a Mynt workspace to load as the agent's working directory
+    jobFiles?: Record<string, string>; // job data, by path relative to the workspace (e.g. job/case.json)
+  },
 ) {
   const budgetUsd = Math.max(0.5, Math.floor(o.budgetUsd * 100) / 100);
-  const run = { prompt: o.prompt, cwd: o.cwd, model: config.model, budgetUsd, version: CLAUDE_CODE_VERSION };
+  let cwd = o.cwd ?? "/home/user";
+  if (o.workspace) {
+    cwd = workspaceCwd(o.workspace);
+    for (const [path, content] of Object.entries({ ...workspaceFiles(o.workspace), ...(o.jobFiles ?? {}) })) await boat.writeFile(sandbox, `${cwd}/${path}`, content);
+  }
+  const run = { prompt: o.prompt, cwd, model: config.model, budgetUsd, version: CLAUDE_CODE_VERSION };
   await boat.writeFile(sandbox, `${AGENT_DIR}/runner.mjs`, AGENT_RUNNER);
   await boat.writeFile(sandbox, `${AGENT_DIR}/config.json`, JSON.stringify(run));
   await boat.writeFile(sandbox, `${AGENT_DIR}/auth.json`, JSON.stringify(agentAuth(config, o.token, { mcp: o.mcp })));

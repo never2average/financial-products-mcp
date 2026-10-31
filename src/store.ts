@@ -357,6 +357,30 @@ export interface SdkRelease {
 }
 // --- end SDKs and experiences ---
 
+// What a person asked Mynt for in their own words, and the products innovators offered for it.
+export const PRODUCT_REQUEST_STATUSES = ["open", "in_progress", "offered", "closed"] as const;
+export type ProductRequestStatus = (typeof PRODUCT_REQUEST_STATUSES)[number];
+export interface ProductRequest {
+  id: string;
+  user_id: string;
+  need: string;
+  product_line: string | null;
+  amount: number | null;
+  currency: string;
+  tenor_days: number | null;
+  region: string;
+  context: string | null;
+  status: ProductRequestStatus;
+  created_at: string;
+}
+export interface ProductRequestOffer {
+  request_id: string;
+  product_id: string;
+  innovator_id: string;
+  note: string;
+  created_at: string;
+}
+
 export class DuplicateError extends Error {}
 
 // Kept out of `public` so Supabase's auto-generated REST API never exposes these tables.
@@ -691,6 +715,30 @@ const TABLES = `
   CREATE TRIGGER sdk_releases_immutable BEFORE UPDATE ON financial_products.sdk_releases
     FOR EACH ROW EXECUTE FUNCTION financial_products.sdk_releases_immutable();
   -- end SDKs and experiences
+  -- Product requests: a person's need in their own words, and innovators' products offered for it.
+  CREATE TABLE IF NOT EXISTS financial_products.product_requests (
+    id uuid PRIMARY KEY,
+    user_id uuid NOT NULL REFERENCES financial_products.users(id),
+    need text NOT NULL,
+    product_line text,
+    amount numeric,
+    currency text NOT NULL DEFAULT 'INR',
+    tenor_days integer,
+    region text NOT NULL DEFAULT 'IN',
+    context text,
+    status text NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'in_progress', 'offered', 'closed')),
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS product_requests_user_idx ON financial_products.product_requests (user_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS product_requests_status_idx ON financial_products.product_requests (status, created_at DESC);
+  CREATE TABLE IF NOT EXISTS financial_products.product_request_offers (
+    request_id uuid NOT NULL REFERENCES financial_products.product_requests(id),
+    product_id text NOT NULL REFERENCES financial_products.products(id),
+    innovator_id uuid NOT NULL REFERENCES financial_products.users(id),
+    note text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (request_id, product_id)
+  );
 `;
 
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -855,6 +903,28 @@ const toEnrollment = (r: Row): Enrollment => ({
   status: r.status as Enrollment["status"],
   campaign_id: (r.campaign_id as string | null) ?? null,
   variant: (r.variant as string | null) ?? null,
+  created_at: iso(r.created_at)!,
+});
+
+const toProductRequest = (r: Row): ProductRequest => ({
+  id: r.id as string,
+  user_id: r.user_id as string,
+  need: r.need as string,
+  product_line: (r.product_line as string | null) ?? null,
+  amount: r.amount == null ? null : Number(r.amount),
+  currency: r.currency as string,
+  tenor_days: r.tenor_days == null ? null : Number(r.tenor_days),
+  region: r.region as string,
+  context: (r.context as string | null) ?? null,
+  status: r.status as ProductRequestStatus,
+  created_at: iso(r.created_at)!,
+});
+
+const toProductRequestOffer = (r: Row): ProductRequestOffer => ({
+  request_id: r.request_id as string,
+  product_id: r.product_id as string,
+  innovator_id: r.innovator_id as string,
+  note: r.note as string,
   created_at: iso(r.created_at)!,
 });
 
@@ -2006,4 +2076,89 @@ export class Store {
   }
 
   // --- end SDKs and experiences ---
+
+  // Product requests
+
+  async createProductRequest(
+    userId: string,
+    r: Pick<ProductRequest, "need" | "product_line" | "amount" | "currency" | "tenor_days" | "region" | "context">,
+  ): Promise<ProductRequest> {
+    const row = await this.one(
+      `INSERT INTO financial_products.product_requests (id, user_id, need, product_line, amount, currency, tenor_days, region, context)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [randomUUID(), userId, r.need, r.product_line, r.amount, r.currency, r.tenor_days, r.region, r.context],
+    );
+    return toProductRequest(row!);
+  }
+
+  async getProductRequest(id: string): Promise<ProductRequest | undefined> {
+    const r = await this.one("SELECT * FROM financial_products.product_requests WHERE id::text = $1", [id]);
+    return r && toProductRequest(r);
+  }
+
+  // Newest first.
+  async productRequestsByUser(userId: string): Promise<ProductRequest[]> {
+    return (
+      await this.all("SELECT * FROM financial_products.product_requests WHERE user_id = $1 ORDER BY created_at DESC", [userId])
+    ).map(toProductRequest);
+  }
+
+  // Requests still taking offers (not closed), newest first.
+  async openProductRequests(f: { product_line?: string; region?: string; limit?: number } = {}): Promise<ProductRequest[]> {
+    return (
+      await this.all(
+        `SELECT * FROM financial_products.product_requests
+         WHERE status <> 'closed' AND ($1::text IS NULL OR product_line = $1) AND ($2::text IS NULL OR region = $2)
+         ORDER BY created_at DESC LIMIT $3`,
+        [f.product_line ?? null, f.region ?? null, f.limit ?? 50],
+      )
+    ).map(toProductRequest);
+  }
+
+  // Links a product to a request and marks the request offered, in one statement so the two
+  // can't drift apart. Undefined when the request is closed (or gone).
+  async offerForProductRequest(o: Omit<ProductRequestOffer, "created_at">): Promise<ProductRequestOffer | undefined> {
+    try {
+      const r = await this.one(
+        `WITH request AS (
+           SELECT id FROM financial_products.product_requests WHERE id::text = $1 AND status <> 'closed' FOR UPDATE
+         ), offer AS (
+           INSERT INTO financial_products.product_request_offers (request_id, product_id, innovator_id, note)
+           SELECT id, $2, $3, $4 FROM request RETURNING *
+         ), marked AS (
+           UPDATE financial_products.product_requests SET status = 'offered'
+           WHERE id IN (SELECT request_id FROM offer)
+         )
+         SELECT * FROM offer`,
+        [o.request_id, o.product_id, o.innovator_id, o.note],
+      );
+      return r && toProductRequestOffer(r);
+    } catch (e) {
+      if (isUniqueViolation(e)) throw new DuplicateError(`Product '${o.product_id}' is already offered for this request`);
+      throw e;
+    }
+  }
+
+  // The person enrolled in a product offered for their requests: those requests are answered.
+  async closeProductRequestsAnsweredBy(userId: string, productId: string): Promise<string[]> {
+    return (
+      await this.all(
+        `UPDATE financial_products.product_requests SET status = 'closed'
+         WHERE user_id = $1 AND status <> 'closed'
+           AND id IN (SELECT request_id FROM financial_products.product_request_offers WHERE product_id = $2)
+         RETURNING id`,
+        [userId, productId],
+      )
+    ).map((r) => r.id as string);
+  }
+
+  async productRequestOffers(requestIds: string[]): Promise<ProductRequestOffer[]> {
+    if (!requestIds.length) return [];
+    return (
+      await this.all(
+        "SELECT * FROM financial_products.product_request_offers WHERE request_id::text = ANY($1) ORDER BY created_at",
+        [requestIds],
+      )
+    ).map(toProductRequestOffer);
+  }
 }

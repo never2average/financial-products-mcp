@@ -16,6 +16,8 @@ import { registerCodingAgentAdminTools, registerCodingAgentTools } from "./build
 import { registerBdAdminTools, registerBdAgentTools, registerConnectTools } from "./bd.js";
 import { feasibilityCheck, registerDeskTools, type DeskService } from "./desk.js";
 import { registerReviewTools } from "./review.js";
+import { checkDefinition, definitionHash, type Definition } from "./definition.js";
+import { registerDefinitionTools } from "./definition-tools.js";
 import { buildPins } from "./pins.js";
 import { blockingComponents, ComponentSchema, partnerGaps, PartyBindingSchema, productRegime, validateComposition } from "./regime.js";
 import { accessStatus, BuildTermsSchema, coveringLicenses, EXPERIENCE_ACTIONS, lintExperience, productEntity } from "./access.js";
@@ -92,6 +94,7 @@ export function createServer(store: Store, user: User | null = null, ctx: AdminC
     registerProductRequestInnovatorTools(server, store, user!);
     registerRuntimeInnovatorTools(server, store, user!);
     registerTakeRateTools(server, store, user!);
+    registerDefinitionTools(server, store, user!, { admin: has("admin") });
   }
   if (has("developer") && ctx.builds) registerCodingAgentTools(server, store, user!, ctx.builds);
   if (has("admin")) {
@@ -977,6 +980,12 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User, des
       // (partners' components by theirs); otherwise a licence for its category and action.
       let held: Awaited<ReturnType<typeof coveringLicenses>> = [];
       let regime: Awaited<ReturnType<typeof productRegime>> | null = null;
+      // A v2 definition must still check out: its parties, licences, register links and GRC records can
+      // have changed since it was saved.
+      if (record.definition) {
+        const check = await checkDefinition(store, record, record.definition as unknown as Definition);
+        if (check.errors.length) return { ...json({ error: "The product's definition no longer checks out", errors: check.errors }), isError: true };
+      }
       if (record.components.length) {
         regime = await productRegime(store, record);
         const blocking = blockingComponents(regime, data.region);
@@ -993,7 +1002,11 @@ function registerInnovatorTools(server: McpServer, store: Store, user: User, des
       if (notLive.length) return fail(`Underlying products aren't published: ${notLive.join(", ")}`);
       const live = draft ? await store.publishDraftVersion(id) : await store.publishCurrentVersion(id);
       // The live version's composition and everything it rests on are pinned; changes later pause sales.
-      if (regime) await store.setPins(id, await buildPins(store, record, live.version, regime));
+      if (regime) {
+        const pins = await buildPins(store, record, live.version, regime);
+        if (record.definition) pins.definition_hash = definitionHash(record.definition as unknown as Definition);
+        await store.setPins(id, pins);
+      }
       else await store.setPins(id, null);
       await emitProductEvent(store, id, "product.version_published", { version: live.version });
       return json({

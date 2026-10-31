@@ -1,0 +1,5168 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "urn:mynt:schema:financial-product:2",
+ "title": "Financial product (v2): node collections joined by typed connections",
+ "description": "A product is a composition of regulated primitives (components) joined by typed composition links (funds, settles_into, converts_into, repays_from, co_funds, guarantees, secures, covers, wraps, requires, excludes, feeds_data, services): that component-to-component graph is the primary structure. Around it sit secondary node collections (customer segments, core algorithms, risk models, partner handoffs, terms, rates, fees, limits, servicing policies, lifecycle events, costs) joined by a smaller set of secondary connections. Every connection is a typed object in 'connections'; nodes never hold lists of other nodes' ids. Each type has its own schema ($defs/conn_*) with allowed ends (x-from/x-to as primitive:action), required attributes, a cardinality rule (x-cardinality), how events combine across the linked components (x-event-ordering) and whether publish pins it (x-pinned). Upstream contracts (regulatory register, legal entity, roster, GRC folder) are connection targets, never redefined. The document projects losslessly onto the v1 product record and the catalogue FinancialProduct (x-projection).",
+ "type": "object",
+ "required": [
+  "_id",
+  "product_name",
+  "product_type",
+  "descriptions",
+  "owner_entity_id",
+  "version"
+ ],
+ "additionalProperties": false,
+ "allOf": [
+  {
+   "description": "A variant stores identity plus its patch on a pinned template version; every other product stores the full node collections and connections",
+   "if": {
+    "required": [
+     "plane"
+    ],
+    "properties": {
+     "plane": {
+      "required": [
+       "role"
+      ],
+      "properties": {
+       "role": {
+        "const": "variant"
+       }
+      }
+     }
+    }
+   },
+   "then": {
+    "required": [
+     "plane"
+    ]
+   },
+   "else": {
+    "required": [
+     "components",
+     "customer_segments",
+     "core_algorithms",
+     "risk_models",
+     "partner_handoffs",
+     "connections"
+    ]
+   }
+  }
+ ],
+ "x-projection": {
+  "v1.product.id": "_id",
+  "v1.product.name": "product_name",
+  "v1.product.category": "product_type",
+  "v1.product.description": "descriptions.summary",
+  "v1.product.key_features": "descriptions.key_features",
+  "v1.product.product_line": "components[projection.lead_component].primitive",
+  "v1.product.region": "upper(country) when every component shares one country, else 'global'",
+  "v1.product.risk_level|liquidity|typical_horizon|return_type": "derived from the definition by fixed rules; projection.* pins an authored value",
+  "v1.product.regulator": "short_name of the regulator whose licence covers the lead component in the computed regime",
+  "v1.owner.legal_entity_id": "owner_entity_id",
+  "v1.status": "governance.state: draft|in_review|approved -> draft; live|suspended -> published; closed_to_new_business|run_off|retired -> unpublished",
+  "v1.version": "version",
+  "v1.access_mode": "access_mode",
+  "v1.components[]": "components[] (key, country, primitive, action, underlying, wrapper) with provider taken from its component_provided_by connection",
+  "v1.parties[]": "party_plays_role {party, bound_component} plus handoff_to_party {party, component served}, de-duplicated"
+ },
+ "properties": {
+  "_id": {
+   "type": "string",
+   "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+   "description": "Product id; becomes the catalogue id. Immutable."
+  },
+  "product_name": {
+   "type": "string",
+   "minLength": 1
+  },
+  "product_type": {
+   "type": "string",
+   "pattern": "^[a-z0-9_]+$",
+   "description": "Mynt product category id (the type_id regulated product types map to); becomes catalogue category"
+  },
+  "descriptions": {
+   "type": "object",
+   "required": [
+    "summary",
+    "key_features"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "summary": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Becomes catalogue description"
+    },
+    "key_features": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "description": "Becomes catalogue key_features, in order"
+    },
+    "long": {
+     "type": "string"
+    },
+    "documents": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "string",
+      "format": "uri"
+     }
+    }
+   }
+  },
+  "owner_entity_id": {
+   "type": [
+    "string",
+    "null"
+   ],
+   "format": "uuid",
+   "description": "Legal entity that owns the product; null only for Mynt reference products and templates"
+  },
+  "version": {
+   "type": "integer",
+   "minimum": 1
+  },
+  "access_mode": {
+   "enum": [
+    "open",
+    "approval",
+    "private"
+   ]
+  },
+  "plane": {
+   "$ref": "#/$defs/plane"
+  },
+  "context": {
+   "$ref": "#/$defs/context"
+  },
+  "components": {
+   "type": "array",
+   "maxItems": 20,
+   "minItems": 1,
+   "items": {
+    "$ref": "#/$defs/component"
+   }
+  },
+  "customer_segments": {
+   "type": "array",
+   "minItems": 1,
+   "items": {
+    "$ref": "#/$defs/customer_segment"
+   }
+  },
+  "core_algorithms": {
+   "type": "array",
+   "items": {
+    "$ref": "#/$defs/core_algorithm"
+   }
+  },
+  "risk_models": {
+   "type": "array",
+   "items": {
+    "$ref": "#/$defs/risk_model"
+   }
+  },
+  "partner_handoffs": {
+   "type": "array",
+   "items": {
+    "$ref": "#/$defs/partner_handoff"
+   }
+  },
+  "terms": {
+   "type": "array",
+   "items": {
+    "$ref": "#/$defs/term"
+   }
+  },
+  "rates": {
+   "type": "array",
+   "items": {
+    "$ref": "#/$defs/rate"
+   }
+  },
+  "fees": {
+   "type": "array",
+   "items": {
+    "$ref": "#/$defs/fee"
+   }
+  },
+  "limits": {
+   "type": "array",
+   "items": {
+    "$ref": "#/$defs/limit"
+   }
+  },
+  "servicing_policies": {
+   "type": "array",
+   "items": {
+    "$ref": "#/$defs/servicing_policy"
+   }
+  },
+  "lifecycle_events": {
+   "type": "array",
+   "items": {
+    "$ref": "#/$defs/lifecycle_event"
+   }
+  },
+  "costs": {
+   "type": "array",
+   "items": {
+    "$ref": "#/$defs/cost"
+   }
+  },
+  "invariants": {
+   "type": "array",
+   "items": {
+    "$ref": "#/$defs/invariant"
+   }
+  },
+  "programme": {
+   "$ref": "#/$defs/programme"
+  },
+  "connections": {
+   "type": "array",
+   "items": {
+    "$ref": "#/$defs/connection"
+   }
+  },
+  "overlays": {
+   "type": "array",
+   "items": {
+    "$ref": "#/$defs/overlay"
+   },
+   "description": "Date- or channel-bound differences (promotions, future terms) that are not a customer segment"
+  },
+  "versioning": {
+   "$ref": "#/$defs/versioning"
+  },
+  "governance": {
+   "$ref": "#/$defs/governance"
+  },
+  "value_assessment": {
+   "$ref": "#/$defs/value_assessment"
+  },
+  "projection": {
+   "$ref": "#/$defs/projection"
+  },
+  "pins": {
+   "readOnly": true,
+   "type": [
+    "object",
+    "null"
+   ],
+   "description": "The v1 pins object (src/pins.ts), built from the projected v1 record, plus definition_hash over every node and connection of the live version",
+   "properties": {
+    "version": {
+     "type": "integer"
+    },
+    "pinned_at": {
+     "type": "string",
+     "format": "date-time"
+    },
+    "components": {
+     "type": "array"
+    },
+    "parties": {
+     "type": "array"
+    },
+    "entity_ids": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "format": "uuid"
+     }
+    },
+    "state": {
+     "type": "object"
+    },
+    "definition_hash": {
+     "type": "string",
+     "pattern": "^sha256:[0-9a-f]{32,64}$"
+    },
+    "template": {
+     "type": "object",
+     "properties": {
+      "product_id": {
+       "type": "string"
+      },
+      "version": {
+       "type": "integer"
+      },
+      "definition_hash": {
+       "type": "string"
+      }
+     }
+    }
+   }
+  },
+  "drift": {
+   "readOnly": true,
+   "type": [
+    "object",
+    "null"
+   ],
+   "properties": {
+    "detected_at": {
+     "type": "string",
+     "format": "date-time"
+    },
+    "changes": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "kind": {
+        "enum": [
+         "entity",
+         "licence",
+         "party"
+        ]
+       },
+       "id": {
+        "type": "string"
+       },
+       "was": {
+        "type": "string"
+       },
+       "now": {
+        "type": "string"
+       }
+      }
+     }
+    }
+   }
+  }
+ },
+ "$defs": {
+  "line": {
+   "enum": [
+    "credit",
+    "securitization",
+    "payments",
+    "account_operations",
+    "custody_settlement",
+    "wealth",
+    "insurance",
+    "guarantees_trade",
+    "exchange",
+    "derivatives",
+    "information"
+   ]
+  },
+  "action": {
+   "enum": [
+    "issuance",
+    "sale",
+    "purchase",
+    "secondary_sale",
+    "repackaging",
+    "advice",
+    "servicing",
+    "underwriting",
+    "assessment"
+   ]
+  },
+  "key": {
+   "type": "string",
+   "pattern": "^[a-z][a-z0-9_]*$"
+  },
+  "uuid": {
+   "type": "string",
+   "format": "uuid"
+  },
+  "date": {
+   "type": "string",
+   "format": "date"
+  },
+  "duration": {
+   "type": "string",
+   "pattern": "^P(?!$)(\\d+Y)?(\\d+M)?(\\d+W)?(\\d+D)?(T(\\d+H)?(\\d+M)?(\\d+S)?)?$"
+  },
+  "currency": {
+   "type": "string",
+   "pattern": "^[A-Z]{3}$"
+  },
+  "frequency": {
+   "enum": [
+    "one_time",
+    "daily",
+    "weekly",
+    "fortnightly",
+    "monthly",
+    "bi_monthly",
+    "quarterly",
+    "half_yearly",
+    "annual",
+    "biennial",
+    "periodic",
+    "event_driven",
+    "continuous",
+    "on_demand"
+   ],
+   "description": "The GRC frequency vocabulary (src/grc.ts FREQUENCIES)"
+  },
+  "money": {
+   "type": "object",
+   "required": [
+    "amount",
+    "currency"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "amount": {
+     "type": "number"
+    },
+    "currency": {
+     "$ref": "#/$defs/currency"
+    }
+   }
+  },
+  "term_ref": {
+   "type": "object",
+   "required": [
+    "$term"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "$term": {
+     "$ref": "#/$defs/key"
+    }
+   },
+   "description": "Reads a term node's resolved value instead of restating it"
+  },
+  "value": {
+   "anyOf": [
+    {
+     "$ref": "#/$defs/term_ref"
+    },
+    {
+     "type": [
+      "number",
+      "string",
+      "boolean",
+      "null"
+     ]
+    },
+    {
+     "$ref": "#/$defs/money"
+    },
+    {
+     "type": "array"
+    }
+   ]
+  },
+  "qualification": {
+   "type": "object",
+   "additionalProperties": {
+    "type": [
+     "string",
+     "number",
+     "boolean"
+    ]
+   },
+   "description": "Same shape and semantics as the register's Qualification: numbers are minimums, anything else must match"
+  },
+  "condition": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "attr": {
+     "type": "string"
+    },
+    "op": {
+     "enum": [
+      "eq",
+      "ne",
+      "in",
+      "not_in",
+      "gt",
+      "gte",
+      "lt",
+      "lte",
+      "between",
+      "exists",
+      "not_exists"
+     ]
+    },
+    "value": {},
+    "expr": {
+     "type": "string"
+    }
+   },
+   "oneOf": [
+    {
+     "required": [
+      "attr",
+      "op"
+     ]
+    },
+    {
+     "required": [
+      "expr"
+     ]
+    }
+   ]
+  },
+  "patch_op": {
+   "type": "object",
+   "required": [
+    "op",
+    "path"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "op": {
+     "enum": [
+      "set",
+      "merge",
+      "add",
+      "remove"
+     ]
+    },
+    "path": {
+     "type": "string",
+     "description": "Key-addressed path, e.g. terms[tenor_months].range.max"
+    },
+    "value": {},
+    "reason": {
+     "type": "string"
+    }
+   }
+  },
+  "schedule": {
+   "type": "object",
+   "required": [
+    "purpose"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "purpose": {
+     "enum": [
+      "interest_accrual",
+      "interest_posting",
+      "instalment_due",
+      "mandate_debit",
+      "fee_charge",
+      "statement",
+      "maturity",
+      "payout",
+      "settlement",
+      "dealing",
+      "valuation",
+      "rebalance",
+      "partner_settlement"
+     ]
+    },
+    "anchor": {
+     "$ref": "#/$defs/value"
+    },
+    "cycle": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/duration"
+      },
+      {
+       "$ref": "#/$defs/term_ref"
+      }
+     ]
+    },
+    "count": {
+     "$ref": "#/$defs/value"
+    },
+    "end": {
+     "$ref": "#/$defs/value"
+    },
+    "offset_days": {
+     "type": "integer"
+    },
+    "day_basis": {
+     "enum": [
+      "calendar",
+      "business"
+     ]
+    },
+    "business_day_convention": {
+     "enum": [
+      "none",
+      "following",
+      "modified_following",
+      "preceding",
+      "modified_preceding"
+     ]
+    },
+    "cut_off_time": {
+     "type": "string",
+     "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+    },
+    "time_zone": {
+     "type": "string"
+    }
+   }
+  },
+  "plane": {
+   "type": "object",
+   "required": [
+    "role"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "role": {
+     "enum": [
+      "template",
+      "variant",
+      "standalone"
+     ]
+    },
+    "sellable": {
+     "type": "boolean"
+    },
+    "extends": {
+     "type": "object",
+     "required": [
+      "product_id",
+      "version"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "product_id": {
+       "type": "string"
+      },
+      "version": {
+       "type": "integer",
+       "minimum": 1
+      }
+     }
+    },
+    "patch": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/patch_op"
+     }
+    }
+   },
+   "if": {
+    "properties": {
+     "role": {
+      "const": "variant"
+     }
+    }
+   },
+   "then": {
+    "required": [
+     "extends",
+     "patch"
+    ]
+   }
+  },
+  "context": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "currencies": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "$ref": "#/$defs/currency"
+     }
+    },
+    "calendar": {
+     "type": "string"
+    },
+    "business_day_convention": {
+     "enum": [
+      "none",
+      "following",
+      "modified_following",
+      "preceding",
+      "modified_preceding"
+     ]
+    },
+    "day_count": {
+     "enum": [
+      "actual_365_fixed",
+      "actual_360",
+      "actual_364",
+      "actual_actual_isda",
+      "e30_360",
+      "bus_252"
+     ]
+    },
+    "time_zone": {
+     "type": "string"
+    }
+   }
+  },
+  "component": {
+   "type": "object",
+   "description": "A regulated primitive (v1 component shape minus provider; the provider is a component_provided_by connection). Business terms ride on block/terms/schedules.",
+   "required": [
+    "key",
+    "country",
+    "primitive",
+    "action"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "key": {
+     "$ref": "#/$defs/key"
+    },
+    "country": {
+     "type": "string",
+     "pattern": "^[a-z]{2}$"
+    },
+    "primitive": {
+     "$ref": "#/$defs/line"
+    },
+    "action": {
+     "$ref": "#/$defs/action"
+    },
+    "underlying": {
+     "enum": [
+      "cash",
+      "securities",
+      "commodities",
+      "real_assets",
+      "receivables",
+      "risk",
+      "data"
+     ]
+    },
+    "wrapper": {
+     "enum": [
+      "statutory_pension",
+      "tax_advantaged",
+      "government_scheme"
+     ]
+    },
+    "block": {
+     "type": "string",
+     "pattern": "^[a-z][a-z0-9_]*$",
+     "description": "Building-block type from Mynt's term dictionary, e.g. recurring_term_deposit, mandate, term_loan, loss_cover, collection_service, data_pull, fx_conversion, transfer"
+    },
+    "terms": {
+     "type": "object",
+     "propertyNames": {
+      "pattern": "^[a-z][a-z0-9_]*$"
+     },
+     "additionalProperties": {
+      "$ref": "#/$defs/value"
+     }
+    },
+    "schedules": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/schedule"
+     }
+    },
+    "election": {
+     "enum": [
+      "required",
+      "optional",
+      "suggested"
+     ],
+     "description": "Whether every contract includes the component (Guidewire availability values); optional components are elected at origination"
+    }
+   }
+  },
+  "customer_segment": {
+   "type": "object",
+   "description": "Who the product is for and how they are verified and protected. The register persona(s) it maps to are segment_maps_to_persona connections; term/price/limit differences are applies_to connections in override mode.",
+   "required": [
+    "_id",
+    "name",
+    "qualification"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "_id": {
+     "$ref": "#/$defs/key"
+    },
+    "name": {
+     "type": "string"
+    },
+    "customer_kind": {
+     "enum": [
+      "individual",
+      "joint",
+      "business_customer",
+      "trust",
+      "government"
+     ]
+    },
+    "qualification": {
+     "$ref": "#/$defs/qualification"
+    },
+    "identity": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "verification_tiers": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "required": [
+         "tier",
+         "methods"
+        ],
+        "additionalProperties": false,
+        "properties": {
+         "tier": {
+          "$ref": "#/$defs/key"
+         },
+         "methods": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          }
+         },
+         "validity": {
+          "$ref": "#/$defs/duration"
+         },
+         "on_expiry": {
+          "type": "string"
+         }
+        }
+       }
+      },
+      "min_tier_by_event": {
+       "type": "object",
+       "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*$"
+       },
+       "additionalProperties": {
+        "$ref": "#/$defs/key"
+       },
+       "description": "Event stream -> minimum tier, e.g. { onboarding: full_kyc }"
+      }
+     }
+    },
+    "fraud": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "product_risk": {
+       "enum": [
+        "low",
+        "medium",
+        "high"
+       ]
+      },
+      "channel_risk": {
+       "enum": [
+        "low",
+        "medium",
+        "high"
+       ]
+      },
+      "monitoring": {
+       "type": "array",
+       "items": {
+        "enum": [
+         "real_time",
+         "post_event",
+         "portfolio"
+        ]
+       }
+      },
+      "risk_appetite": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "required": [
+         "metric",
+         "threshold",
+         "breach_action"
+        ],
+        "additionalProperties": false,
+        "properties": {
+         "metric": {
+          "type": "string"
+         },
+         "threshold": {
+          "type": "number"
+         },
+         "unit": {
+          "type": "string"
+         },
+         "breach_action": {
+          "enum": [
+           "alert",
+           "tighten_tier",
+           "tighten_limits",
+           "suspend_new_business"
+          ]
+         }
+        }
+       }
+      }
+     }
+    },
+    "target_market": {
+     "type": "object",
+     "description": "ESMA's five categories, never merged",
+     "additionalProperties": false,
+     "properties": {
+      "client_type": {
+       "enum": [
+        "retail",
+        "professional",
+        "eligible_counterparty",
+        "business_customer"
+       ]
+      },
+      "knowledge_experience": {
+       "enum": [
+        "basic",
+        "average",
+        "advanced"
+       ]
+      },
+      "loss_capacity": {
+       "enum": [
+        "none",
+        "limited",
+        "total",
+        "beyond_capital"
+       ]
+      },
+      "risk_tolerance": {
+       "enum": [
+        "conservative",
+        "balanced",
+        "speculative"
+       ]
+      },
+      "objectives": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       }
+      },
+      "holding_period": {
+       "$ref": "#/$defs/duration"
+      },
+      "negative": {
+       "type": "boolean",
+       "description": "true marks a negative target market segment (never sold to)"
+      }
+     }
+    },
+    "channels": {
+     "type": "array",
+     "items": {
+      "enum": [
+       "app",
+       "web",
+       "branch",
+       "phone",
+       "api",
+       "partner_embedded",
+       "field_agent",
+       "relationship_manager"
+      ]
+     }
+    }
+   }
+  },
+  "core_algorithm": {
+   "type": "object",
+   "required": [
+    "_id",
+    "algorithm_name",
+    "description",
+    "purpose",
+    "repository"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "_id": {
+     "$ref": "#/$defs/key"
+    },
+    "algorithm_name": {
+     "type": "string"
+    },
+    "description": {
+     "type": "string"
+    },
+    "purpose": {
+     "enum": [
+      "eligibility",
+      "underwriting",
+      "limit_assignment",
+      "pricing",
+      "fraud_screening",
+      "interest_calculation",
+      "allocation",
+      "collections_strategy",
+      "fx_quoting",
+      "routing",
+      "other"
+     ]
+    },
+    "repository": {
+     "type": "string",
+     "pattern": "^models/[a-z0-9][a-z0-9_-]*$",
+     "description": "Path in the firm's product-desk model repo (models/<name>, holding model.json)"
+    },
+    "version": {
+     "type": "string",
+     "description": "Git ref or semantic version pinned for this product version"
+    },
+    "decision": {
+     "type": "object",
+     "description": "Declarative wiring the algorithm executes (FinBox-style layers); the code lives in the repository",
+     "additionalProperties": false,
+     "properties": {
+      "knockouts": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "required": [
+         "rule",
+         "reason_code"
+        ],
+        "additionalProperties": false,
+        "properties": {
+         "rule": {
+          "$ref": "#/$defs/condition"
+         },
+         "reason_code": {
+          "type": "string"
+         }
+        }
+       }
+      },
+      "grades": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "required": [
+         "grade"
+        ],
+        "additionalProperties": false,
+        "properties": {
+         "grade": {
+          "type": "string"
+         },
+         "min": {
+          "type": "number"
+         },
+         "max": {
+          "type": "number"
+         },
+         "on": {
+          "type": "string"
+         }
+        }
+       }
+      },
+      "limit_caps": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "required": [
+         "kind",
+         "expr"
+        ],
+        "additionalProperties": false,
+        "properties": {
+         "kind": {
+          "enum": [
+           "grade_max",
+           "affordability",
+           "collateral",
+           "exposure",
+           "product_max"
+          ]
+         },
+         "expr": {
+          "type": "string"
+         }
+        }
+       }
+      },
+      "matrix": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "required": [
+         "when",
+         "outcome"
+        ],
+        "additionalProperties": false,
+        "properties": {
+         "when": {
+          "type": "array",
+          "items": {
+           "$ref": "#/$defs/condition"
+          }
+         },
+         "outcome": {
+          "enum": [
+           "approve",
+           "refer",
+           "decline"
+          ]
+         },
+         "attach": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          }
+         }
+        }
+       }
+      },
+      "sources_of_value": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "required": [
+         "kind"
+        ],
+        "additionalProperties": false,
+        "properties": {
+         "kind": {
+          "enum": [
+           "cash_flow",
+           "collateral",
+           "personal_guarantee",
+           "portfolio_loss_cover",
+           "insurance",
+           "none"
+          ]
+         },
+         "required": {
+          "type": "boolean"
+         },
+         "collateral_type": {
+          "type": "string"
+         },
+         "max_ltv_pct": {
+          "type": "number"
+         }
+        }
+       },
+       "description": "Collateral is a source of value here, never a primitive attribute"
+      }
+     }
+    }
+   }
+  },
+  "risk_model": {
+   "type": "object",
+   "required": [
+    "_id",
+    "model_name",
+    "description",
+    "purpose",
+    "repository"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "_id": {
+     "$ref": "#/$defs/key"
+    },
+    "model_name": {
+     "type": "string"
+    },
+    "description": {
+     "type": "string"
+    },
+    "purpose": {
+     "enum": [
+      "pd_scorecard",
+      "affordability",
+      "fraud_score",
+      "behaviour_score",
+      "lgd",
+      "fx_risk",
+      "aml_risk",
+      "other"
+     ]
+    },
+    "repository": {
+     "type": "string",
+     "pattern": "^models/[a-z0-9][a-z0-9_-]*$"
+    },
+    "version": {
+     "type": "string"
+    },
+    "outputs": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "required": [
+       "name",
+       "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+       "name": {
+        "$ref": "#/$defs/key"
+       },
+       "type": {
+        "enum": [
+         "number",
+         "probability",
+         "grade",
+         "boolean",
+         "amount"
+        ]
+       }
+      }
+     }
+    }
+   }
+  },
+  "partner_handoff": {
+   "type": "object",
+   "description": "The contract of one exchange with a roster party. Which party and which component are handoff_to_party and handoff_serves_component connections.",
+   "required": [
+    "_id",
+    "name",
+    "trigger",
+    "sends",
+    "returns"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "_id": {
+     "$ref": "#/$defs/key"
+    },
+    "name": {
+     "type": "string"
+    },
+    "trigger": {
+     "$ref": "#/$defs/key",
+     "description": "Lifecycle event code that starts the handoff"
+    },
+    "sends": {
+     "type": "object",
+     "description": "JSON Schema of the payload sent"
+    },
+    "returns": {
+     "type": "object",
+     "description": "JSON Schema of the payload expected back"
+    },
+    "on_failure": {
+     "enum": [
+      "retry",
+      "fallback",
+      "hold",
+      "decline",
+      "manual_review"
+     ]
+    }
+   }
+  },
+  "term": {
+   "type": "object",
+   "description": "A declared parameter: type, bounds, default, negotiability, who may set it, how it may change after issue",
+   "required": [
+    "_id",
+    "type",
+    "set_by",
+    "negotiable",
+    "post_issue"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "_id": {
+     "$ref": "#/$defs/key"
+    },
+    "label": {
+     "type": "string"
+    },
+    "type": {
+     "enum": [
+      "decimal",
+      "integer",
+      "percent",
+      "rate",
+      "money",
+      "duration",
+      "date",
+      "boolean",
+      "enum",
+      "string",
+      "cycle"
+     ]
+    },
+    "unit": {
+     "type": "string"
+    },
+    "currency": {
+     "$ref": "#/$defs/currency"
+    },
+    "default": {},
+    "range": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "min": {
+       "type": "number"
+      },
+      "max": {
+       "type": "number"
+      },
+      "step": {
+       "type": "number",
+       "exclusiveMinimum": 0
+      }
+     }
+    },
+    "allowed": {
+     "type": "array",
+     "minItems": 1
+    },
+    "derived": {
+     "type": "string",
+     "description": "Expression; derived terms are read-only"
+    },
+    "set_by": {
+     "type": "array",
+     "minItems": 1,
+     "uniqueItems": true,
+     "items": {
+      "enum": [
+       "template",
+       "jurisdiction_variant",
+       "segment_override",
+       "promotional_overlay",
+       "decision_engine",
+       "distributor",
+       "customer",
+       "operations"
+      ]
+     }
+    },
+    "negotiable": {
+     "enum": [
+      "fixed",
+      "customer_choice",
+      "decision_engine",
+      "negotiated"
+     ]
+    },
+    "post_issue": {
+     "type": "object",
+     "required": [
+      "rule"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "rule": {
+       "enum": [
+        "immutable",
+        "operations_dated_change",
+        "customer_dated_change",
+        "customer_with_approval",
+        "index_reset_only",
+        "migration_only"
+       ]
+      },
+      "notice": {
+       "$ref": "#/$defs/duration"
+      },
+      "max_changes": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "event": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "effective_dated": {
+     "type": "boolean"
+    }
+   }
+  },
+  "rate": {
+   "type": "object",
+   "required": [
+    "_id",
+    "kind",
+    "rate_type"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "_id": {
+     "$ref": "#/$defs/key"
+    },
+    "kind": {
+     "enum": [
+      "deposit",
+      "lending",
+      "penalty",
+      "introductory",
+      "bonus",
+      "fx_margin",
+      "overdraft",
+      "blended"
+     ]
+    },
+    "rate_type": {
+     "enum": [
+      "fixed",
+      "floating",
+      "variable",
+      "market_linked",
+      "blended"
+     ]
+    },
+    "value": {
+     "$ref": "#/$defs/value"
+    },
+    "index": {
+     "type": "string"
+    },
+    "spread": {
+     "$ref": "#/$defs/value"
+    },
+    "floor": {
+     "type": "number"
+    },
+    "cap": {
+     "type": "number"
+    },
+    "day_count": {
+     "enum": [
+      "actual_365_fixed",
+      "actual_360",
+      "actual_364",
+      "actual_actual_isda",
+      "e30_360",
+      "bus_252"
+     ]
+    },
+    "compounding": {
+     "$ref": "#/$defs/duration"
+    },
+    "application": {
+     "enum": [
+      "periodic",
+      "maturity",
+      "upfront",
+      "per_transaction"
+     ]
+    },
+    "method": {
+     "type": "string"
+    },
+    "tiers": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "required": [
+       "unit",
+       "rate"
+      ],
+      "additionalProperties": false,
+      "properties": {
+       "unit": {
+        "enum": [
+         "amount",
+         "days",
+         "months",
+         "percent"
+        ]
+       },
+       "min": {
+        "type": "number"
+       },
+       "max": {
+        "type": "number"
+       },
+       "rate": {
+        "$ref": "#/$defs/value"
+       },
+       "application": {
+        "enum": [
+         "per_tier",
+         "whole_balance"
+        ]
+       }
+      }
+     }
+    },
+    "conditions": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/condition"
+     }
+    }
+   }
+  },
+  "fee": {
+   "type": "object",
+   "required": [
+    "_id",
+    "type",
+    "method"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "_id": {
+     "$ref": "#/$defs/key"
+    },
+    "type": {
+     "type": "string",
+     "description": "AU CDR feeType vocabulary where one fits (UPFRONT, PERIODIC, TRANSACTION, EVENT, EXIT, LATE_PAYMENT, DISHONOUR, ...)"
+    },
+    "method": {
+     "enum": [
+      "fixed",
+      "rate_based",
+      "variable",
+      "tiered"
+     ]
+    },
+    "amount": {
+     "$ref": "#/$defs/value"
+    },
+    "rate": {
+     "$ref": "#/$defs/value"
+    },
+    "rate_base": {
+     "enum": [
+      "balance",
+      "transaction",
+      "interest_accrued",
+      "principal",
+      "disbursed_amount",
+      "overdue_amount",
+      "recovered_amount",
+      "nav",
+      "instalment"
+     ]
+    },
+    "min": {
+     "$ref": "#/$defs/value"
+    },
+    "max": {
+     "$ref": "#/$defs/value"
+    },
+    "cap": {
+     "$ref": "#/$defs/value"
+    },
+    "cap_period": {
+     "$ref": "#/$defs/duration"
+    },
+    "payer": {
+     "enum": [
+      "customer",
+      "owner",
+      "partner"
+     ]
+    },
+    "tax": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "waivers": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/condition"
+     }
+    }
+   }
+  },
+  "limit": {
+   "type": "object",
+   "description": "One shape for constraints on the holding and for control rules (Lithic/Adyen convergence)",
+   "required": [
+    "_id",
+    "kind"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "_id": {
+     "$ref": "#/$defs/key"
+    },
+    "kind": {
+     "enum": [
+      "constraint",
+      "control"
+     ]
+    },
+    "constraint_type": {
+     "type": "string",
+     "description": "For constraints: CDR constraintType vocabulary (MIN_BALANCE, MAX_LIMIT, MAX_ACCOUNTS, ...)"
+    },
+    "min": {
+     "$ref": "#/$defs/value"
+    },
+    "max": {
+     "$ref": "#/$defs/value"
+    },
+    "event_stream": {
+     "enum": [
+      "onboarding",
+      "funding",
+      "mandate_debit",
+      "withdrawal",
+      "transfer_out",
+      "transfer_in",
+      "fx_conversion",
+      "authorization",
+      "disbursement",
+      "repayment",
+      "claim",
+      "profile_change"
+     ]
+    },
+    "rule_type": {
+     "enum": [
+      "allow_list",
+      "block_list",
+      "velocity",
+      "max_usage",
+      "conditional"
+     ]
+    },
+    "conditions": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/condition"
+     }
+    },
+    "window": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "type": {
+       "enum": [
+        "per_transaction",
+        "day",
+        "week",
+        "month",
+        "year",
+        "rolling",
+        "lifetime"
+       ]
+      },
+      "duration": {
+       "$ref": "#/$defs/duration"
+      },
+      "anchor": {
+       "type": "integer"
+      },
+      "time_zone": {
+       "type": "string"
+      }
+     }
+    },
+    "limit_amount": {
+     "$ref": "#/$defs/value"
+    },
+    "limit_count": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "scope": {
+     "enum": [
+      "programme",
+      "product",
+      "customer",
+      "account",
+      "instrument"
+     ]
+    },
+    "outcome": {
+     "enum": [
+      "decline",
+      "challenge",
+      "step_up",
+      "hold",
+      "alert",
+      "score",
+      "timed_block"
+     ]
+    },
+    "purpose": {
+     "enum": [
+      "compliance",
+      "fraud",
+      "credit",
+      "policy",
+      "internal"
+     ]
+    },
+    "state": {
+     "enum": [
+      "draft",
+      "validating",
+      "shadow",
+      "active",
+      "inactive"
+     ]
+    }
+   },
+   "if": {
+    "properties": {
+     "kind": {
+      "const": "control"
+     }
+    }
+   },
+   "then": {
+    "required": [
+     "event_stream",
+     "rule_type",
+     "outcome",
+     "state"
+    ]
+   },
+   "else": {
+    "required": [
+     "constraint_type"
+    ]
+   }
+  },
+  "servicing_policy": {
+   "type": "object",
+   "required": [
+    "_id",
+    "kind",
+    "config"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "_id": {
+     "$ref": "#/$defs/key"
+    },
+    "kind": {
+     "enum": [
+      "waterfall",
+      "prepayment",
+      "early_withdrawal",
+      "missed_instalments",
+      "arrears",
+      "delinquency_bucket",
+      "write_off",
+      "restructure",
+      "maturity",
+      "statement",
+      "service_level",
+      "dormancy"
+     ]
+    },
+    "config": {
+     "type": "object",
+     "description": "Kind-specific settings, e.g. waterfall {scheduled[], excess[], residual_to}; delinquency_bucket {from_dpd, to_dpd, actions[]}"
+    }
+   }
+  },
+  "lifecycle_event": {
+   "type": "object",
+   "required": [
+    "_id",
+    "sequence",
+    "trigger"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "_id": {
+     "$ref": "#/$defs/key",
+     "description": "Event code"
+    },
+    "actus": {
+     "enum": [
+      "IED",
+      "FP",
+      "PR",
+      "PD",
+      "PRF",
+      "PY",
+      "PP",
+      "IP",
+      "IPCI",
+      "CE",
+      "RRF",
+      "RR",
+      "DV",
+      "PRD",
+      "MR",
+      "TD",
+      "SC",
+      "IPCB",
+      "MD",
+      "XD",
+      "STD",
+      "AD"
+     ]
+    },
+    "sequence": {
+     "type": "integer",
+     "minimum": 1,
+     "description": "Orders same-date events (ACTUS)"
+    },
+    "trigger": {
+     "enum": [
+      "scheduled",
+      "customer",
+      "operations",
+      "condition",
+      "linked",
+      "decision",
+      "partner"
+     ]
+    },
+    "when": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/condition"
+     }
+    },
+    "primitives": {
+     "type": "array",
+     "items": {
+      "enum": [
+       "execution",
+       "contract_formation",
+       "quantity_change",
+       "terms_change",
+       "party_change",
+       "exercise",
+       "reset",
+       "transfer",
+       "split"
+      ]
+     }
+    },
+    "edition": {
+     "enum": [
+      "stored",
+      "latest"
+     ]
+    }
+   }
+  },
+  "cost": {
+   "type": "object",
+   "required": [
+    "_id",
+    "kind"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "_id": {
+     "$ref": "#/$defs/key"
+    },
+    "kind": {
+     "type": "string"
+    },
+    "estimate": {
+     "$ref": "#/$defs/value"
+    },
+    "basis": {
+     "type": "string"
+    }
+   }
+  },
+  "invariant": {
+   "type": "object",
+   "required": [
+    "_id",
+    "expr"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "_id": {
+     "$ref": "#/$defs/key"
+    },
+    "expr": {
+     "type": "string"
+    },
+    "message": {
+     "type": "string"
+    },
+    "applies_at": {
+     "type": "array",
+     "items": {
+      "enum": [
+       "design",
+       "publish",
+       "origination",
+       "post_issue_change"
+      ]
+     }
+    }
+   }
+  },
+  "programme": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "structure": {
+     "enum": [
+      "balance_sheet",
+      "co_lending",
+      "forward_flow",
+      "participation",
+      "bank_partnership",
+      "marketplace_referral",
+      "agency",
+      "correspondent"
+     ]
+    },
+    "settlement": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "via": {
+       "enum": [
+        "escrow",
+        "nostro",
+        "pooled",
+        "direct"
+       ]
+      },
+      "schedule": {
+       "$ref": "#/$defs/schedule"
+      },
+      "transfer_sla": {
+       "$ref": "#/$defs/duration"
+      }
+     }
+    },
+    "allocation": {
+     "enum": [
+      "pre_committed_loan_by_loan",
+      "discretionary",
+      "pro_rata"
+     ]
+    },
+    "classification_sync": {
+     "enum": [
+      "borrower_level",
+      "contract_level",
+      "none"
+     ]
+    },
+    "partner_reporting": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "overlay": {
+   "type": "object",
+   "required": [
+    "_id",
+    "kind",
+    "applies_when",
+    "patch"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "_id": {
+     "$ref": "#/$defs/key"
+    },
+    "kind": {
+     "enum": [
+      "channel",
+      "partner",
+      "promotional",
+      "future_terms"
+     ]
+    },
+    "applies_when": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "$ref": "#/$defs/condition"
+     }
+    },
+    "effective_from": {
+     "$ref": "#/$defs/date"
+    },
+    "effective_to": {
+     "$ref": "#/$defs/date"
+    },
+    "patch": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "$ref": "#/$defs/patch_op"
+     }
+    }
+   }
+  },
+  "versioning": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "change_class": {
+     "enum": [
+      "initial",
+      "non_material",
+      "material_prospective",
+      "material_migrating"
+     ]
+    },
+    "supersedes": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "summary": {
+     "type": "string"
+    },
+    "migration": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "from_versions": {
+       "type": "array",
+       "items": {
+        "type": "integer"
+       }
+      },
+      "filter": {
+       "type": "array",
+       "items": {
+        "$ref": "#/$defs/condition"
+       }
+      },
+      "effective_date": {
+       "$ref": "#/$defs/date"
+      },
+      "at_event": {
+       "enum": [
+        "immediately",
+        "next_renewal",
+        "next_reset",
+        "customer_acceptance"
+       ]
+      },
+      "customer_notice": {
+       "$ref": "#/$defs/duration"
+      },
+      "status": {
+       "readOnly": true,
+       "enum": [
+        "queued",
+        "in_progress",
+        "complete",
+        "error"
+       ]
+      }
+     }
+    },
+    "edition_policy": {
+     "type": "object",
+     "additionalProperties": {
+      "enum": [
+       "stored",
+       "latest"
+      ]
+     }
+    }
+   }
+  },
+  "governance": {
+   "type": "object",
+   "required": [
+    "state"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "state": {
+     "enum": [
+      "draft",
+      "in_review",
+      "approved",
+      "live",
+      "suspended",
+      "closed_to_new_business",
+      "run_off",
+      "retired"
+     ]
+    },
+    "review": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "cadence": {
+       "$ref": "#/$defs/duration"
+      },
+      "next_review": {
+       "$ref": "#/$defs/date"
+      },
+      "triggers": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "required": [
+         "metric",
+         "threshold"
+        ],
+        "additionalProperties": false,
+        "properties": {
+         "metric": {
+          "type": "string"
+         },
+         "threshold": {
+          "type": "number"
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "value_assessment": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "assessed_on": {
+     "$ref": "#/$defs/date"
+    },
+    "inputs": {
+     "type": "object"
+    },
+    "segments": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "required": [
+       "segment",
+       "rating"
+      ],
+      "additionalProperties": false,
+      "properties": {
+       "segment": {
+        "$ref": "#/$defs/key"
+       },
+       "rating": {
+        "enum": [
+         "green",
+         "amber",
+         "red"
+        ]
+       },
+       "score": {
+        "type": "number"
+       }
+      }
+     }
+    },
+    "next_review": {
+     "$ref": "#/$defs/date"
+    }
+   }
+  },
+  "projection": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "lead_component": {
+     "$ref": "#/$defs/key"
+    },
+    "risk_level": {
+     "enum": [
+      "low",
+      "moderate",
+      "high",
+      "very_high",
+      "not_applicable"
+     ]
+    },
+    "liquidity": {
+     "enum": [
+      "high",
+      "moderate",
+      "low",
+      "none",
+      "not_applicable"
+     ]
+    },
+    "typical_horizon": {
+     "enum": [
+      "short",
+      "short_to_medium",
+      "medium",
+      "medium_to_long",
+      "long"
+     ]
+    },
+    "return_type": {
+     "enum": [
+      "fixed_interest",
+      "variable_interest",
+      "market_linked",
+      "inflation_linked",
+      "guaranteed_income",
+      "guaranteed_plus_bonus",
+      "protection",
+      "cost_of_credit"
+     ]
+    }
+   }
+  },
+  "ref_party": {
+   "type": "object",
+   "required": [
+    "kind",
+    "id"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "kind": {
+     "const": "party"
+    },
+    "id": {
+     "$ref": "#/$defs/uuid",
+     "description": "A party on the owner's roster"
+    }
+   }
+  },
+  "ref_owner": {
+   "type": "object",
+   "required": [
+    "kind"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "kind": {
+     "const": "owner"
+    },
+    "licence_id": {
+     "$ref": "#/$defs/uuid",
+     "description": "Optional held licence of the owner; pinned at publish if omitted"
+    }
+   }
+  },
+  "ref_register_persona": {
+   "type": "object",
+   "required": [
+    "kind",
+    "regulator_id",
+    "id"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "kind": {
+     "const": "register_persona"
+    },
+    "regulator_id": {
+     "type": "string"
+    },
+    "id": {
+     "type": "string",
+     "description": "Id in that regulator's scope.customer_personas"
+    }
+   }
+  },
+  "ref_register_item": {
+   "type": "object",
+   "required": [
+    "kind",
+    "regulator_id",
+    "license_type_id",
+    "section",
+    "id"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "kind": {
+     "const": "register_item"
+    },
+    "regulator_id": {
+     "type": "string"
+    },
+    "license_type_id": {
+     "type": "string"
+    },
+    "section": {
+     "enum": [
+      "obligations",
+      "reporting_disclosure_filings",
+      "risks",
+      "controls",
+      "inspection_events",
+      "policies",
+      "risk_models"
+     ]
+    },
+    "id": {
+     "type": "string"
+    }
+   }
+  },
+  "ref_grc_record": {
+   "type": "object",
+   "required": [
+    "kind",
+    "id",
+    "section"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "kind": {
+     "const": "grc_record"
+    },
+    "id": {
+     "type": "string",
+     "description": "Record id in the owner's (or a party's) GRC folder"
+    },
+    "section": {
+     "enum": [
+      "controls",
+      "enforcement_actions",
+      "inspection_events",
+      "inspection_history",
+      "obligations",
+      "policies",
+      "press_releases",
+      "regulatory_communications",
+      "reporting_disclosure_filings",
+      "risk_models",
+      "risks"
+     ]
+    },
+    "party_id": {
+     "$ref": "#/$defs/uuid",
+     "description": "Set when the record is in a party's folder"
+    },
+    "product_id": {
+     "type": "string",
+     "description": "Set when the record is in this product's own GRC folder (the product id)"
+    }
+   }
+  },
+  "connection": {
+   "type": "object",
+   "required": [
+    "_id",
+    "type",
+    "from",
+    "to"
+   ],
+   "properties": {
+    "_id": {
+     "$ref": "#/$defs/key"
+    },
+    "type": {
+     "enum": [
+      "funds",
+      "settles_into",
+      "converts_into",
+      "repays_from",
+      "co_funds",
+      "guarantees",
+      "secures",
+      "covers",
+      "wraps",
+      "requires",
+      "excludes",
+      "feeds_data",
+      "services",
+      "discovers_price_for",
+      "component_provided_by",
+      "segment_maps_to_persona",
+      "segment_uses_algorithm",
+      "algorithm_uses_risk_model",
+      "risk_model_governed_by",
+      "algorithm_writes_term",
+      "handoff_to_party",
+      "handoff_serves_component",
+      "applies_to",
+      "occurs_on",
+      "cascades_to",
+      "raises_fee",
+      "party_plays_role",
+      "revenue_share",
+      "cost_borne_by",
+      "satisfies_obligation"
+     ],
+     "description": "Composition types (component to component) come first and form the primary graph; the rest are secondary"
+    },
+    "from": {
+     "type": "object"
+    },
+    "to": {
+     "type": "object"
+    },
+    "attributes": {
+     "type": "object"
+    }
+   },
+   "allOf": [
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "funds"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_funds"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "settles_into"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_settles_into"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "converts_into"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_converts_into"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "repays_from"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_repays_from"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "co_funds"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_co_funds"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "guarantees"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_guarantees"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "secures"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_secures"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "covers"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_covers"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "wraps"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_wraps"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "requires"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_requires"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "excludes"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_excludes"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "feeds_data"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_feeds_data"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "services"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_services"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "component_provided_by"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_component_provided_by"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "segment_maps_to_persona"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_segment_maps_to_persona"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "segment_uses_algorithm"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_segment_uses_algorithm"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "algorithm_uses_risk_model"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_algorithm_uses_risk_model"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "risk_model_governed_by"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_risk_model_governed_by"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "algorithm_writes_term"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_algorithm_writes_term"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "handoff_to_party"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_handoff_to_party"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "handoff_serves_component"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_handoff_serves_component"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "applies_to"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_applies_to"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "occurs_on"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_occurs_on"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "cascades_to"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_cascades_to"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "raises_fee"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_raises_fee"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "party_plays_role"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_party_plays_role"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "revenue_share"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_revenue_share"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "cost_borne_by"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_cost_borne_by"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "satisfies_obligation"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_satisfies_obligation"
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "discovers_price_for"
+       }
+      }
+     },
+     "then": {
+      "$ref": "#/$defs/conn_discovers_price_for"
+     }
+    }
+   ],
+   "x-primary": [
+    "funds",
+    "settles_into",
+    "converts_into",
+    "repays_from",
+    "co_funds",
+    "guarantees",
+    "secures",
+    "covers",
+    "wraps",
+    "requires",
+    "excludes",
+    "feeds_data",
+    "services"
+   ],
+   "x-secondary": [
+    "component_provided_by",
+    "segment_maps_to_persona",
+    "segment_uses_algorithm",
+    "algorithm_uses_risk_model",
+    "risk_model_governed_by",
+    "algorithm_writes_term",
+    "handoff_to_party",
+    "handoff_serves_component",
+    "applies_to",
+    "occurs_on",
+    "cascades_to",
+    "raises_fee",
+    "party_plays_role",
+    "revenue_share",
+    "cost_borne_by",
+    "satisfies_obligation"
+   ]
+  },
+  "conn_component_provided_by": {
+   "description": "Who provides a component: the owner (optionally under a named held licence) or an external party on the owner's roster. Projects to the v1 component provider.",
+   "x-cardinality": "exactly one per component on an owned product; none on a reference product or template",
+   "x-pinned": "yes: the party (and its legal entity) or the licence is hashed into pins.state and drift-checked",
+   "required": [
+    "attributes"
+   ],
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "const": "component"
+      }
+     }
+    },
+    "to": {
+     "oneOf": [
+      {
+       "$ref": "#/$defs/ref_owner"
+      },
+      {
+       "$ref": "#/$defs/ref_party"
+      }
+     ]
+    },
+    "attributes": {
+     "type": "object",
+     "required": [
+      "business_role"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "business_role": {
+       "enum": [
+        "issuer",
+        "originator",
+        "co_lender",
+        "servicer",
+        "collection_agent",
+        "loss_cover_provider",
+        "data_provider",
+        "payment_service_provider",
+        "fx_dealer",
+        "custodian",
+        "insurer",
+        "underwriter",
+        "marketplace_operator"
+       ]
+      },
+      "terms": {
+       "type": "object",
+       "additionalProperties": {
+        "$ref": "#/$defs/value"
+       },
+       "description": "Role terms, e.g. funding_share_pct, min_retention_pct, commitment"
+      }
+     }
+    }
+   }
+  },
+  "conn_segment_maps_to_persona": {
+   "description": "A segment is (part of) a persona in the regulatory register. Mynt checks the persona is in allowed_customer_segments of a licence covering the product's components.",
+   "x-cardinality": "each customer segment has at least one",
+   "x-pinned": "frozen in definition_hash; persona definitions are register data, not drift-checked by pins.ts",
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "const": "customer_segment"
+      }
+     }
+    },
+    "to": {
+     "$ref": "#/$defs/ref_register_persona"
+    },
+    "attributes": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "fit": {
+       "enum": [
+        "whole_persona",
+        "subset"
+       ]
+      }
+     }
+    }
+   }
+  },
+  "conn_segment_uses_algorithm": {
+   "description": "A segment's applications or transactions run through an algorithm at a stage",
+   "x-cardinality": "each segment has at least one per algorithm purpose the product declares",
+   "x-pinned": "frozen in definition_hash",
+   "required": [
+    "attributes"
+   ],
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "const": "customer_segment"
+      }
+     }
+    },
+    "to": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "const": "core_algorithm"
+      }
+     }
+    },
+    "attributes": {
+     "type": "object",
+     "required": [
+      "stage"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "stage": {
+       "enum": [
+        "pre_qualification",
+        "application",
+        "booking",
+        "servicing",
+        "monitoring",
+        "collections",
+        "per_transaction"
+       ]
+      },
+      "order": {
+       "type": "integer",
+       "minimum": 1
+      },
+      "required": {
+       "type": "boolean"
+      }
+     }
+    }
+   }
+  },
+  "conn_algorithm_uses_risk_model": {
+   "description": "An algorithm consumes a risk model's outputs",
+   "x-cardinality": "each core algorithm that uses any risk model has exactly one with role primary; any number of challenger/benchmark; an (algorithm, risk model) pair appears once",
+   "x-pinned": "frozen in definition_hash, with the risk model version",
+   "required": [
+    "attributes"
+   ],
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "const": "core_algorithm"
+      }
+     }
+    },
+    "to": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "const": "risk_model"
+      }
+     }
+    },
+    "attributes": {
+     "type": "object",
+     "required": [
+      "role",
+      "outputs_used"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "role": {
+       "enum": [
+        "primary",
+        "challenger",
+        "benchmark"
+       ]
+      },
+      "outputs_used": {
+       "type": "array",
+       "minItems": 1,
+       "items": {
+        "$ref": "#/$defs/key"
+       }
+      },
+      "thresholds": {
+       "type": "object",
+       "additionalProperties": {
+        "type": "number"
+       }
+      },
+      "traffic_share_pct": {
+       "type": "number",
+       "minimum": 0,
+       "maximum": 100
+      },
+      "mode": {
+       "enum": [
+        "active",
+        "shadow"
+       ]
+      },
+      "fallback": {
+       "enum": [
+        "decline",
+        "refer",
+        "use_challenger",
+        "rules_only"
+       ]
+      }
+     }
+    }
+   }
+  },
+  "conn_risk_model_governed_by": {
+   "description": "Model risk management: a risk model is governed by a record in the owner's GRC folder (a control or risk-model record instantiated from a licence template)",
+   "x-cardinality": "each risk model has at least one, and at least one of them targets section controls or risk_models",
+   "x-pinned": "frozen in definition_hash; the record must exist with status current at publish",
+   "required": [
+    "attributes"
+   ],
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "const": "risk_model"
+      }
+     }
+    },
+    "to": {
+     "$ref": "#/$defs/ref_grc_record"
+    },
+    "attributes": {
+     "type": "object",
+     "required": [
+      "governance_kind",
+      "frequency",
+      "owner_party_id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "governance_kind": {
+       "enum": [
+        "validation",
+        "performance_monitoring",
+        "control",
+        "approval",
+        "inventory",
+        "policy"
+       ]
+      },
+      "frequency": {
+       "$ref": "#/$defs/frequency"
+      },
+      "owner_party_id": {
+       "$ref": "#/$defs/uuid",
+       "description": "An internal party on the owner's roster accountable for it"
+      }
+     }
+    }
+   }
+  },
+  "conn_algorithm_writes_term": {
+   "description": "An algorithm sets a contract term within its declared bounds (the term's negotiable must be decision_engine)",
+   "x-cardinality": "each term with negotiable decision_engine has exactly one writer",
+   "x-pinned": "frozen in definition_hash",
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "const": "core_algorithm"
+      }
+     }
+    },
+    "to": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "const": "term"
+      }
+     }
+    },
+    "attributes": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "clamp": {
+       "enum": [
+        "to_range",
+        "reject_outside_range"
+       ]
+      }
+     }
+    }
+   }
+  },
+  "conn_handoff_to_party": {
+   "description": "The roster party a handoff goes to, with the service terms of the exchange",
+   "x-cardinality": "exactly one per partner handoff; every component provided by a party needs at least one handoff to that party that also serves that component",
+   "x-pinned": "yes: the party is bound to the served component in the projected v1 parties list, so pins.ts drift-checks it",
+   "required": [
+    "attributes"
+   ],
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "const": "partner_handoff"
+      }
+     }
+    },
+    "to": {
+     "$ref": "#/$defs/ref_party"
+    },
+    "attributes": {
+     "type": "object",
+     "required": [
+      "sla",
+      "consent_purpose"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "sla": {
+       "$ref": "#/$defs/duration"
+      },
+      "consent_purpose": {
+       "type": [
+        "string",
+        "null"
+       ],
+       "description": "Purpose under which customer data may be shared; null when no personal data is sent"
+      },
+      "channel": {
+       "enum": [
+        "api",
+        "file",
+        "webhook",
+        "portal"
+       ]
+      }
+     }
+    }
+   }
+  },
+  "conn_handoff_serves_component": {
+   "description": "The component a handoff operates",
+   "x-cardinality": "exactly one per partner handoff",
+   "x-pinned": "frozen in definition_hash",
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "const": "partner_handoff"
+      }
+     }
+    },
+    "to": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "const": "component"
+      }
+     }
+    }
+   }
+  },
+  "conn_applies_to": {
+   "description": "Where a term, rate, fee, limit or servicing policy applies. mode default attaches the product default to a component (or the whole product); mode override narrows it for one customer segment. A product endpoint is { kind: product, id: self }.",
+   "x-cardinality": "each term, rate, fee, limit and servicing policy has exactly one default; at most one override per (node, segment); an override may only narrow ranges and may only touch terms whose set_by includes segment_override",
+   "x-pinned": "frozen in definition_hash",
+   "required": [
+    "attributes"
+   ],
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "enum": [
+        "term",
+        "rate",
+        "fee",
+        "limit",
+        "servicing_policy"
+       ]
+      }
+     }
+    },
+    "to": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "enum": [
+        "component",
+        "customer_segment",
+        "product"
+       ]
+      }
+     }
+    },
+    "attributes": {
+     "type": "object",
+     "required": [
+      "mode"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "mode": {
+       "enum": [
+        "default",
+        "override"
+       ]
+      },
+      "override": {
+       "type": "object",
+       "description": "Narrowing patch on the from node, e.g. { default: 50 } or { range: { max: 1.5 } }"
+      },
+      "priority": {
+       "type": "integer",
+       "minimum": 1
+      }
+     }
+    }
+   },
+   "allOf": [
+    {
+     "if": {
+      "properties": {
+       "attributes": {
+        "properties": {
+         "mode": {
+          "const": "override"
+         }
+        }
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "to": {
+        "properties": {
+         "kind": {
+          "const": "customer_segment"
+         }
+        }
+       },
+       "attributes": {
+        "required": [
+         "override"
+        ]
+       }
+      }
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "attributes": {
+        "properties": {
+         "mode": {
+          "const": "default"
+         }
+        }
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "to": {
+        "properties": {
+         "kind": {
+          "enum": [
+           "component",
+           "product"
+          ]
+         }
+        }
+       }
+      }
+     }
+    }
+   ]
+  },
+  "conn_occurs_on": {
+   "description": "The component a lifecycle event belongs to",
+   "x-cardinality": "exactly one per lifecycle event",
+   "x-pinned": "frozen in definition_hash",
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "const": "lifecycle_event"
+      }
+     }
+    },
+    "to": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "const": "component"
+      }
+     }
+    },
+    "attributes": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "schedule_purpose": {
+       "type": "string"
+      }
+     }
+    }
+   }
+  },
+  "conn_cascades_to": {
+   "description": "An event fires another atomically (CDM BusinessEvent: all or nothing)",
+   "x-cardinality": "any; acyclic",
+   "x-pinned": "frozen in definition_hash",
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "const": "lifecycle_event"
+      }
+     }
+    },
+    "to": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "const": "lifecycle_event"
+      }
+     }
+    },
+    "attributes": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "atomic": {
+       "const": true
+      },
+      "order": {
+       "type": "integer",
+       "minimum": 1
+      }
+     }
+    }
+   }
+  },
+  "conn_raises_fee": {
+   "description": "An event charges a fee",
+   "x-cardinality": "each fee not charged on a schedule has at least one raising event",
+   "x-pinned": "frozen in definition_hash",
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "const": "lifecycle_event"
+      }
+     }
+    },
+    "to": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "const": "fee"
+      }
+     }
+    }
+   }
+  },
+  "conn_party_plays_role": {
+   "description": "A roster party (or the owner) holds a business role other than providing a component: product owner, credit officer, escrow bank, correspondent. bound_component is where the projected v1 parties list binds it.",
+   "x-cardinality": "exactly one product_owner on an owned product",
+   "x-pinned": "yes for parties: projected into v1 parties and drift-checked",
+   "required": [
+    "attributes"
+   ],
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "const": "product"
+      },
+      "id": {
+       "const": "self",
+       "description": "The product itself"
+      }
+     }
+    },
+    "to": {
+     "oneOf": [
+      {
+       "$ref": "#/$defs/ref_party"
+      },
+      {
+       "$ref": "#/$defs/ref_owner"
+      }
+     ]
+    },
+    "attributes": {
+     "type": "object",
+     "required": [
+      "role",
+      "bound_component"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "role": {
+       "enum": [
+        "product_owner",
+        "credit_officer",
+        "referral_authority",
+        "compliance_officer",
+        "escrow_bank",
+        "settlement_bank",
+        "correspondent",
+        "distributor",
+        "programme_manager",
+        "approver"
+       ]
+      },
+      "bound_component": {
+       "$ref": "#/$defs/key"
+      },
+      "terms": {
+       "type": "object",
+       "additionalProperties": {
+        "$ref": "#/$defs/value"
+       }
+      }
+     }
+    }
+   }
+  },
+  "conn_revenue_share": {
+   "description": "Who earns a rate or fee, and what share",
+   "x-cardinality": "pct shares on one rate or fee sum to 100",
+   "x-pinned": "party targets are drift-checked through their component or role binding",
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "enum": [
+        "rate",
+        "fee"
+       ]
+      }
+     }
+    },
+    "to": {
+     "oneOf": [
+      {
+       "$ref": "#/$defs/ref_party"
+      },
+      {
+       "$ref": "#/$defs/ref_owner"
+      }
+     ]
+    },
+    "attributes": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "pct": {
+       "type": "number",
+       "minimum": 0,
+       "maximum": 100
+      },
+      "bps": {
+       "type": "number"
+      },
+      "basis": {
+       "type": "string"
+      }
+     }
+    }
+   }
+  },
+  "conn_cost_borne_by": {
+   "description": "Who bears a cost",
+   "x-cardinality": "exactly one per cost",
+   "x-pinned": "frozen in definition_hash",
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "const": "cost"
+      }
+     }
+    },
+    "to": {
+     "oneOf": [
+      {
+       "$ref": "#/$defs/ref_party"
+      },
+      {
+       "$ref": "#/$defs/ref_owner"
+      }
+     ]
+    }
+   }
+  },
+  "conn_satisfies_obligation": {
+   "description": "A product node implements an item of a licence type's GRC register. The obligation itself stays in the register.",
+   "x-cardinality": "any",
+   "x-pinned": "frozen in definition_hash",
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "enum": [
+        "component",
+        "term",
+        "limit",
+        "core_algorithm",
+        "servicing_policy",
+        "customer_segment",
+        "partner_handoff"
+       ]
+      }
+     }
+    },
+    "to": {
+     "$ref": "#/$defs/ref_register_item"
+    },
+    "attributes": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "how": {
+       "type": "string"
+      }
+     }
+    }
+   }
+  },
+  "conn_funds": {
+   "description": "Money moves from one component into another on a schedule: a mandate or sweep funds a deposit, a SIP funds a fund holding, a debit funds a premium.",
+   "x-composition": true,
+   "x-from": [
+    "payments:sale|issuance|servicing",
+    "account_operations:issuance (sweep)"
+   ],
+   "x-to": [
+    "account_operations:issuance",
+    "wealth:purchase|issuance",
+    "insurance:sale|issuance",
+    "custody_settlement:issuance"
+   ],
+   "x-cardinality": "a funded component may have several funders; each (from, to) pair once",
+   "x-event-ordering": "The debit on 'from' and the credit on 'to' are one atomic event (CDM BusinessEvent). On 'to' it is a drawing (ACTUS PD, sequence 4), so on a shared date it posts before interest (IP 8 / IPCI 9) and maturity (MD 19). A failed debit raises failure_handling.event on 'from' and nothing on 'to'.",
+   "x-pinned": "frozen in definition_hash; both components and their providers are already pinned by pins.ts, so a provider change on either end pauses sales",
+   "required": [
+    "attributes"
+   ],
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "to": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "attributes": {
+     "type": "object",
+     "required": [
+      "amount_rule",
+      "schedule_purpose",
+      "failure_handling"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "amount_rule": {
+       "enum": [
+        "fixed",
+        "from_term",
+        "instalment_due",
+        "minimum_due",
+        "full_balance",
+        "sweep_above_threshold",
+        "derived_from_source"
+       ]
+      },
+      "amount": {
+       "$ref": "#/$defs/value"
+      },
+      "schedule_purpose": {
+       "type": "string",
+       "description": "The schedule on 'from' that drives the transfers"
+      },
+      "count": {
+       "$ref": "#/$defs/value"
+      },
+      "shares": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Values that live on 'from' and are read by 'to' (currency, amount)"
+      },
+      "failure_handling": {
+       "type": "object",
+       "additionalProperties": false,
+       "properties": {
+        "retries": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "retry_after": {
+         "$ref": "#/$defs/duration"
+        },
+        "on_exhaustion": {
+         "enum": [
+          "raise_event",
+          "charge_fee",
+          "suspend",
+          "close_and_pay_out",
+          "notify_only",
+          "reverse"
+         ]
+        },
+        "event": {
+         "$ref": "#/$defs/key"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "conn_settles_into": {
+   "description": "Proceeds of one component settle into an account or payment component: a disbursement into the borrower's account, a redemption into a bank account, a trade into a settlement account.",
+   "x-composition": true,
+   "x-from": [
+    "credit:issuance",
+    "wealth:sale|secondary_sale",
+    "exchange:issuance|sale",
+    "insurance:servicing"
+   ],
+   "x-to": [
+    "account_operations:issuance",
+    "payments:sale|issuance",
+    "custody_settlement:issuance|servicing"
+   ],
+   "x-cardinality": "each settling event on 'from' has exactly one settles_into target",
+   "x-event-ordering": "Settlement follows execution: the 'from' event (IED, STD, redemption) and the credit on 'to' are atomic when settlement_cycle is P0D; otherwise 'to' books on the settlement date with sequence 21 (STD).",
+   "x-pinned": "frozen in definition_hash; both components and their providers are already pinned by pins.ts, so a provider change on either end pauses sales",
+   "required": [
+    "attributes"
+   ],
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "to": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "attributes": {
+     "type": "object",
+     "required": [
+      "settlement_cycle",
+      "amount_rule"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "settlement_cycle": {
+       "$ref": "#/$defs/duration",
+       "description": "T+n as a duration, e.g. P0D, P1D"
+      },
+      "day_basis": {
+       "enum": [
+        "calendar",
+        "business"
+       ]
+      },
+      "amount_rule": {
+       "enum": [
+        "fixed",
+        "from_term",
+        "instalment_due",
+        "minimum_due",
+        "full_balance",
+        "sweep_above_threshold",
+        "derived_from_source"
+       ]
+      },
+      "failure_handling": {
+       "type": "object",
+       "additionalProperties": false,
+       "properties": {
+        "retries": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "retry_after": {
+         "$ref": "#/$defs/duration"
+        },
+        "on_exhaustion": {
+         "enum": [
+          "raise_event",
+          "charge_fee",
+          "suspend",
+          "close_and_pay_out",
+          "notify_only",
+          "reverse"
+         ]
+        },
+        "event": {
+         "$ref": "#/$defs/key"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "conn_converts_into": {
+   "description": "A currency conversion feeds a payment or account: the bought amount becomes the payment amount (CDM SettlementPayout with a cash underlier; ACTUS FXOUT).",
+   "x-composition": true,
+   "x-from": [
+    "exchange:issuance|sale (underlying cash)"
+   ],
+   "x-to": [
+    "payments:sale|issuance",
+    "account_operations:issuance"
+   ],
+   "x-cardinality": "exactly one converts_into per exchange component used for a transfer",
+   "x-event-ordering": "FX booking (STD) and the payment send are one atomic event, so the payment never goes out at an unbooked rate. A return on 'to' cascades a reverse conversion on 'from' per on_return.",
+   "x-pinned": "frozen in definition_hash; both components and their providers are already pinned by pins.ts, so a provider change on either end pauses sales",
+   "required": [
+    "attributes"
+   ],
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "to": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "attributes": {
+     "type": "object",
+     "required": [
+      "rate_source",
+      "spread",
+      "lock_order",
+      "amount_rule"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "rate_source": {
+       "type": "string"
+      },
+      "spread": {
+       "$ref": "#/$defs/value"
+      },
+      "lock_order": {
+       "enum": [
+        "quote_then_debit",
+        "debit_then_quote",
+        "booked_at_execution"
+       ]
+      },
+      "quote_validity": {
+       "$ref": "#/$defs/value"
+      },
+      "amount_rule": {
+       "const": "derived_from_source"
+      },
+      "currency_pair": {
+       "type": "string",
+       "pattern": "^[A-Z]{3}/[A-Z]{3}$|^dynamic$"
+      },
+      "on_return": {
+       "enum": [
+        "reverse_at_prevailing_rate",
+        "reverse_at_original_rate",
+        "hold_in_foreign_currency"
+       ]
+      }
+     }
+    }
+   }
+  },
+  "conn_repays_from": {
+   "description": "A credit component is repaid by collections through a payment or account component (a repayment mandate, a sweep, an escrow account).",
+   "x-composition": true,
+   "x-from": [
+    "credit:issuance"
+   ],
+   "x-to": [
+    "payments:sale|servicing",
+    "account_operations:issuance"
+   ],
+   "x-cardinality": "each credit component has at least one repays_from on an owned, live product",
+   "x-event-ordering": "A collection on 'to' cascades into PR (3) and IP (8) on 'from', allocated by the waterfall in one atomic event. A failed collection raises failure_handling.event (typically instalment_missed, ACTUS PY 6) on 'from'.",
+   "x-pinned": "frozen in definition_hash; both components and their providers are already pinned by pins.ts, so a provider change on either end pauses sales",
+   "required": [
+    "attributes"
+   ],
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "to": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "attributes": {
+     "type": "object",
+     "required": [
+      "amount_rule",
+      "schedule_purpose",
+      "waterfall"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "amount_rule": {
+       "enum": [
+        "fixed",
+        "from_term",
+        "instalment_due",
+        "minimum_due",
+        "full_balance",
+        "sweep_above_threshold",
+        "derived_from_source"
+       ]
+      },
+      "schedule_purpose": {
+       "type": "string"
+      },
+      "waterfall": {
+       "$ref": "#/$defs/key",
+       "description": "servicing_policy _id of kind waterfall that allocates each collection"
+      },
+      "failure_handling": {
+       "type": "object",
+       "additionalProperties": false,
+       "properties": {
+        "retries": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "retry_after": {
+         "$ref": "#/$defs/duration"
+        },
+        "on_exhaustion": {
+         "enum": [
+          "raise_event",
+          "charge_fee",
+          "suspend",
+          "close_and_pay_out",
+          "notify_only",
+          "reverse"
+         ]
+        },
+        "event": {
+         "$ref": "#/$defs/key"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "conn_co_funds": {
+   "description": "Two credit components fund one borrower contract in fixed shares (co-lending, participation). Shares a single schedule; the borrower sees one contract.",
+   "x-composition": true,
+   "x-from": [
+    "credit:issuance"
+   ],
+   "x-to": [
+    "credit:issuance"
+   ],
+   "x-cardinality": "a co-lent contract has exactly one co_funds per partner share",
+   "x-event-ordering": "Disbursement (IED) is split (CDM Split) and booked on both in one atomic event; each collection is split pro rata before each side's waterfall. Restructuring on 'from' cascades the same terms change on 'to'.",
+   "x-pinned": "frozen in definition_hash; both components and their providers are already pinned by pins.ts, so a provider change on either end pauses sales",
+   "required": [
+    "attributes"
+   ],
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "to": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "attributes": {
+     "type": "object",
+     "required": [
+      "share_rule",
+      "pricing",
+      "schedule"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "share_rule": {
+       "$ref": "#/$defs/value",
+       "description": "The 'from' share in percent; 'to' takes the rest"
+      },
+      "pricing": {
+       "enum": [
+        "blended_by_funding_share",
+        "each_own_rate"
+       ]
+      },
+      "schedule": {
+       "const": "shared"
+      },
+      "classification_sync": {
+       "enum": [
+        "borrower_level",
+        "contract_level"
+       ]
+      },
+      "booking_window": {
+       "$ref": "#/$defs/duration"
+      }
+     }
+    }
+   }
+  },
+  "conn_guarantees": {
+   "description": "A guarantee component absorbs credit losses on credit components (ACTUS CEG: covering -> covered). Covers default loss guarantees, first-loss, bank guarantees and credit guarantee schemes.",
+   "x-composition": true,
+   "x-from": [
+    "guarantees_trade:issuance"
+   ],
+   "x-to": [
+    "credit:issuance",
+    "securitization:issuance"
+   ],
+   "x-cardinality": "a covered component may have several guarantors; cover on one base must not exceed its cap",
+   "x-event-ordering": "A credit event on 'to' (ACTUS CE, sequence 10) whose condition meets invocation cascades an atomic payout on 'from' the same date. The covered contract is not set off; later recoveries flow per 'recoveries'.",
+   "x-pinned": "frozen in definition_hash; both components and their providers are already pinned by pins.ts, so a provider change on either end pauses sales",
+   "required": [
+    "attributes"
+   ],
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "to": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "attributes": {
+     "type": "object",
+     "required": [
+      "cover_bps",
+      "cover_base",
+      "scope",
+      "invocation"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "cover_bps": {
+       "$ref": "#/$defs/value",
+       "description": "Cap in basis points of cover_base, e.g. 500 = 5%"
+      },
+      "cover_base": {
+       "enum": [
+        "disbursed_amount",
+        "outstanding_principal",
+        "portfolio_outstanding",
+        "contract_amount"
+       ]
+      },
+      "scope": {
+       "enum": [
+        "portfolio",
+        "contract"
+       ]
+      },
+      "invocation": {
+       "type": "object",
+       "required": [
+        "trigger_event"
+       ],
+       "additionalProperties": false,
+       "properties": {
+        "trigger_event": {
+         "$ref": "#/$defs/key"
+        },
+        "dpd": {
+         "$ref": "#/$defs/value"
+        }
+       }
+      },
+      "form": {
+       "type": "array",
+       "items": {
+        "enum": [
+         "cash_deposit",
+         "fixed_deposit_lien",
+         "bank_guarantee",
+         "surety",
+         "scheme"
+        ]
+       }
+      },
+      "reinstatement": {
+       "type": "boolean"
+      },
+      "tenure_rule": {
+       "type": "string"
+      },
+      "recoveries": {
+       "enum": [
+        "shared_per_contract",
+        "to_guarantor_first",
+        "to_lender"
+       ]
+      }
+     }
+    }
+   }
+  },
+  "conn_secures": {
+   "description": "A product component held as security for a credit component: a deposit under lien, pledged fund units, an escrow. Collateral that is itself a product; other collateral stays a source of value in the underwriting algorithm.",
+   "x-composition": true,
+   "x-from": [
+    "account_operations:issuance",
+    "wealth:purchase|issuance",
+    "custody_settlement:issuance|servicing"
+   ],
+   "x-to": [
+    "credit:issuance"
+   ],
+   "x-cardinality": "any",
+   "x-event-ordering": "Withdrawal or redemption events on 'from' are blocked while 'to' is outstanding; enforce_on on 'to' cascades a liquidation on 'from' and a prepayment (PP 7) on 'to' atomically; maturity of 'to' (MD 19) triggers release_on.",
+   "x-pinned": "frozen in definition_hash; both components and their providers are already pinned by pins.ts, so a provider change on either end pauses sales",
+   "required": [
+    "attributes"
+   ],
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "to": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "attributes": {
+     "type": "object",
+     "required": [
+      "lien_type",
+      "max_ltv_pct"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "lien_type": {
+       "enum": [
+        "lien",
+        "pledge",
+        "hypothecation",
+        "escrow"
+       ]
+      },
+      "max_ltv_pct": {
+       "type": "number",
+       "minimum": 0,
+       "maximum": 100
+      },
+      "haircut_pct": {
+       "type": "number"
+      },
+      "valuation_frequency": {
+       "$ref": "#/$defs/frequency"
+      },
+      "release_on": {
+       "$ref": "#/$defs/key"
+      },
+      "enforce_on": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    }
+   }
+  },
+  "conn_covers": {
+   "description": "An insurance component protects another component or its customer (credit life on a loan, card protection, deposit-linked cover).",
+   "x-composition": true,
+   "x-from": [
+    "insurance:sale|issuance"
+   ],
+   "x-to": [
+    "credit:issuance",
+    "account_operations:issuance",
+    "payments:issuance|sale",
+    "wealth:purchase"
+   ],
+   "x-cardinality": "a covered component has at most one cover per peril set",
+   "x-event-ordering": "Premium financed into principal raises the disbursed amount at IED; added to instalment it joins each PR/IP collection before the waterfall. A claim settlement on 'from' cascades a prepayment (PP 7) or closure on 'to'; a prepayment on 'to' cascades the refund_on_prepayment action on 'from'.",
+   "x-pinned": "frozen in definition_hash; both components and their providers are already pinned by pins.ts, so a provider change on either end pauses sales",
+   "required": [
+    "attributes"
+   ],
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "to": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "attributes": {
+     "type": "object",
+     "required": [
+      "sum_assured_basis",
+      "beneficiary",
+      "premium_source"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "sum_assured_basis": {
+       "enum": [
+        "outstanding_principal",
+        "original_principal",
+        "fixed",
+        "balance"
+       ]
+      },
+      "beneficiary": {
+       "enum": [
+        "lender_then_nominee",
+        "lender",
+        "customer_nominee"
+       ]
+      },
+      "premium_source": {
+       "enum": [
+        "financed_into_principal",
+        "added_to_instalment",
+        "separate_debit",
+        "single_upfront"
+       ]
+      },
+      "perils": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       }
+      },
+      "refund_on_prepayment": {
+       "enum": [
+        "pro_rata",
+        "none",
+        "cover_continues"
+       ]
+      },
+      "election": {
+       "enum": [
+        "required",
+        "optional"
+       ]
+      }
+     }
+    }
+   }
+  },
+  "conn_wraps": {
+   "description": "A wrapper or repackaging component around an inner component: a tax-advantaged or pension wrapper on a fund, a structured note over a deposit and option.",
+   "x-composition": true,
+   "x-from": [
+    "wealth:issuance|repackaging",
+    "account_operations:issuance",
+    "insurance:issuance",
+    "securitization:issuance|repackaging"
+   ],
+   "x-to": [
+    "wealth:purchase|issuance",
+    "account_operations:issuance",
+    "credit:issuance|purchase",
+    "derivatives:purchase|issuance"
+   ],
+   "x-cardinality": "an inner component has at most one wrapper",
+   "x-event-ordering": "Inner cash flows accrue inside the wrapper; customer-facing withdrawal events are evaluated on the wrapper first (lock-in, tax rules), then cascade to the inner component.",
+   "x-pinned": "frozen in definition_hash; both components and their providers are already pinned by pins.ts, so a provider change on either end pauses sales",
+   "required": [
+    "attributes"
+   ],
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "to": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "attributes": {
+     "type": "object",
+     "required": [
+      "mode"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "mode": {
+       "enum": [
+        "statutory_wrapper",
+        "repackaging"
+       ]
+      },
+      "wrapper": {
+       "enum": [
+        "statutory_pension",
+        "tax_advantaged",
+        "government_scheme"
+       ]
+      },
+      "pass_through": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Inner terms visible to the customer unchanged"
+      },
+      "lock_in": {
+       "$ref": "#/$defs/value"
+      }
+     }
+    }
+   }
+  },
+  "conn_requires": {
+   "description": "Eligibility dependency: a customer may hold 'from' only with 'to' (an overdraft requires a current account; a cover requires the loan).",
+   "x-composition": true,
+   "x-from": [
+    "any"
+   ],
+   "x-to": [
+    "any"
+   ],
+   "x-cardinality": "no requires cycles",
+   "x-event-ordering": "Origination of 'from' is blocked until 'to' exists; closing 'to' with stage lifetime cascades on_break on 'from'.",
+   "x-pinned": "frozen in definition_hash",
+   "required": [
+    "attributes"
+   ],
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "to": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "attributes": {
+     "type": "object",
+     "required": [
+      "scope",
+      "stage"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "scope": {
+       "enum": [
+        "same_contract",
+        "same_customer"
+       ]
+      },
+      "stage": {
+       "enum": [
+        "origination",
+        "lifetime"
+       ]
+      },
+      "on_break": {
+       "enum": [
+        "close_from",
+        "suspend_from",
+        "notify"
+       ]
+      }
+     }
+    }
+   }
+  },
+  "conn_excludes": {
+   "description": "Mutual exclusion: a customer or contract may not hold both components.",
+   "x-composition": true,
+   "x-from": [
+    "any"
+   ],
+   "x-to": [
+    "any"
+   ],
+   "x-cardinality": "symmetric; declare once",
+   "x-event-ordering": "Origination of either is rejected while the other is live.",
+   "x-pinned": "frozen in definition_hash",
+   "required": [
+    "attributes"
+   ],
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "to": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "attributes": {
+     "type": "object",
+     "required": [
+      "scope"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "scope": {
+       "enum": [
+        "same_contract",
+        "same_customer"
+       ]
+      },
+      "reason": {
+       "type": "string"
+      }
+     }
+    }
+   }
+  },
+  "conn_feeds_data": {
+   "description": "An information component supplies data to an underwriting or assessment component, or directly to a core algorithm.",
+   "x-composition": true,
+   "x-from": [
+    "information:purchase|sale|issuance (underlying data)"
+   ],
+   "x-to": [
+    "credit:underwriting",
+    "insurance:underwriting",
+    "any:assessment",
+    "core_algorithm"
+   ],
+   "x-cardinality": "each underwriting component has at least one feeds_data source",
+   "x-event-ordering": "The data pull completes before the decision event on 'to'; a pull older than freshness is repeated.",
+   "x-pinned": "frozen in definition_hash; both components and their providers are already pinned by pins.ts, so a provider change on either end pauses sales",
+   "required": [
+    "attributes"
+   ],
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "to": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "enum": [
+        "component",
+        "core_algorithm"
+       ]
+      },
+      "id": {
+       "type": "string"
+      }
+     }
+    },
+    "attributes": {
+     "type": "object",
+     "required": [
+      "fields",
+      "stage"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "fields": {
+       "type": "array",
+       "minItems": 1,
+       "items": {
+        "type": "string"
+       }
+      },
+      "stage": {
+       "enum": [
+        "pre_qualification",
+        "application",
+        "booking",
+        "monitoring"
+       ]
+      },
+      "consent_purpose": {
+       "type": "string"
+      },
+      "freshness": {
+       "$ref": "#/$defs/duration"
+      },
+      "on_unavailable": {
+       "enum": [
+        "decline",
+        "refer",
+        "proceed_without"
+       ]
+      }
+     }
+    }
+   }
+  },
+  "conn_services": {
+   "description": "A servicing component (often a roster party) operates another component: collections, full servicing, claims handling, recordkeeping.",
+   "x-composition": true,
+   "x-from": [
+    "credit:servicing",
+    "insurance:servicing",
+    "custody_settlement:servicing",
+    "account_operations:servicing",
+    "payments:servicing"
+   ],
+   "x-to": [
+    "credit:issuance",
+    "insurance:issuance",
+    "account_operations:issuance",
+    "wealth:issuance|purchase",
+    "securitization:issuance"
+   ],
+   "x-cardinality": "a serviced component has at most one servicer per scope and DPD band",
+   "x-event-ordering": "Placement and recall are servicing events that change no cash flow; recoveries collected by 'from' enter 'to' through its repays_from waterfall.",
+   "x-pinned": "frozen in definition_hash; both components and their providers are already pinned by pins.ts, so a provider change on either end pauses sales",
+   "required": [
+    "attributes"
+   ],
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "to": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "attributes": {
+     "type": "object",
+     "required": [
+      "scope"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "scope": {
+       "enum": [
+        "collections",
+        "full_servicing",
+        "claims",
+        "recordkeeping",
+        "customer_support"
+       ]
+      },
+      "dpd_from": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "dpd_to": {
+       "type": [
+        "integer",
+        "null"
+       ]
+      },
+      "fee_basis": {
+       "enum": [
+        "recovered_amount",
+        "per_account",
+        "outstanding_balance",
+        "per_case"
+       ]
+      },
+      "fee": {
+       "$ref": "#/$defs/value"
+      }
+     }
+    }
+   }
+  },
+  "conn_discovers_price_for": {
+   "description": "A marketplace: an exchange component (the venue) discovers some of another component's terms. The venue's provider must hold a licence granting exchange issuance; whoever may quote is computed from the roster and the register (CDM: the venue's execution sets the product's economic terms).",
+   "x-composition": true,
+   "x-from": [
+    "exchange:issuance"
+   ],
+   "x-to": [
+    "credit:issuance|sale|purchase|secondary_sale",
+    "securitization:issuance|secondary_sale",
+    "wealth:issuance|sale",
+    "insurance:issuance|sale",
+    "guarantees_trade:issuance|purchase",
+    "derivatives:issuance",
+    "account_operations:issuance"
+   ],
+   "x-cardinality": "at most one discovers_price_for per discovered term on a component; a venue may price several components",
+   "x-event-ordering": "Quotes open and close on the venue; the accepted quote fills and pins the target component's discovered terms in one atomic event before the target's issuance (or sale) event. Expired or withdrawn quotes never reach the target.",
+   "x-pinned": "frozen in definition_hash; the venue's provider and every participant's licence are pinned by pins.ts, so a lapsed licence pauses quoting",
+   "required": [
+    "attributes"
+   ],
+   "properties": {
+    "from": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "to": {
+     "type": "object",
+     "required": [
+      "kind",
+      "id"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "kind": {
+       "const": "component"
+      },
+      "id": {
+       "$ref": "#/$defs/key"
+      }
+     }
+    },
+    "attributes": {
+     "type": "object",
+     "required": [
+      "price_discovery",
+      "discovers",
+      "participants",
+      "selection",
+      "pinned_on"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "price_discovery": {
+       "enum": [
+        "posted_price",
+        "request_for_quote",
+        "reverse_sealed_bid",
+        "sealed_bid",
+        "english",
+        "dutch",
+        "uniform_price",
+        "discriminatory_price",
+        "book_building",
+        "continuous_order_book",
+        "call_auction",
+        "negotiated",
+        "benchmark_linked",
+        "model_priced"
+       ]
+      },
+      "discovers": {
+       "type": "array",
+       "minItems": 1,
+       "uniqueItems": true,
+       "items": {
+        "$ref": "#/$defs/key"
+       },
+       "description": "Term keys of the target component that the venue sets"
+      },
+      "requester": {
+       "enum": [
+        "customer",
+        "issuer",
+        "seller",
+        "owner",
+        "none"
+       ]
+      },
+      "participants": {
+       "type": "object",
+       "required": [
+        "kind"
+       ],
+       "additionalProperties": false,
+       "properties": {
+        "kind": {
+         "enum": [
+          "roster_parties",
+          "listed_parties",
+          "open_to_licensed"
+         ]
+        },
+        "party_ids": {
+         "type": "array",
+         "items": {
+          "type": "string",
+          "format": "uuid"
+         }
+        },
+        "filter": {
+         "type": "object",
+         "additionalProperties": false,
+         "properties": {
+          "license_grants": {
+           "type": "object",
+           "required": [
+            "primitive",
+            "action"
+           ],
+           "additionalProperties": false,
+           "properties": {
+            "primitive": {
+             "type": "string"
+            },
+            "action": {
+             "type": "string"
+            },
+            "country": {
+             "type": "string",
+             "pattern": "^[a-z]{2}$"
+            }
+           }
+          },
+          "segments": {
+           "type": "array",
+           "items": {
+            "$ref": "#/$defs/key"
+           }
+          }
+         }
+        }
+       }
+      },
+      "inputs_from": {
+       "enum": [
+        "data_requirements",
+        "lot_definition",
+        "none"
+       ]
+      },
+      "quote_schema": {
+       "type": "object",
+       "additionalProperties": {
+        "type": "string"
+       },
+       "description": "Field name to type for each quote (integer, number, date-time, fee_list, \u2026)"
+      },
+      "window": {
+       "type": "object",
+       "additionalProperties": false,
+       "properties": {
+        "opens": {
+         "enum": [
+          "on_request",
+          "scheduled",
+          "continuous"
+         ]
+        },
+        "at": {
+         "type": "string",
+         "format": "date-time"
+        },
+        "duration": {
+         "type": "string",
+         "pattern": "^P"
+        }
+       }
+      },
+      "bounds": {
+       "type": "object",
+       "additionalProperties": {
+        "$ref": "#/$defs/value"
+       },
+       "description": "Reserve or band per discovered term, e.g. max_annual_rate_bps"
+      },
+      "selection": {
+       "type": "object",
+       "required": [
+        "rule"
+       ],
+       "additionalProperties": false,
+       "properties": {
+        "rule": {
+         "enum": [
+          "customer_choice",
+          "best_price",
+          "clearing_price",
+          "pro_rata",
+          "first_come",
+          "owner_choice"
+         ]
+        },
+        "ranking": {
+         "type": "string"
+        },
+        "tie_break": {
+         "enum": [
+          "earliest_quote",
+          "largest_amount",
+          "random",
+          "pro_rata"
+         ]
+        }
+       }
+      },
+      "fill": {
+       "type": "object",
+       "additionalProperties": false,
+       "properties": {
+        "winners": {
+         "type": "integer",
+         "minimum": 1
+        },
+        "partial": {
+         "type": "boolean"
+        }
+       }
+      },
+      "visibility": {
+       "enum": [
+        "sealed_until_close",
+        "open",
+        "post_trade_only"
+       ]
+      },
+      "display": {
+       "enum": [
+        "all_valid_quotes_unbiased",
+        "best_only",
+        "top_n"
+       ],
+       "description": "What the requester sees; regulated offers use all_valid_quotes_unbiased"
+      },
+      "pinned_on": {
+       "enum": [
+        "acceptance",
+        "clearing",
+        "allocation"
+       ]
+      }
+     }
+    }
+   }
+  }
+ }
+}

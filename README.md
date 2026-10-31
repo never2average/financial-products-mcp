@@ -465,6 +465,43 @@ A product names who provides each component: the owner itself, under one of its 
 
 A drifted product pauses new enrollments and emits `product.drifted`. New enrollments resume when the state is restored (`product.drift_cleared`) or a new version is published. Changes made through Mynt are checked at once, and the HTTP server also re-checks every hour so expiries are caught.
 
+### Product definitions (v2)
+
+A product's full definition follows [`schemas/financial-product.v2.schema.json`](schemas/financial-product.v2.schema.json).
+
+**What it contains**
+- **Components**, each a line × action, joined by typed composition links. The link types are:
+  - `funds`, `settles_into`, `converts_into`, `repays_from`, `co_funds`;
+  - `guarantees`, `secures`, `covers`, `wraps`;
+  - `requires`, `excludes`, `feeds_data`, `services`;
+  - `discovers_price_for`, which makes an exchange component a marketplace.
+- **Business context around them:** customer segments, core algorithms, risk models, partner handoffs, terms, rates, fees, limits, servicing policies, lifecycle events and costs.
+- **Connections:** every link between nodes is a typed connection with its own schema, and no node holds lists of other nodes' ids.
+- **Upstream records by reference:** the register's personas and items, the owner's licences, roster parties and GRC records are connection targets, never copied in.
+
+**How it's checked.** `check_product_definition` validates a definition, and `set_product_definition` validates it before saving. The checks:
+- the JSON Schema;
+- that every connection end resolves, including upstream records, which must be real and current;
+- the composition rules:
+  - the allowed primitive × action at each end of a link;
+  - exactly one provider per component;
+  - a partner handoff to every party that provides a component;
+  - exactly one primary risk model per algorithm;
+  - every risk model governed by a GRC record, owned by an internal party.
+
+Every error comes back at once.
+
+**What saving does**
+- It sets the product's composition and parties, so the regime, the publish checks, pins and drift all work as before.
+- It sets the catalogue record from the definition's projection, so existing tools, SDKs and apps keep reading the same fields.
+- On a live product, it goes into the draft version.
+
+**At publish.** The definition is checked again, since parties, licences and records may have changed. Its hash is then pinned as `pins.definition_hash`.
+
+**Product GRC folders.** Each product has its own GRC folder: `file_grc_record` and `get_grc_folder` with `product_id`. This is where, for example, the governance of the product's risk models lives.
+
+Variants (a template plus a patch) can't be saved yet. Save the resolved product as `plane.role: "standalone"`.
+
 Stores created under the original four lines (credit, wealth, insurance and the old cash-and-markets line) are moved onto these lines once, when Mynt starts. Old cash-and-markets products go by category: deposits to account_operations, bonds and money-market instruments to credit, derivatives to derivatives, and funds to wealth. REIT and InvIT units go to securitization. Published products stay published, and their test reports are re-run so they match the migrated data.
 
 `list_products` filters by `product_line`, `category`, `region` (`IN`, `US`, `global`), `risk_level` or free text, and `list_categories` returns counts for each.

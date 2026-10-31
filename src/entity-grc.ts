@@ -61,6 +61,7 @@ const DATA_RECORDS: Partial<Record<GrcSection, z.ZodTypeAny>> = {
 
 export const GrcRecordInputSchema = {
   party_id: z.string().uuid().optional().describe("File it in a party's folder instead of the entity's"),
+  product_id: z.string().optional().describe("File it in one of your products' folders (e.g. the governance of its risk models)"),
   licence_id: z.string().uuid().optional().describe("The held licence whose GRC item it answers"),
   section: z.enum(GRC_SECTIONS),
   ref: z.string().optional().describe("The item in that licence's GRC it answers: an obligation, filing or risk id, or a template id"),
@@ -137,11 +138,13 @@ function checkValue(f: FieldDef, type: FieldDef["type"], v: unknown, roster: Par
 export async function validateGrcRecord(
   store: Store,
   entityId: string,
-  input: { party_id?: string; licence_id?: string; section: GrcSection; ref?: string; key?: string; record: Record<string, unknown> },
+  input: { party_id?: string; product_id?: string; licence_id?: string; section: GrcSection; ref?: string; key?: string; record: Record<string, unknown> },
 ) {
   const errors: string[] = [];
   const [held, roster, ref] = await Promise.all([store.licensesOf(entityId), store.partiesOf(entityId), store.referenceData(true)]);
   if (input.party_id && !roster.some((p) => p.id === input.party_id)) errors.push(`No party '${input.party_id}' on your entity's roster`);
+  if (input.product_id && (await store.getProduct(input.product_id))?.entity_id !== entityId) errors.push(`No product '${input.product_id}' of your entity`);
+  if (input.party_id && input.product_id) errors.push("A record goes in a party's folder or a product's folder, not both");
   const licence = input.licence_id ? held.find((h) => h.id === input.licence_id) : undefined;
   if (input.licence_id && !licence) errors.push(`Your entity holds no licence '${input.licence_id}'`);
   const kind = TEMPLATE_SECTIONS[input.section];

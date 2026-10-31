@@ -46,6 +46,8 @@ const INNOVATOR_TOOLS = [
   "list_product_requests", "respond_to_product_request", "set_product_composition",
   // take rates
   "get_product_take_rate",
+  // v2 product definitions
+  "check_product_definition", "get_product_definition", "set_product_definition",
 ];
 
 async function connect(store, user = null) {

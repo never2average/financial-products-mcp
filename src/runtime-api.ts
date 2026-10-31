@@ -410,6 +410,19 @@ export function createRuntimeApi(store: Store, opts: RuntimeApiOptions = {}) {
       const hosting = opts.hosting;
       return send(res, 200, await hosting.policy(tenant, (appId) => egressFor(store, hosting, appId)));
     }
+    // The developer's commands for their VM: claimed by its agent, results posted back.
+    const commandResult = /^\/v1\/hosting\/commands\/([0-9a-f-]{36})\/result$/.exec(path);
+    if (path === "/v1/hosting/commands" || commandResult) {
+      allow(commandResult ? "POST" : "GET");
+      if (!opts.hosting) throw new ApiError(404, "not_found", "Hosting isn't configured");
+      const auth = req.headers.authorization;
+      const tenant = auth?.startsWith("Bearer ") ? await opts.hosting.tenantByAgent(auth.slice(7).trim()) : undefined;
+      if (!tenant) throw new ApiError(401, "unauthorized", "Send the tenant's agent token", { "WWW-Authenticate": "Bearer" });
+      if (!commandResult) return send(res, 200, { commands: await opts.hosting.claimCommands(tenant) });
+      const body = parse(z.object({ exit_code: z.number().int().nullable(), output: z.string().max(200_000) }).strict(), await readJson(req, maxBody));
+      if (!(await opts.hosting.finishCommand(tenant, commandResult[1], body.exit_code, body.output))) throw new ApiError(404, "not_found", "No running command with that id");
+      return send(res, 200, { ok: true });
+    }
 
     const { key, app } = await authenticate(req);
     const origin = req.headers.origin;

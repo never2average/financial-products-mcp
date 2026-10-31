@@ -156,6 +156,67 @@ test("hosting: a locked-down VM per developer, apps from verified builds, a poli
   }
 });
 
+test("hosting: developers see and work their hosted app through the VM's agent, never on the VM itself", async () => {
+  const w = await world();
+  try {
+    const { call, dev, api } = w;
+    await call(dev, "request_hosting");
+    const [, spec] = w.provider.calls.find(([c]) => c === "create");
+    assert.match(spec.userData, /mynt-agent-commands/, "the VM runs a command loop next to the reconcile loop");
+    assert.match(spec.userData, /grep -Eqx 'mynt-app-\[0-9a-f\]\{8\}'/, "it only ever touches app containers");
+    assert.match(spec.userData, /docker exec "\$NAME" sh -c/, "exec runs inside the app's container");
+    const token = spec.userData.match(/\\"token\\":\\"([A-Za-z0-9_-]+)\\"/)[1];
+    const agent = (await api("POST", "/v1/hosting/bootstrap", null, { token, wg_public_key: WG_KEY })).body.agent_token;
+    const container = `mynt-app-${w.app.id.slice(0, 8)}`;
+
+    assert.match((await call(dev, "app_logs", { app_id: w.app.id })).data.error, /isn't hosted on your VM/);
+    await call(dev, "deploy_app", { app_id: w.app.id, build_id: await w.build("succeeded") });
+
+    // The VM's agent: claims what's queued, runs it, reports back; the developer's call waits for it.
+    const answer = async (output, exit_code = 0) => {
+      for (let i = 0; i < 50; i++) {
+        const { body } = await api("GET", "/v1/hosting/commands", agent);
+        if (body.commands.length) {
+          for (const c of body.commands) assert.equal((await api("POST", `/v1/hosting/commands/${c.id}/result`, agent, { exit_code, output })).status, 200);
+          return body.commands;
+        }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      throw new Error("nothing queued");
+    };
+    const [logs, claimed] = await Promise.all([call(dev, "app_logs", { app_id: w.app.id, tail: 50 }), answer("ready on 8080\nMYNT_API_KEY=mynt_test_abcdefgh12345678")]);
+    assert.deepEqual(claimed.map((c) => [c.kind, c.container, c.args]), [["logs", container, { tail: 50 }]]);
+    assert.equal(logs.data.exit_code, 0);
+    assert.equal(logs.data.output, "ready on 8080\nMYNT_API_KEY=[redacted]", "secrets are scrubbed");
+
+    const [ran, [exec]] = await Promise.all([call(dev, "app_run", { app_id: w.app.id, command: "wget -qO- localhost:8080/healthz" }), answer('{"ok":true}')]);
+    assert.deepEqual([exec.kind, exec.args], ["exec", { command: "wget -qO- localhost:8080/healthz", timeout_seconds: 30 }]);
+    assert.equal(ran.data.output, '{"ok":true}');
+    const [restarted] = await Promise.all([call(dev, "restart_app", { app_id: w.app.id }), answer(container)]);
+    assert.equal(restarted.data.kind, "restart");
+
+    // Results only from the VM that claimed the command, once.
+    const [status] = await Promise.all([
+      call(dev, "app_status", { app_id: w.app.id }),
+      (async () => {
+        const [c] = await answer("running");
+        assert.equal((await api("POST", `/v1/hosting/commands/${c.id}/result`, agent, { exit_code: 0, output: "again" })).status, 404);
+        assert.equal((await api("POST", `/v1/hosting/commands/${c.id}/result`, "wrong", { exit_code: 0, output: "x" })).status, 401);
+      })(),
+    ]);
+    assert.equal(status.data.output, "running");
+
+    // Someone else's app, and an audit trail.
+    const { user: otherUser } = await w.store.createUser("Other", ["developer"]);
+    const other = await w.connectWith(otherUser);
+    assert.match((await call(other, "app_run", { app_id: w.app.id, command: "id" })).data.error, /No app of yours/);
+    const audit = (await w.store.db.query("SELECT action, details FROM financial_products.audit_log WHERE action LIKE 'app_%' ORDER BY created_at")).rows;
+    assert.deepEqual(audit.map((r) => r.action), ["app_logs", "app_exec", "app_restart", "app_status"]);
+  } finally {
+    w.close();
+  }
+});
+
 test("modules: manifests checked against live contracts, namespaces owned, outdated once a contract changes", async () => {
   const w = await world();
   try {

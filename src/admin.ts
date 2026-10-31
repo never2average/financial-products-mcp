@@ -26,6 +26,8 @@ import {
 } from "./regulatory.js";
 import { ROLES, type Role, type Store, type User } from "./store.js";
 import { emitProductEvent } from "./runtime.js";
+import type { HostingService } from "./hosting.js";
+import type { ModuleRegistry } from "./modules.js";
 import { driftSweep } from "./pins.js";
 import { reconcileEntityGrc } from "./entity-grc.js";
 import { reconcileEntity } from "./parties.js";
@@ -42,6 +44,8 @@ export interface AdminContext {
   desk?: DeskService | null; // innovators' product desk: workspaces, term sheets, feasibility
   review?: ReviewService | null; // the governance desk: agent-researched review cases admins decide
   bdRun?: { id: string } | null; // set when the caller is a connector agent run, not a person
+  hosting?: HostingService | null; // developers' isolated app hosting, when configured
+  modules?: ModuleRegistry | null; // developers' published modules
 }
 
 // Admin: everything is managed through Mynt itself, and every change is written to the audit log.

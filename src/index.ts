@@ -4,6 +4,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { ClerkAdmin, ClerkAuth, clerkConfigFromEnv } from "./auth.js";
 import { HttpBoatClient } from "./boat.js";
 import { BdService, bdConfigFromEnv } from "./bd.js";
+import { HostingService, hostingConfigFromEnv, hostingProviderFromEnv } from "./hosting.js";
+import { egressFor } from "./hosting-tools.js";
+import { ModuleRegistry } from "./modules.js";
 import { driftSweep } from "./pins.js";
 import { DeskService, deskConfigFromEnv } from "./desk.js";
 import { ReviewService, reviewConfigFromEnv } from "./review.js";
@@ -23,6 +26,9 @@ const USAGE = `Usage:
   mynt users add --name <name> --role <role> [--role ...]   Local token (stdio, or HTTP without Clerk)
   mynt users list
   mynt clerk setup                     Turn on Clerk's allowlist and MCP client registration
+  mynt hosting wg-peers                The gateway's WireGuard peers (running tenants)
+  mynt hosting egress-allowlist        Hosts tenant VMs may reach through the gateway
+  mynt hosting routes                  Caddy sites for hosted apps (<app>.<HOSTING_APPS_DOMAIN> to the tenant tunnel)
 
 Environment:
   DATABASE_URL              Postgres connection string, e.g. your Supabase database (required)
@@ -37,7 +43,9 @@ Environment:
   REVIEW_AUTO_OPEN=1        Open a governance review for every licence awaiting review (REVIEW_CASE_CAP_USD, REVIEW_MONTHLY_CAP_USD)
   BD_ENABLED=1              Runs Mynt's connector agent (business development) on the same harness (BD_DAILY_CAP, BD_RUN_CAP_USD, ...)
   ANTHROPIC_API_KEY         Otherwise, build agents use the Anthropic API. Either way the credentials stay on Mynt's server
-  GITHUB_APP_ID             With GITHUB_APP_PRIVATE_KEY and GITHUB_APP_SLUG: builds push branches and open PRs`;
+  GITHUB_APP_ID             With GITHUB_APP_PRIVATE_KEY and GITHUB_APP_SLUG: builds push branches and open PRs
+  HOSTING_DO_TOKEN          With HOSTING_GATEWAY_ENDPOINT, HOSTING_GATEWAY_PUBLIC_KEY and PUBLIC_URL: a VM per developer for hosted apps
+                            (HOSTING_REGION, HOSTING_SIZE, HOSTING_DO_IMAGE, HOSTING_GATEWAY_IP, HOSTING_APPS_DOMAIN)`;
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
@@ -73,7 +81,15 @@ const openServices = async () => {
   const bd = await BdService.open(db, boat, bdConfigFromEnv(buildConfig));
   // The governance desk: review agents steered by workspaces/governance-review; admins decide.
   const review = await ReviewService.open(db, store, boat, reviewConfigFromEnv(buildConfig), desk);
-  return { store, builds, bd, desk, review };
+  // Developers' hosting: a VM each, fetching their verified commits with a read-only GitHub token.
+  const hosting = await HostingService.open(db, hostingProviderFromEnv(), hostingConfigFromEnv(), async (developerId, repository) => {
+    if (!github) return null;
+    const r = await db.query("SELECT installation_id FROM financial_products.repo_connections WHERE developer_id = $1 AND repository = $2", [developerId, repository.toLowerCase()]);
+    const installation = (r.rows[0] as { installation_id?: number } | undefined)?.installation_id;
+    return installation ? github.readTokenFor(repository, Number(installation)).catch(() => null) : null;
+  });
+  const modules = await ModuleRegistry.open(db);
+  return { store, builds, bd, desk, review, hosting, modules };
 };
 
 const parseRoles = (): Role[] => {
@@ -96,20 +112,20 @@ const [command = "serve", sub] = positionals;
 if (values.help) {
   console.log(USAGE);
 } else if (command === "serve") {
-  const { store, builds, bd, desk, review } = await openServices();
+  const { store, builds, bd, desk, review, hosting, modules } = await openServices();
   const token = process.env.FINANCIAL_PRODUCTS_TOKEN;
   const user = token ? ((await store.userByToken(token)) ?? die("FINANCIAL_PRODUCTS_TOKEN is not a valid token")) : null;
-  await createServer(store, user, { clerkAdmin: clerkAdmin(), builds, bd, desk, review }).connect(new StdioServerTransport());
+  await createServer(store, user, { clerkAdmin: clerkAdmin(), builds, bd, desk, review, hosting, modules }).connect(new StdioServerTransport());
 } else if (command === "serve-http") {
   const port = Number(values.port);
-  const { store, builds, bd, desk, review } = await openServices();
+  const { store, builds, bd, desk, review, hosting, modules } = await openServices();
   builds.startWorker();
   bd.startWorker();
   desk.startWorker();
   review.startWorker();
   const config = clerkConfigFromEnv();
   const clerk = config ? new ClerkAuth(config, store) : null;
-  const http = createMcpHttpServer(store, clerk, { clerkAdmin: clerkAdmin(), builds, bd, desk, review }).listen(port, values.host, () =>
+  const http = createMcpHttpServer(store, clerk, { clerkAdmin: clerkAdmin(), builds, bd, desk, review, hosting, modules }).listen(port, values.host, () =>
     console.error(`mynt MCP listening on http://${values.host}:${port}/mcp${clerk ? " (Clerk whitelist auth)" : ""}`),
   );
   // Sends queued webhook deliveries (events from any process sharing the database).
@@ -153,6 +169,21 @@ if (values.help) {
 } else if (command === "users" && sub === "list") {
   const store = await openStore();
   console.log(JSON.stringify({ whitelist: await store.listInvites(), users: await store.listUsers() }, null, 2));
+  await store.close();
+} else if (command === "hosting" && ["wg-peers", "egress-allowlist", "routes"].includes(sub ?? "")) {
+  // Read by the gateway on the platform host to keep WireGuard, its egress proxy and the edge in step.
+  const db = openDb();
+  const store = await Store.open(db);
+  const hosting = await HostingService.open(db, null, hostingConfigFromEnv());
+  if (sub === "wg-peers") console.log(await hosting.wireguardPeers());
+  else if (sub === "routes")
+    console.log((await hosting.routes()).map((r) => `${r.host} {\n\treverse_proxy ${r.upstream}\n}\n`).join("\n"));
+  else {
+    const hosts = new Set<string>();
+    const running = new Set((await hosting.tenants()).filter((t) => t.status === "running").map((t) => t.id));
+    for (const h of await hosting.hostedApps()) if (running.has(h.tenant_id)) for (const host of await egressFor(store, hosting, h.app_id)) hosts.add(host);
+    console.log([...hosts].sort().join("\n"));
+  }
   await store.close();
 } else if (command === "clerk" && sub === "setup") {
   const admin = clerkAdmin() ?? die("CLERK_SECRET_KEY is required");
